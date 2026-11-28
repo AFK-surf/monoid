@@ -1474,8 +1474,9 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
 }
 
 /// Hand off any still-live workspace detail replay demand (`pending_live_ws_replay_seq` or
-/// unconfirmed `PendingAuthConfirm`) to the workspace's CURRENT boundary without touching or
-/// consuming the current boundary's rotated/transient budgets.
+/// unconfirmed `PendingAuthConfirm`) to the workspace's CURRENT boundary using the live bearer
+/// (deduplicated by `dkey`), without touching or consuming current boundary budgets or
+/// prematurely erasing `pending_live_ws_replay_seq` on a stale/retired event.
 fn hand_off_live_ws_replay_to_current_boundary(sess : RuntimeSession, ws_id : String) -> Unit {
   if sess.stopped || sess.core.membership.is_session_invalidated() {
     return
@@ -1487,13 +1488,6 @@ fn hand_off_live_ws_replay_to_current_boundary(sess : RuntimeSession, ws_id : St
   let has_demand = sess.pending_live_ws_replay_seq.get(ws_id).is_some() ||
     needs_workspace_cloud_confirm(sess, ws_id)
   if !has_demand {
-    return
-  }
-  let cur_bid = sess.core.membership.pending_auth_boundary_id(ws_id)
-  let cur_bkey = ws_confirm_401_key(ws_id, cur_bid)
-  let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
-  if cur_rot >= 2 {
-    sess.pending_live_ws_replay_seq.remove(ws_id)
     return
   }
   trigger_workspace_confirm_fetch(sess, ws_id)
