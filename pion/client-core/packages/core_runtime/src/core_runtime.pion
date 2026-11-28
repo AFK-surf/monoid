@@ -531,6 +531,12 @@ fn runtime_attach_mesh_station(
     get_lock_carry=Some(fn() -> sync::MeshLockCarry {
       sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
     }),
+    get_cred_epoch=Some(fn() -> Int64 {
+      core_ref.membership.cred_epoch_of(target_ws)
+    }),
+    on_admitted_epoch=Some(fn(ep : Int64) -> Unit {
+      core_ref.on_station_admitted_cred_epoch(target_st, ep)
+    }),
   )
   match sess.mesh_transports.get(target_st) {
     Some(old_ctrl) => {
@@ -541,7 +547,12 @@ fn runtime_attach_mesh_station(
   }
   let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
   sess.mesh_transports.set(target_st, ctrl)
-  sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
+  sess.core.attach_station_transport(
+    target_st,
+    tr,
+    workspace=target_ws,
+    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.admitted_cred_epoch() }),
+  )
 }
 
 fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
@@ -1353,6 +1364,9 @@ fn wire_live_cloud_sync(
   cs.set_seq_provider(fn() -> Int64 {
     sess.core.membership.next_cloud_seq()
   })
+  cs.set_has_pending_auth_confirm_getter(fn(ws : String) -> Bool {
+    sess.core.membership.has_pending_auth_confirm(ws)
+  })
   cs.set_commit_hooks(
     on_me_fetched=Some(fn(me : sync::CloudMe, req_seq : Int64) -> Unit {
       if sess.core.membership.is_session_invalidated() {
@@ -1371,11 +1385,11 @@ fn wire_live_cloud_sync(
         _ => ()
       }
     }),
-    on_workspace_fetched=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64) -> Unit {
+    on_workspace_fetched_with_epoch=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64, cap_ep : Int64) -> Unit {
       if sess.core.membership.is_session_invalidated() {
         return
       }
-      match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+      match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=cap_ep) {
         Ok(true) => {
           emit_topic_refresh(sess, "workspaces")
           emit_topic_refresh(sess, "workspace")
@@ -2284,6 +2298,21 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
   })
+  core.set_on_auth_key_confirmed(fn(_ws : String, key : String) -> Unit {
+    if key.starts_with("workspace:") {
+      emit_topic_refresh(sess, "workspace")
+    } else if key.starts_with("stations:") {
+      emit_topic_refresh(sess, "stations")
+    } else if key.starts_with("chats:") {
+      emit_topic_refresh(sess, "chats")
+    } else if key.starts_with("chat:") {
+      emit_topic_refresh(sess, "chat")
+    } else if key.starts_with("chatJobs:") {
+      emit_topic_refresh(sess, "chatJobs")
+    } else if key.starts_with("jobs:") {
+      emit_topic_refresh(sess, "longJobs")
+    }
+  })
   core.set_on_session_invalidated(fn(_sub : String) -> Unit {
     let _ = bump_runtime_session_gen(sess)
   })
@@ -2334,23 +2363,22 @@ pub extern "C" fn pion_core_runtime_start(
                         }
                         match ex {
                           effect::Exit::Succeeded(mc) => {
-                            ctrl.refresh_credential_k(mc.credential, fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
-                              if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
-                                ctrl.drop_link(reason="cred_epoch_changed")
-                                fk(effect::Exit::Succeeded(()))
-                                return
-                              }
-                              match rex {
-                                effect::Exit::Succeeded(_) => {
-                                  match sess.core.station_sync(st) {
-                                    Some(sy) => sy.bump_epoch()
-                                    None => ()
-                                  }
+                            ctrl.refresh_credential_k(
+                              mc.credential,
+                              fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
+                                if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
+                                  ctrl.drop_link(reason="cred_epoch_changed")
+                                  fk(effect::Exit::Succeeded(()))
+                                  return
                                 }
-                                _ => ctrl.drop_link(reason="cred_refresh")
-                              }
-                              fk(effect::Exit::Succeeded(()))
-                            })
+                                match rex {
+                                  effect::Exit::Succeeded(_) => ()
+                                  _ => ctrl.drop_link(reason="cred_refresh")
+                                }
+                                fk(effect::Exit::Succeeded(()))
+                              },
+                              cred_epoch=Some(captured_epoch),
+                            )
                           }
                           _ => {
                             ctrl.drop_link(reason="cred_refresh_failed")
@@ -2377,6 +2405,7 @@ pub extern "C" fn pion_core_runtime_start(
     match sess.cloud {
       Some(cs) => {
         let req_seq = sess.core.membership.next_cloud_seq()
+        let captured_cred_epoch = sess.core.membership.cred_epoch_of(ws)
         let orig_sub = cs.bound_sub()
         let orig_session = cs.bound_session()
         let orig_gen = sess.session_gen
@@ -2393,7 +2422,7 @@ pub extern "C" fn pion_core_runtime_start(
               }
               match ex {
                 effect::Exit::Succeeded(Ok(cws)) => {
-                  match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+                  match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=captured_cred_epoch) {
                     Ok(true) => {
                       emit_topic_refresh(sess, "workspace")
                       emit_topic_refresh(sess, "stations")

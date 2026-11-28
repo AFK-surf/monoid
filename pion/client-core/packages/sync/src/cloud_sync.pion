@@ -1175,8 +1175,10 @@ pub struct CloudSync {
   mut ws_fiber : Option[effect::Fiber[Unit]]
   mut cred_epoch_getter : Option[(String) -> Int64]
   mut seq_provider : Option[() -> Int64]
+  mut has_pending_auth_confirm_getter : Option[(String) -> Bool]
   mut on_me_fetched : Option[(CloudMe, Int64) -> Unit]
   mut on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit]
+  mut on_workspace_fetched_with_epoch : Option[(CloudWorkspace, Int64, Int64) -> Unit]
   mut on_unauthorized_err : Option[(CloudHttpError) -> Unit]
 }
 
@@ -1200,8 +1202,10 @@ pub fn CloudSync::new(
     ws_fiber: None,
     cred_epoch_getter: None,
     seq_provider: None,
+    has_pending_auth_confirm_getter: None,
     on_me_fetched: None,
     on_workspace_fetched: None,
+    on_workspace_fetched_with_epoch: None,
     on_unauthorized_err: None,
   }
 }
@@ -1278,6 +1282,23 @@ pub fn CloudSync::set_seq_provider(self : CloudSync, provider : () -> Int64) -> 
   self.seq_provider = Some(provider)
 }
 
+pub fn CloudSync::set_has_pending_auth_confirm_getter(
+  self : CloudSync,
+  getter : (String) -> Bool,
+) -> Unit {
+  self.has_pending_auth_confirm_getter = Some(getter)
+}
+
+/// True iff `ws_id` currently has an active `PendingAuthConfirm` gate, so Cloud partial in-place
+/// patches (lock head, station online/offline, workspace rev delta) MUST be suppressed in favor of
+/// a full `/v1/workspaces/<ws_id>` reread (aligned with `cloud.ts:2336, 2353, 2394`).
+pub fn CloudSync::should_suppress_cloud_patch(self : CloudSync, ws_id : String) -> Bool {
+  match self.has_pending_auth_confirm_getter {
+    Some(g) => g(ws_id)
+    None => false
+  }
+}
+
 fn CloudSync::current_cred_epoch(self : CloudSync, ws_id : String) -> Int64 {
   match self.cred_epoch_getter {
     Some(g) => g(ws_id)
@@ -1297,10 +1318,12 @@ pub fn CloudSync::set_commit_hooks(
   on_me_fetched : Option[(CloudMe, Int64) -> Unit] = None,
   on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit] = None,
   on_unauthorized_err : Option[(CloudHttpError) -> Unit] = None,
+  on_workspace_fetched_with_epoch : Option[(CloudWorkspace, Int64, Int64) -> Unit] = None,
 ) -> Unit {
   self.on_me_fetched = on_me_fetched
   self.on_workspace_fetched = on_workspace_fetched
   self.on_unauthorized_err = on_unauthorized_err
+  self.on_workspace_fetched_with_epoch = on_workspace_fetched_with_epoch
 }
 
 pub fn CloudSync::set_origin_and_token(self : CloudSync, origin : String, token : String) -> Unit {
@@ -1493,6 +1516,7 @@ pub fn CloudSync::start_events_ws(
         }
         CloudEvent::WorkspaceChanged(wid, _) => {
           let req_seq = self.next_req_seq()
+          let captured_cred_epoch = self.current_cred_epoch(wid)
           let cur_origin = self.origin
           let cur_token = self.token
           let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -1507,9 +1531,12 @@ pub fn CloudSync::start_events_ws(
                   return
                 }
                 match ex {
-                  effect::Exit::Succeeded(Ok(ws)) => match self.on_workspace_fetched {
-                    Some(cb) => cb(ws, req_seq)
-                    None => ()
+                  effect::Exit::Succeeded(Ok(ws)) => match self.on_workspace_fetched_with_epoch {
+                    Some(cb) => cb(ws, req_seq, captured_cred_epoch)
+                    None => match self.on_workspace_fetched {
+                      Some(cb) => cb(ws, req_seq)
+                      None => ()
+                    }
                   }
                   effect::Exit::Succeeded(Err(herr)) => {
                     if herr.status == 403 || herr.status == 404 {
@@ -1529,6 +1556,52 @@ pub fn CloudSync::start_events_ws(
               },
             )
           })
+        }
+        CloudEvent::Other("station", j) => {
+          // Aligned with `cloud.ts:2353`: when `workspace` is pending auth confirmation, suppress
+          // in-place station online/offline patching and force a full `/v1/workspaces/<ws>` reread.
+          let wid = j_str(j, "workspace")
+          if wid.length() > 0 && self.should_suppress_cloud_patch(wid) {
+            let req_seq = self.next_req_seq()
+            let captured_cred_epoch = self.current_cred_epoch(wid)
+            let cur_origin = self.origin
+            let cur_token = self.token
+            let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              fetch_workspace_structured_k(
+                self.sh,
+                cur_origin,
+                cur_token,
+                wid,
+                fn(ex : effect::Exit[Result[CloudWorkspace, CloudHttpError]]) -> Unit {
+                  if !self.context_matches(orig_sub, orig_session, orig_gen) {
+                    fk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  match ex {
+                    effect::Exit::Succeeded(Ok(ws)) => match self.on_workspace_fetched_with_epoch {
+                      Some(cb) => cb(ws, req_seq, captured_cred_epoch)
+                      None => match self.on_workspace_fetched {
+                        Some(cb) => cb(ws, req_seq)
+                        None => ()
+                      }
+                    }
+                    effect::Exit::Succeeded(Err(herr)) => {
+                      if herr.status == 403 || herr.status == 404 {
+                        self.trigger_me_reconcile()
+                      } else if herr.status == 401 {
+                        match self.on_unauthorized_err {
+                          Some(cb) => cb(herr)
+                          None => ()
+                        }
+                      }
+                    }
+                    _ => ()
+                  }
+                  fk(effect::Exit::Succeeded(()))
+                },
+              )
+            })
+          }
         }
         _ => ()
       }

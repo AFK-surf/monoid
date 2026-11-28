@@ -416,6 +416,8 @@ pub struct MeshStationConfig {
   pub off : Option[Array[String]]
   pub get_credential_k : (String, Bool, (effect::Exit[String]) -> Unit) -> Unit
   pub on_admission : Option[(MeshAdmission) -> Unit]
+  pub get_cred_epoch : Option[() -> Int64]
+  pub on_admitted_epoch : Option[(Int64) -> Unit]
 }
 
 pub fn MeshStationConfig::new(
@@ -432,6 +434,8 @@ pub fn MeshStationConfig::new(
   theirs : Option[Array[String]] = None,
   off : Option[Array[String]] = None,
   on_admission : Option[(MeshAdmission) -> Unit] = None,
+  get_cred_epoch : Option[() -> Int64] = None,
+  on_admitted_epoch : Option[(Int64) -> Unit] = None,
 ) -> MeshStationConfig {
   MeshStationConfig::{
     workspace: workspace,
@@ -447,11 +451,15 @@ pub fn MeshStationConfig::new(
     off: off,
     get_credential_k: get_credential_k,
     on_admission: on_admission,
+    get_cred_epoch: get_cred_epoch,
+    on_admitted_epoch: on_admitted_epoch,
   }
 }
 
 /// Production `StationTransport` controller backed by `pion/base/packages/mesh` (`Mesh`, `Link`,
 /// `Presented`, `Link::admitted_k`, `Link::exchange_k`, `Mesh::sign`, `StationTransport::from_link`).
+/// Tracks monotonic real station-side admission evidence (`admitted_cred_epoch`) that advances ONLY
+/// after `Link::admitted_k` (initial or reconnect) or `Link::exchange_k` succeeds and NEVER resets to 1.
 pub struct MeshStationTransport {
   sh : shell::Shell
   config : MeshStationConfig
@@ -460,6 +468,8 @@ pub struct MeshStationTransport {
   mut active_link : Option[mesh::Link]
   mut active_transport : Option[StationTransport]
   mut last_admission : Option[MeshAdmission]
+  mut admitted_cred_epoch : Int64
+  mut on_admitted_epoch_cb : Option[(Int64) -> Unit]
   mut closed : Bool
 }
 
@@ -475,7 +485,43 @@ pub fn MeshStationTransport::new(
     active_link: None,
     active_transport: None,
     last_admission: None,
+    admitted_cred_epoch: 0L,
+    on_admitted_epoch_cb: config.on_admitted_epoch,
     closed: false,
+  }
+}
+
+/// Monotonic credential epoch genuinely admitted by the station (`Link::admitted_k` or `Link::exchange_k`).
+/// Starts at `0L` before any station admission succeeds and NEVER resets on reconnect.
+pub fn MeshStationTransport::admitted_cred_epoch(self : MeshStationTransport) -> Int64 {
+  self.admitted_cred_epoch
+}
+
+/// Register/replace the callback fired whenever `admitted_cred_epoch` advances after a real station admission.
+pub fn MeshStationTransport::set_on_admitted_epoch(
+  self : MeshStationTransport,
+  cb : (Int64) -> Unit,
+) -> Unit {
+  self.on_admitted_epoch_cb = Some(cb)
+}
+
+fn MeshStationTransport::current_cred_epoch(self : MeshStationTransport) -> Int64 {
+  match self.config.get_cred_epoch {
+    Some(g) => g()
+    None => 1L
+  }
+}
+
+fn MeshStationTransport::advance_admitted_epoch(
+  self : MeshStationTransport,
+  presented_epoch : Int64,
+) -> Unit {
+  if presented_epoch > self.admitted_cred_epoch {
+    self.admitted_cred_epoch = presented_epoch
+    match self.on_admitted_epoch_cb {
+      Some(cb) => cb(self.admitted_cred_epoch)
+      None => ()
+    }
   }
 }
 
@@ -637,12 +683,17 @@ pub fn MeshStationTransport::connect_k(
             let fallback_entries = self.config.lock_entries
             let get_carry = self.config.get_lock_carry
             let get_cred = self.config.get_credential_k
+            // Capture `cred_epoch` BEFORE fetching each credential; `admitted_cred_epoch` advances
+            // ONLY AFTER `Link::admitted_k` confirms real station admission (never on cred fetch!).
+            let presented_epoch_box : Array[Int64] = [0L]
             let cred_source = fn(device_id : String, fresh : Bool, ck : (effect::Exit[mesh::Presented]) -> Unit) -> Unit {
+              let captured_ep = self.current_cred_epoch()
               get_cred(device_id, fresh, fn(cex : effect::Exit[String]) -> Unit {
                 match cex {
                   effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
                   effect::Exit::Succeeded(cred) => {
+                    presented_epoch_box[0] = captured_ep
                     let carry = match get_carry {
                       Some(fetch_carry) => fetch_carry()
                       None => MeshLockCarry::{ entries: fallback_entries, person: None }
@@ -696,9 +747,12 @@ pub fn MeshStationTransport::connect_k(
                           }
                           let adm = parse_mesh_admission(ans)
                           self.last_admission = Some(adm)
-                          match self.config.on_admission { Some(cb) => cb(adm); None => () }
                           self.active_link = Some(link)
                           self.active_transport = Some(StationTransport::from_link(link))
+                          if adm.error_code.is_none() && !adm.lock_unconfirmed && presented_epoch_box[0] > 0L {
+                            self.advance_admitted_epoch(presented_epoch_box[0])
+                          }
+                          match self.config.on_admission { Some(cb) => cb(adm); None => () }
                           pk(effect::Exit::Succeeded(link))
                         }
                       }
@@ -719,11 +773,17 @@ pub fn MeshStationTransport::connect_k(
 }
 
 /// Renew the Cloud member credential on the live control stream via `Link::exchange_k`.
+/// Advances `admitted_cred_epoch = max(cur, presented_epoch)` ONLY after `Link::exchange_k` succeeds.
 pub fn MeshStationTransport::refresh_credential_k(
   self : MeshStationTransport,
   credential : String,
   k : (effect::Exit[MeshAdmission]) -> Unit,
+  cred_epoch : Option[Int64] = None,
 ) -> Unit {
+  let presented_epoch = match cred_epoch {
+    Some(ep) => ep
+    None => self.current_cred_epoch()
+  }
   match self.active_link {
     None => k(effect::Exit::Failed(effect::EffectError::Custom("no active mesh link to refresh")))
     Some(link) => {
@@ -741,6 +801,9 @@ pub fn MeshStationTransport::refresh_credential_k(
           effect::Exit::Succeeded(ans) => {
             let adm = parse_mesh_admission(ans)
             self.last_admission = Some(adm)
+            if adm.error_code.is_none() && !adm.lock_unconfirmed && presented_epoch > 0L {
+              self.advance_admitted_epoch(presented_epoch)
+            }
             match self.config.on_admission { Some(cb) => cb(adm); None => () }
             k(effect::Exit::Succeeded(adm))
           }

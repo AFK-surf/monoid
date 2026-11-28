@@ -14,6 +14,7 @@ pub struct SyncScheduler {
   pub events : StationEvents
   pub mut transport : StationTransport
   mut transport_epoch : Int64
+  mut admitted_cred_epoch : Int64
   mut auth : Option[AuthGenTracker]
   pending_refresh : Map[String, Bool]
   mut pending_lock_refresh : Bool
@@ -22,6 +23,9 @@ pub struct SyncScheduler {
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
   mut cred_epoch_getter : Option[() -> Int64]
+  mut admitted_cred_epoch_getter : Option[() -> Int64]
+  mut required_cred_epoch_getter : Option[() -> Option[Int64]]
+  mut on_resource_confirmed : Option[(String, Int64, Int64) -> Unit]
 }
 
 pub fn SyncScheduler::new(
@@ -39,6 +43,7 @@ pub fn SyncScheduler::new(
     events: events,
     transport: transport,
     transport_epoch: 1L,
+    admitted_cred_epoch: 0L,
     auth: None,
     pending_refresh: Map::new(),
     pending_lock_refresh: false,
@@ -47,6 +52,9 @@ pub fn SyncScheduler::new(
     idle_preempted_count: 0,
     completed_order: [],
     cred_epoch_getter: None,
+    admitted_cred_epoch_getter: None,
+    required_cred_epoch_getter: None,
+    on_resource_confirmed: None,
   }
 }
 
@@ -57,6 +65,84 @@ pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTr
 
 pub fn SyncScheduler::set_cred_epoch_getter(self : SyncScheduler, getter : () -> Int64) -> Unit {
   self.cred_epoch_getter = Some(getter)
+}
+
+/// Wire a live getter exposing the station link's real station-admitted credential epoch
+/// (e.g. `MeshStationTransport::admitted_cred_epoch`).
+pub fn SyncScheduler::set_admitted_cred_epoch_getter(
+  self : SyncScheduler,
+  getter : () -> Int64,
+) -> Unit {
+  self.admitted_cred_epoch_getter = Some(getter)
+}
+
+/// Wire a getter returning `Some(pending.required_cred_epoch)` when `PendingAuthConfirm` is active
+/// for this scheduler's workspace, or `None` otherwise.
+pub fn SyncScheduler::set_required_cred_epoch_getter(
+  self : SyncScheduler,
+  getter : () -> Option[Int64],
+) -> Unit {
+  self.required_cred_epoch_getter = Some(getter)
+}
+
+/// Wire a callback invoked after a station read validates & commits under an admitted epoch:
+/// `(resource_key, auth_gen, admitted_cred_epoch)`.
+pub fn SyncScheduler::set_on_resource_confirmed(
+  self : SyncScheduler,
+  cb : (String, Int64, Int64) -> Unit,
+) -> Unit {
+  self.on_resource_confirmed = Some(cb)
+}
+
+/// Monotonic real station-admitted credential epoch for this station link.
+/// NEVER resets to 1 on `bump_epoch()` or `set_transport()`.
+pub fn SyncScheduler::admitted_cred_epoch(self : SyncScheduler) -> Int64 {
+  match self.admitted_cred_epoch_getter {
+    Some(g) => {
+      let v = g()
+      if v > self.admitted_cred_epoch {
+        self.admitted_cred_epoch = v
+      }
+      self.admitted_cred_epoch
+    }
+    None => self.admitted_cred_epoch
+  }
+}
+
+/// Advance `admitted_cred_epoch = max(cur, epoch)`. Returns `true` iff it strictly increased.
+pub fn SyncScheduler::record_admitted_cred_epoch(self : SyncScheduler, epoch : Int64) -> Bool {
+  if epoch > self.admitted_cred_epoch {
+    self.admitted_cred_epoch = epoch
+    true
+  } else {
+    false
+  }
+}
+
+fn SyncScheduler::is_admitted_for_commit(self : SyncScheduler, start_admitted : Int64) -> Bool {
+  match self.required_cred_epoch_getter {
+    None => true
+    Some(g) => match g() {
+      None => true
+      Some(req_ep) => start_admitted >= req_ep && self.admitted_cred_epoch() >= req_ep
+    }
+  }
+}
+
+fn SyncScheduler::notify_resource_confirmed(
+  self : SyncScheduler,
+  resource_key : String,
+  auth_gen : Int64,
+  start_admitted : Int64,
+) -> Unit {
+  if !self.is_admitted_for_commit(start_admitted) {
+    return
+  }
+  let admitted = self.admitted_cred_epoch()
+  match self.on_resource_confirmed {
+    Some(cb) => cb(resource_key, auth_gen, admitted)
+    None => ()
+  }
 }
 
 pub fn SyncScheduler::transport_epoch(self : SyncScheduler) -> Int64 {
@@ -446,6 +532,7 @@ pub fn SyncScheduler::fetch_marks_k(
           on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
           return
         }
+        let start_admitted_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
@@ -455,6 +542,7 @@ pub fn SyncScheduler::fetch_marks_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
+          start_admitted_box[0] = self.admitted_cred_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
             if self.transport_epoch != enqueue_epoch {
@@ -487,6 +575,9 @@ pub fn SyncScheduler::fetch_marks_k(
           }
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
+          }
+          if !self.is_admitted_for_commit(start_admitted_box[0]) {
+            return Err("admitted_cred_epoch_stale")
           }
           match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
             sql::SqlResult::Err(e) => Err(e.to_string())
@@ -591,6 +682,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
           on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
           return
         }
+        let start_admitted_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
@@ -600,6 +692,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
+          start_admitted_box[0] = self.admitted_cred_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
             if self.transport_epoch != enqueue_epoch {
@@ -626,12 +719,15 @@ pub fn SyncScheduler::fetch_snapshot_k(
             }
           })
         }
-        let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
+        let apply_json = fn(cap_gen : Int64, j : base_codec::Json) -> Result[Int, String] {
           if self.transport_epoch != enqueue_epoch {
             return Err("transport_epoch_changed")
           }
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
+          }
+          if !self.is_admitted_for_commit(start_admitted_box[0]) {
+            return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_chats_snapshot_payload(j) {
             return Err("malformed_chats_snapshot")
@@ -641,6 +737,8 @@ pub fn SyncScheduler::fetch_snapshot_k(
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)
               self.completed_order.push("snapshot")
+              // Confirm ONLY `chats:<station>` — NEVER confirms `chatJobs:<station>/<thread>`!
+              self.notify_resource_confirmed("chats:" + self.station, cap_gen, start_admitted_box[0])
               Ok(n)
             }
           }
@@ -653,8 +751,8 @@ pub fn SyncScheduler::fetch_snapshot_k(
               fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
                 do_fetch_io(io_done)
               },
-              fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-                apply_json(j)
+              fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+                apply_json(cap.auth_gen.to_int64(), j)
               },
               on_attempt_done,
               on_exhausted_stale=Some(fn() -> Unit {
@@ -670,7 +768,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
               effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
               effect::Exit::Succeeded(j) =>
-              match apply_json(j) {
+              match apply_json(1L, j) {
                 Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
                 Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
               }
@@ -746,6 +844,7 @@ pub fn SyncScheduler::fetch_thread_k(
           return
         }
         let path = "/threads/" + thread.to_string() + "/entries"
+        let start_admitted_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
@@ -755,6 +854,7 @@ pub fn SyncScheduler::fetch_thread_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
+          start_admitted_box[0] = self.admitted_cred_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
             if self.transport_epoch != enqueue_epoch {
@@ -781,12 +881,15 @@ pub fn SyncScheduler::fetch_thread_k(
             }
           })
         }
-        let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
+        let apply_json = fn(cap_gen : Int64, j : base_codec::Json) -> Result[Int, String] {
           if self.transport_epoch != enqueue_epoch {
             return Err("transport_epoch_changed")
           }
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
+          }
+          if !self.is_admitted_for_commit(start_admitted_box[0]) {
+            return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_thread_entries_payload(j, thread) {
             return Err("malformed_thread_entries")
@@ -796,6 +899,8 @@ pub fn SyncScheduler::fetch_thread_k(
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)
               self.completed_order.push("thread:" + thread.to_string())
+              // Confirm ONLY `chat:<station>/<thread>` — NEVER confirms `chatJobs:<station>/<thread>`!
+              self.notify_resource_confirmed("chat:" + self.station + "/" + thread.to_string(), cap_gen, start_admitted_box[0])
               Ok(n)
             }
           }
@@ -808,8 +913,8 @@ pub fn SyncScheduler::fetch_thread_k(
               fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
                 do_fetch_io(io_done)
               },
-              fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-                apply_json(j)
+              fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+                apply_json(cap.auth_gen.to_int64(), j)
               },
               on_attempt_done,
               on_exhausted_stale=Some(fn() -> Unit {
@@ -825,7 +930,7 @@ pub fn SyncScheduler::fetch_thread_k(
               effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
               effect::Exit::Succeeded(j) =>
-              match apply_json(j) {
+              match apply_json(1L, j) {
                 Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
                 Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
               }
@@ -887,11 +992,13 @@ pub fn SyncScheduler::prefetch_idle_k(
         return
       }
       let path = "/threads/" + thread.to_string() + "/entries"
+      let start_admitted_box : Array[Int64] = [0L]
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         if self.transport_epoch != enqueue_epoch {
           fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
+        start_admitted_box[0] = self.admitted_cred_epoch()
         let req_fn = self.transport.request_k
         effect::race_first_k(
           fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
@@ -944,6 +1051,9 @@ pub fn SyncScheduler::prefetch_idle_k(
         }
         if self.current_cred_epoch() != enqueue_cred_epoch {
           return Err("cred_epoch_changed")
+        }
+        if !self.is_admitted_for_commit(start_admitted_box[0]) {
+          return Err("admitted_cred_epoch_stale")
         }
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
@@ -1014,4 +1124,186 @@ pub fn SyncScheduler::prefetch_idle_k(
       }
     },
   )
+}
+
+/// Independent station jobs fetch (`GET /jobs?chats=0`, aligned with `client/core-ts/src/station/sync.ts`
+/// `JOBS = "/jobs?chats=0"`). Strictly enforces `admitted_cred_epoch >= required_cred_epoch` and
+/// validates the jobs payload before committing and confirming `jobs:<station>` (and when
+/// `target_thread == Some(th)`, `chatJobs:<station>/<th_id>`).
+/// NEVER piggybacks on `GET /chats` or `GET /threads/<id>/entries`.
+pub fn SyncScheduler::fetch_jobs_k(
+  self : SyncScheduler,
+  priority : Int,
+  k : (effect::Exit[Int]) -> Unit,
+  target_thread : Option[Int] = None,
+  allow_cred_retry : Bool = true,
+) -> Unit {
+  let res_name = match target_thread {
+    Some(th) => "chatJobs:" + th.to_string()
+    None => "jobs"
+  }
+  let key = self.task_key(res_name)
+  let enqueue_epoch = self.transport_epoch
+  let initial_cred_epoch = self.current_cred_epoch()
+  let lane_key = key + "@" + enqueue_epoch.to_string() + ":" + initial_cred_epoch.to_string()
+  self.lane.run_k(
+    lane_key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      let mut run_attempt : (Int64, Int) -> Unit = fn(_ep : Int64, _left : Int) -> Unit {}
+      run_attempt = fn(enqueue_cred_epoch : Int64, retries_left : Int) -> Unit {
+        let on_attempt_done = fn(ex : effect::Exit[Int]) -> Unit {
+          match ex {
+            effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")) => {
+              if retries_left > 0 && self.transport_epoch == enqueue_epoch {
+                run_attempt(self.current_cred_epoch(), retries_left - 1)
+                return
+              }
+              tk(ex)
+            }
+            _ => tk(ex)
+          }
+        }
+        if self.transport_epoch != enqueue_epoch {
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
+        if self.current_cred_epoch() != enqueue_cred_epoch {
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+          return
+        }
+        let start_admitted_box : Array[Int64] = [0L]
+        let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+          if self.transport_epoch != enqueue_epoch {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+            return
+          }
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+            return
+          }
+          start_admitted_box[0] = self.admitted_cred_epoch()
+          let req_fn = self.transport.request_k
+          req_fn("GET", "/jobs?chats=0", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+            if self.transport_epoch != enqueue_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+              return
+            }
+            if self.current_cred_epoch() != enqueue_cred_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+              return
+            }
+            match ex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(reply) => {
+                if reply.status < 200 || reply.status >= 300 {
+                  fk(effect::Exit::Failed(effect::EffectError::Custom("jobs fetch status " + reply.status.to_string())))
+                  return
+                }
+                match base_codec::json_parse(bytes_to_str(reply.body)) {
+                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+                }
+              }
+            }
+          })
+        }
+        let apply_json = fn(cap_gen : Int64, j : base_codec::Json) -> Result[Int, String] {
+          if self.transport_epoch != enqueue_epoch {
+            return Err("transport_epoch_changed")
+          }
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            return Err("cred_epoch_changed")
+          }
+          if !self.is_admitted_for_commit(start_admitted_box[0]) {
+            return Err("admitted_cred_epoch_stale")
+          }
+          if !is_valid_jobs_payload(j) {
+            return Err("malformed_jobs_payload")
+          }
+          match self.events.apply_jobs(j) {
+            sql::SqlResult::Err(e) => Err(e.to_string())
+            sql::SqlResult::Ok(n) => {
+              self.pending_refresh.remove(key)
+              self.completed_order.push(res_name)
+              self.notify_resource_confirmed("jobs:" + self.station, cap_gen, start_admitted_box[0])
+              match target_thread {
+                Some(th) => self.notify_resource_confirmed(
+                  "chatJobs:" + self.station + "/" + th.to_string(),
+                  cap_gen,
+                  start_admitted_box[0],
+                )
+                None => ()
+              }
+              Ok(n)
+            }
+          }
+        }
+        match self.auth {
+          Some(tracker) => {
+            guarded_read_k(
+              tracker,
+              self.workspace,
+              fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                do_fetch_io(io_done)
+              },
+              fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+                apply_json(cap.auth_gen.to_int64(), j)
+              },
+              on_attempt_done,
+              on_exhausted_stale=Some(fn() -> Unit {
+                if self.transport_epoch == enqueue_epoch {
+                  self.pending_refresh.set(key, true)
+                }
+              }),
+            )
+          }
+          None =>
+          do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(j) =>
+              match apply_json(1L, j) {
+                Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
+                Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+              }
+            }
+          })
+        }
+      }
+      run_attempt(initial_cred_epoch, if allow_cred_retry { 1 } else { 0 })
+    },
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
+            self.pending_refresh.remove(key)
+            self.fetch_jobs_k(priority, k, target_thread=target_thread, allow_cred_retry=allow_cred_retry)
+            return
+          }
+          self.pending_refresh.remove(key)
+          k(ex)
+        }
+        other => {
+          self.pending_refresh.remove(key)
+          k(other)
+        }
+      }
+    },
+  )
+}
+
+/// Independent post-downgrade `chatJobs` refresh for a single `(station, thread)`.
+/// Confirms `chatJobs:<station>/<thread>` ONLY after receiving a valid independent `GET /jobs?chats=0`
+/// response over an admitted link (`admitted_cred_epoch >= required_cred_epoch`).
+pub fn SyncScheduler::fetch_chat_jobs_k(
+  self : SyncScheduler,
+  thread : Int,
+  priority : Int,
+  k : (effect::Exit[Int]) -> Unit,
+  allow_cred_retry : Bool = true,
+) -> Unit {
+  self.fetch_jobs_k(priority, k, target_thread=Some(thread), allow_cred_retry=allow_cred_retry)
 }

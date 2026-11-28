@@ -731,6 +731,7 @@ pub struct StationEvents {
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
   mut auth : Option[AuthGenTracker]
+  mut admitted_gate : Option[() -> Bool]
   mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
@@ -773,6 +774,7 @@ pub fn StationEvents::new(
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
     auth: None,
+    admitted_gate: None,
     stream_epoch: 1L,
     stream_fiber: None,
     active_stream_fiber: None,
@@ -782,6 +784,17 @@ pub fn StationEvents::new(
 
 pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTracker) -> Unit {
   self.auth = Some(tracker)
+}
+
+pub fn StationEvents::set_admitted_gate(self : StationEvents, gate : () -> Bool) -> Unit {
+  self.admitted_gate = Some(gate)
+}
+
+fn StationEvents::is_admitted_for_current_auth(self : StationEvents) -> Bool {
+  match self.admitted_gate {
+    Some(g) => g()
+    None => true
+  }
 }
 
 /// Reset all in-memory stream state (`sessions`, `jobs`, `dirty_threads`, `last_event_id`)
@@ -1810,16 +1823,50 @@ pub fn is_valid_chats_snapshot_payload(snapshot : base_codec::Json) -> Bool {
   }
 }
 
-/// Strictly validate a `GET /threads/<id>/entries` payload aligned with `station/mb/src/readops/entries.mbt:370-392`.
+fn strict_non_neg_json_int(v : base_codec::Json) -> Option[Int64] {
+  match v {
+    base_codec::Json::Num(n, repr) => {
+      if n < 0.0 || n != n.floor() {
+        return None
+      }
+      if repr.length() > 0 {
+        if repr.contains(".") || repr.contains("e") || repr.contains("E") || repr.contains("-") {
+          return None
+        }
+        match base_codec::parse_int64_str(repr) {
+          Some(iv) => if iv >= 0L { Some(iv) } else { None }
+          None => None
+        }
+      } else {
+        let iv = n.to_int64()
+        if iv >= 0L && iv.to_double() == n { Some(iv) } else { None }
+      }
+    }
+    _ => None
+  }
+}
+
+/// Strictly validate a `GET /threads/<id>/entries` `{last, entries}` payload aligned with
+/// `station/mb/src/readops/entries.mbt:370-392`:
+/// - Top-level MUST be a JSON Object with non-negative integer `last` (rejecting float/string/negative/missing)
+///   and JSON Array `entries`.
+/// - Every item in `entries` MUST be a JSON Object with exact integer `thread == expected_thread`
+///   (rejecting cross-thread mixups and missing/non-integer `thread`) and non-negative integer `n`.
+/// - Valid empty lists `{ "last": N, "entries": [] }` are accepted.
 pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thread : Int) -> Bool {
   match payload {
     base_codec::Json::Obj(_) => ()
     _ => return false
   }
+  match base_codec::json_get(payload, "last") {
+    Some(lv) => if strict_non_neg_json_int(lv).is_none() { return false }
+    None => return false
+  }
   let entries = match base_codec::json_get(payload, "entries") {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => return false
   }
+  let expected_i64 = expected_thread.to_int64()
   for i in 0..<entries.length() {
     let item = entries[i]
     match item {
@@ -1827,18 +1874,137 @@ pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thre
       _ => return false
     }
     match base_codec::json_get(item, "thread") {
-      None | Some(base_codec::Json::Null) => ()
-      Some(base_codec::Json::Num(n, _)) => if n.to_int() != expected_thread {
-        return false
+      Some(tv) => match strict_non_neg_json_int(tv) {
+        Some(t_i64) => if t_i64 != expected_i64 { return false }
+        None => return false
       }
+      None => return false
+    }
+    match base_codec::json_get(item, "n") {
+      Some(nv) => if strict_non_neg_json_int(nv).is_none() { return false }
+      None => return false
+    }
+  }
+  true
+}
+
+/// Strictly validate a `GET /jobs?chats=0` response payload (top-level JSON array of job objects,
+/// or `{ "jobs": [...] }` wrapper of job objects).
+pub fn is_valid_jobs_payload(payload : base_codec::Json) -> Bool {
+  let jobs_arr = match payload {
+    base_codec::Json::Arr(xs) => xs
+    base_codec::Json::Obj(_) => match base_codec::json_get(payload, "jobs") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => return false
+    }
+    _ => return false
+  }
+  for i in 0..<jobs_arr.length() {
+    match jobs_arr[i] {
+      base_codec::Json::Obj(_) => ()
       _ => return false
     }
   }
   true
 }
 
+/// Apply a validated `GET /jobs?chats=0` response in one `sql::Burst` transaction,
+/// replacing open jobs for this station and emitting `JobChanged` events.
+pub fn StationEvents::apply_jobs(
+  self : StationEvents,
+  payload : base_codec::Json,
+) -> sql::SqlResult[Int] {
+  if !is_valid_jobs_payload(payload) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "malformed_jobs_payload" })
+  }
+  let jobs = match payload {
+    base_codec::Json::Arr(xs) => xs
+    _ => match base_codec::json_get(payload, "jobs") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => []
+    }
+  }
+  let seen_ids : Map[String, Bool] = Map::new()
+  let job_events : Array[CoreEvent] = []
+  let tracked : Array[JobStatus] = []
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
+    let mut count = 0
+    for i in 0..<jobs.length() {
+      let item = jobs[i]
+      let jid = match j_id_text(item, "id") { Some(s) => s; None => continue }
+      if seen_ids.get(jid).is_some() {
+        continue
+      }
+      seen_ids.set(jid, true)
+      let sess = j_opt_str(item, "session")
+      let st = j_str(item, "state")
+      let open = st == "running" || (st == "exited" && !j_is_null_or_absent(item, "port")) || j_bool(item, "open")
+      let ord = j_double(item, "ord", fallback=(i + 1).to_double())
+      let chat = match base_codec::json_get(item, "chat") {
+        Some(base_codec::Json::Null) | None => None
+        Some(base_codec::Json::Str(s)) => Some(s)
+        Some(v) => Some(base_codec::json_stringify(v))
+      }
+      let job_only = j_without_keys(item, ["chat"])
+      let raw = base_codec::json_stringify(job_only)
+      match b.run(sql_job_upsert(), params=[
+        base_codec::json_str(self.station),
+        base_codec::json_str(jid),
+        opt_str_json(sess),
+        base_codec::json_int(if open { 1 } else { 0 }),
+        base_codec::json_num(ord),
+        opt_str_json(chat),
+        base_codec::json_str(raw),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => {
+          tracked.push(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
+          job_events.push(CoreEvent::JobChanged(self.station, jid, open))
+          count += 1
+        }
+      }
+    }
+    // Close any previously-open jobs absent from the fresh station jobs list.
+    for i in 0..<self.job_order.length() {
+      let old_id = self.job_order[i]
+      if seen_ids.get(old_id).is_none() {
+        match self.jobs.get(old_id) {
+          Some(old_j) => if old_j.open {
+            match b.run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", params=[
+              base_codec::json_str(self.station),
+              base_codec::json_str(old_id),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => {
+                tracked.push(JobStatus::{ id: old_id, session: old_j.session, open: false, chat: old_j.chat })
+                job_events.push(CoreEvent::JobChanged(self.station, old_id, false))
+              }
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    sql::SqlResult::Ok(count)
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(count) => {
+      for i in 0..<tracked.length() {
+        self.track_job(tracked[i])
+      }
+      for i in 0..<job_events.length() {
+        self.outbox.tell(job_events[i])
+      }
+      sql::SqlResult::Ok(count)
+    }
+  }
+}
+
 /// Apply a validated `GET /threads/<expected_thread>/entries` `{last, entries}` response in a single
 /// `sql::Burst` transaction, storing every entry under `expected_thread` and emitting `EntryAdded`.
+/// Never clears `dirty_threads` or mutates DB on malformed / cross-thread payloads.
 pub fn StationEvents::apply_thread_entries(
   self : StationEvents,
   expected_thread : Int,
@@ -1888,6 +2054,7 @@ pub fn StationEvents::apply_thread_entries(
   match res {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(count) => {
+      self.dirty_threads.remove(expected_thread)
       for i in 0..<added_entries.length() {
         let (th, entry, ck) = added_entries[i]
         self.outbox.tell(CoreEvent::EntryAdded(self.station, th, entry, ck))
@@ -3097,6 +3264,9 @@ fn StationEvents::process_sse_chunk_with_cap(
   stream_cap : Option[WorkspaceCapability],
 ) -> Result[Bool, String] {
   let is_stale = fn() -> Bool {
+    if !self.is_admitted_for_current_auth() {
+      return true
+    }
     match (self.auth, stream_cap) {
       (Some(tracker), Some(cap)) => !cap.is_valid(tracker)
       _ => false
