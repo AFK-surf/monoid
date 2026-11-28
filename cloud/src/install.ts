@@ -528,7 +528,12 @@ swap_app() {
     rm -rf "$app.new"
     return 1
   fi
-  if [ -d "$app" ]; then mv "$app" "$app.old"; fi
+  if [ -d "$app" ]; then
+    if ! mv "$app" "$app.old"; then
+      rm -rf "$app.new"
+      return 1
+    fi
+  fi
   if ! mv "$app.new" "$app"; then
     [ -d "$app.old" ] && [ ! -e "$app" ] && mv "$app.old" "$app"
     rm -rf "$app.new"

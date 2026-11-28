@@ -1443,7 +1443,16 @@ exec "${realMv}" "$@"
     assert.ok(existsSync(join(app, "station", "stillfail-pion")));
     assert.ok(!existsSync(`${app}.new`), "partial app.new cleaned up");
 
-    // 3. Final rename failure ($app.new -> $app): restores $app.old back to $app and cleans $app.new.
+    // 3. Failure moving $app aside ($app -> $app.old): aborts before moving $app.new into $app/app.new.
+    writeFileSync(mvLog, "");
+    installMvWrapper(`if [ "$1" = "${app}" ] && [ "$2" = "${app}.old" ]; then exit 1; fi`);
+    const backupFail = m.run();
+    assert.notEqual(backupFail.status, 0, "backup rename failure must fail the install");
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "old\n", "existing app untouched");
+    assert.ok(!existsSync(join(app, "app.new")), "must not nest app.new inside existing app");
+    assert.ok(!existsSync(`${app}.new`) && !existsSync(`${app}.old`));
+
+    // 4. Final rename failure ($app.new -> $app): restores $app.old back to $app and cleans $app.new.
     writeFileSync(mvLog, "");
     installMvWrapper(`if [ "$1" = "${app}.new" ] && [ "$2" = "${app}" ]; then exit 1; fi`);
     const swapFail = m.run();
