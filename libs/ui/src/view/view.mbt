@@ -930,6 +930,8 @@ pub struct Tree {
   /// whether the order is to be made again; whether any of it is (what hosts it told as it first is)
   looks_due : Array[Int]
   places_due : Array[Int]
+  /// whether any pending entry in `places_due` can move hit bounds (Offset/Shift/MovedBy/Scale/etc., not Alpha/Turn)
+  mut hits_place_due : Bool
   /// what is due at a moment of its own, in the order told (Tree::advance): a node leaving or coming back ending, a
   /// step of what goes by steps (View::steps); and how many were ever told (each one's place among those due together)
   timeline : Array[Due]
@@ -1514,6 +1516,8 @@ pub struct Tree {
   mut timed : (() -> Double, (String, Double) -> Unit)?
   /// the structures' changes being done now, one inside another: the outermost alone timed (Tree::structured)
   mut structuring : Int
+  /// how deep in timed binding drains (`Tree::pull`, `Tree::settle_bindings_at`, `Tree::laid_out_inner`): outermost timed
+  mut bindings_timing : Int
   /// how long the words measured took since that was last told (Tree::laid_out), ms on that clock
   mut measured_ms : Double
   /// how deep in a change that makes or moves many nodes at once (Tree::holding_boxes): while above 0, a holder whose
@@ -1576,6 +1580,10 @@ pub struct Tree {
 struct Bound {
   /// the node it binds a property of (-1: none said)
   at : Int
+  /// whether what this binding sets can move hit bounds (Prop::moves_hits)
+  moves_hits : Bool
+  /// whether what this binding sets can flip `draws_of(n)` and stale an ancestor `pivot.drawn()` (Prop::may_draw)
+  may_draw : Bool
   /// the last pointer pass that marked this binding
   mut pointer_pass : Int
   mut queued : Bool
@@ -1604,6 +1612,8 @@ struct Bound {
 /// source, its drafts) till as many are queued again.
 let bound_gone : Bound = {
   at: -1,
+  moves_hits: false,
+  may_draw: false,
   pointer_pass: -1,
   queued: false,
   marked: false,
@@ -1705,6 +1715,7 @@ pub fn Tree::new(
     free: [],
     looks_due: [],
     places_due: [],
+    hits_place_due: false,
     bindings_due: [],
     after_bindings: [],
     told_passes: 0,
@@ -1964,6 +1975,7 @@ pub fn Tree::new(
     boxes_one_by_one: 0,
     timed: None,
     structuring: 0,
+    bindings_timing: 0,
     measured_ms: 0.0,
     said_count: 0,
     work: {
@@ -3208,6 +3220,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()
+  self.hits_place_due = false
   self.pointer_still = None
   self.pointer_again = false
   self.bindings_due.clear()
@@ -3579,9 +3592,12 @@ fn Tree::look_marked_at(self : Tree, at : Int) -> Unit {
 
 ///|
 /// Its place (how far it is drawn off, how opaque) to be worked out again, what it holds with it.
-fn Tree::place_marked_at(self : Tree, at : Int) -> Unit {
+fn Tree::place_marked_at(self : Tree, at : Int, hits? : Bool = true) -> Unit {
   if !self.standing && !self.laying {
     self.unsettled_clean = false
+  }
+  if hits {
+    self.hits_place_due = true
   }
   let n = self.nodes[at]
   self.touched(at, words=false)
@@ -3996,13 +4012,22 @@ priv enum Phase {
 /// A binding's work out of `read`, followed: run now, and as what it read changes, marked stale and queued for the
 /// next frame (Tree::frame runs the queue first), however often it changed meanwhile; there it is read anew and its
 /// value handed to `then`. What stops it (it follows nothing, runs no more, and lets go of what it holds).
-fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = -1) -> () -> Unit {
+fn[T] Tree::queued(
+  self : Tree,
+  read : () -> T,
+  then : (T) -> Unit,
+  at? : Int = -1,
+  moves_hits? : Bool = true,
+  may_draw? : Bool = false,
+) -> () -> Unit {
   // (its one state, every way it is run read from it: queued for a frame (told as a change ended), marked as what it
   // read changed (in a change's batch too: what asks at once pulls it), live; run once it is due, by any of them, and
   // done with all of them. One object with its watch: a node's bindings are made and let go with it, each object more
   // an allocation and a free of every node)
   let b : Bound = {
     at,
+    moves_hits,
+    may_draw,
     pointer_pass: -1,
     queued: false,
     marked: false,
@@ -4124,6 +4149,11 @@ let bound_runs_not : () -> Unit = fn() {  }
 /// once (View::laid_size, Tree::bring_to). Nothing else run: what shows, which is picked and what effects do wait for
 /// the change's end; those not marked are not looked at.
 fn Tree::pull(self : Tree) -> Unit {
+  if self.pulls_marked.is_empty() {
+    return
+  }
+  let t0 = if self.bindings_timing == 0 { self.part_began() } else { -1.0 }
+  self.bindings_timing += 1
   while self.pulls_marked.length() > 0 {
     let marked = self.pulls_marked.copy()
     self.pulls_marked.clear()
@@ -4143,6 +4173,8 @@ fn Tree::pull(self : Tree) -> Unit {
       }
     }
   }
+  self.bindings_timing -= 1
+  self.part_ended("tree bindings", t0)
 }
 
 ///|
@@ -4627,8 +4659,9 @@ impl Show for Prop with output(self, logger) {
 /// of the rest, Offset, Shift, MovedBy, Scale (where it is drawn and how big: n.lx, n.ly, n.ls), DrawnOff, BoundsInput,
 /// Presses, Modal, OverAll, Stacked, MovesWindow. None of the others: how it looks alone, which the walk does not read
 /// (Alpha, Fades, Turn, Stretch, CutsSoftly, GroundDrawn of `Place`: a turned or stretched node is found where it is
-/// unturned and unstretched; every `Paint` one but BoundsInput, Clips among them: what bounds input is BoundsInput;
-/// what is said, `Said`). So not by phase alone: `Place` holds both kinds, `Paint` one that moves hits.
+/// unturned and unstretched; every `Paint` one but BoundsInput, Clips among them: what bounds input is BoundsInput,
+/// though `Prop::may_draw` can still shift an ancestor scaled about `Pivot::Drawn` / `Pivot::DrawnSide` via `draws_of`,
+/// handled in `Tree::has_withins_work`; what is said, `Said`). So not by phase alone: `Place` holds both kinds, `Paint` one that moves hits.
 fn Prop::moves_hits(self : Prop, phase : Phase) -> Bool {
   match phase {
     Layout | Both => true
@@ -4638,6 +4671,16 @@ fn Prop::moves_hits(self : Prop, phase : Phase) -> Bool {
           true
         _ => false
       }
+  }
+}
+
+///|
+/// Whether changing this property can flip `draws_of(n)` and thus call `drawn_stale_from` to shift an ancestor scaled
+/// about `Pivot::Drawn` / `Pivot::DrawnSide` (Tree::has_withins_work). Matches every `Paint` field read by `draws_of`.
+fn Prop::may_draw(self : Prop) -> Bool {
+  match self {
+    Ground | GroundOver | Edge | Ring | Image | Rects | Shapes | Lines | Picture => true
+    _ => false
   }
 }
 
@@ -4903,11 +4946,12 @@ fn[T : Eq] View::bind(
     (Is(_), Some(g)) if g.at == at && g.gen == self.gen => Some(g)
     _ => None
   }
+  let moves_hits = prop.moves_hits(phase)
   match (together, live) {
     (Some(g), Is(v)) if !g.first => {
       if g.owns(prop.ord()) {
         apply(v)
-        tree.bound_marked(at, phase)
+        tree.bound_marked(at, phase, moves_hits~)
         return
       }
       // (one it sets for the first time now: taken as one set the first time is, below, where nothing binds it and it
@@ -4922,7 +4966,7 @@ fn[T : Eq] View::bind(
   match live {
     Is(v) => {
       apply(v)
-      tree.bound_marked(at, phase)
+      tree.bound_marked(at, phase, moves_hits~)
       match together {
         Some(g) => {
           let k = prop.ord()
@@ -4938,7 +4982,7 @@ fn[T : Eq] View::bind(
       // (read so that a way it reads as it goes says its end a moment what is under a still pointer is found again at
       // only where what it sets may move that: Prop::moves_hits)
       // (each binding says it for itself: one run inside another's run is its own)
-      let looks = !prop.moves_hits(phase)
+      let looks = !moves_hits
       let f = fn() {
         let was = tree.looks_reading
         tree.looks_reading = looks
@@ -4948,6 +4992,8 @@ fn[T : Eq] View::bind(
       }
     let stop = tree.queued(
       at~,
+      moves_hits~,
+      may_draw=prop.may_draw(),
       f,
       fn(v) {
         let n = tree.nodes[at]
@@ -4962,7 +5008,7 @@ fn[T : Eq] View::bind(
         }
         last.val = Some(v)
         apply(v)
-        tree.bound_marked(at, phase)
+        tree.bound_marked(at, phase, moves_hits~)
         if tree.binding_answered && !(phase is Said) {
           tree.answer_mark(at)
         }
@@ -4974,11 +5020,11 @@ fn[T : Eq] View::bind(
 
 ///|
 /// What a property of node `at` set again marks, by its phase (View::bind).
-fn Tree::bound_marked(self : Tree, at : Int, phase : Phase) -> Unit {
+fn Tree::bound_marked(self : Tree, at : Int, phase : Phase, moves_hits? : Bool = true) -> Unit {
   match phase {
     Layout => self.layout_marked_at(at)
     Paint => self.look_marked_at(at)
-    Place => self.place_marked_at(at)
+    Place => self.place_marked_at(at, hits=moves_hits)
     Both => {
       self.layout_marked_at(at)
       self.look_marked_at(at)
@@ -8146,6 +8192,39 @@ fn Tree::modals_settled(self : Tree, withins? : Bool = true) -> Unit {
 }
 
 ///|
+/// Whether node `at` or any ancestor has a `Drawn` / `DrawnSide` scale pivot whose placement depends on `draws_of`.
+fn Tree::has_drawn_pivot_ancestor(self : Tree, at : Int) -> Bool {
+  let mut i = at
+  while i >= 0 && i < self.nodes.length() {
+    let n = self.nodes[i]
+    if n.look.pivot.drawn() {
+      return true
+    }
+    i = n.parent
+  }
+  false
+}
+
+///|
+/// Whether any pending layout, hit-moving place, or hit-moving binding can change what is under the pointer.
+fn Tree::has_withins_work(self : Tree) -> Bool {
+  if self.layout_due || self.hits_place_due {
+    return true
+  }
+  for b in self.bindings_due {
+    if b.live && b.queued && (b.moves_hits || (b.may_draw && self.has_drawn_pivot_ancestor(b.at))) {
+      return true
+    }
+  }
+  for b in self.pulls_marked {
+    if b.live && b.marked && (b.moves_hits || (b.may_draw && self.has_drawn_pivot_ancestor(b.at))) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// A change committed whole (outside any other being committed): where what is under the pointer is read
 /// (View::pointer_within) and the change laid out or placed anything again, laid out as of the change's moment
 /// (Tree::laid_now: what it told pulled in, laid out, placed; what is under the pointer told then, laid_out's), so what
@@ -8161,7 +8240,7 @@ fn Tree::withins_settled(self : Tree) -> Unit {
     !self.standing &&
     !self.withins_passing &&
     (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
-    (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+    self.has_withins_work() {
     if self.in_events == 0 && !self.advancing {
       self.withins_owed = true
     } else {
@@ -8206,7 +8285,7 @@ fn Tree::withins_owed_now(self : Tree) -> Unit {
     !self.standing &&
     !self.withins_passing &&
     (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
-    (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+    self.has_withins_work() {
     self.withins_laid()
   }
   self.hand_now()
@@ -8219,8 +8298,7 @@ fn Tree::withins_restored(self : Tree) -> Unit {
   if self.committing != 0 || self.withins_passing || self.last_w <= 0.0 {
     return
   }
-  if (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
-    (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+  if (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) && self.has_withins_work() {
     let was_standing = self.standing
     self.standing = true
     @signals.untracked(fn() {
@@ -14580,6 +14658,8 @@ fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
   if !self.bindings_due.is_empty() || !self.pulls_marked.is_empty() || !self.after_bindings.is_empty() {
     self.standing = true
     @signals.untracked(fn() {
+      let t_bound = if self.bindings_timing == 0 { self.part_began() } else { -1.0 }
+      self.bindings_timing += 1
       self.pull()
       self.draining += 1
       let mut i = 0
@@ -14598,6 +14678,8 @@ fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
       self.pulls_marked.append(still)
       self.pulls_marked.release_unused(placeholder=bound_gone)
       self.after_bindings_run()
+      self.bindings_timing -= 1
+      self.part_ended("tree bindings", t_bound)
       if self.order_due {
         self.order_due = false
         self.order_again()
@@ -15280,7 +15362,8 @@ fn Tree::laid_out_inner(self : Tree, upto : Double) -> Unit {
   let bound_first = if self.sources && !self.bindings_due.is_empty() { self.bindings_due[0].at } else { -1 }
   // the bindings whose reads changed since, each once, in the order they were told (what they make runs its own now,
   // what they set again marks what it marks)
-  let t_bound = self.part_began()
+  let t_bound = if self.bindings_timing == 0 { self.part_began() } else { -1.0 }
+  self.bindings_timing += 1
   self.draining += 1
   let mut i = 0
   while i < self.bindings_due.length() {
@@ -15300,6 +15383,7 @@ fn Tree::laid_out_inner(self : Tree, upto : Double) -> Unit {
   self.pulls_marked.append(still)
   self.pulls_marked.release_unused(placeholder=bound_gone)
   self.after_bindings_run()
+  self.bindings_timing -= 1
   self.part_ended("tree bindings", t_bound)
   let t_laid = self.part_began()
   // (laid out in a change holding its boxes, a host drawing a frame at once as it is told of one: those put first)
@@ -15370,6 +15454,7 @@ fn Tree::laid_out_inner(self : Tree, upto : Double) -> Unit {
     }
   }
   self.places_due.clear()
+  self.hits_place_due = false
   if placing {
     // (a page's list's first row on the pixels from where it is now laid out, whatever moved: Tree::rows_placed)
     if self.rows_grid > 0.0 {
