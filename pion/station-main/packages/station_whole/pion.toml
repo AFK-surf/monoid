@@ -13,6 +13,9 @@ http1 = { workspace = true }
 jscase = { workspace = true }
 lock = { workspace = true }
 nodepath = { workspace = true }
+readops_core = { workspace = true }
+readops_local = { workspace = true }
+readops_usage = { workspace = true }
 sql_db = { workspace = true }
 station_api = { workspace = true }
 station_browser = { workspace = true }

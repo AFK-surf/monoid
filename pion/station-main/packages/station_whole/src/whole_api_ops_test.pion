@@ -221,6 +221,8 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "mcpServers.reloadAll",
     "mcpServers.reloadOne",
     "screens.browser.open",
+    "links.preview",
+    "feedback.report",
     "signins.fill",
     "logins.machine.list",
     "hub.session.stop",

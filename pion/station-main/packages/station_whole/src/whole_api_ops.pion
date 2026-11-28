@@ -42,6 +42,10 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_mcp_reload : Option[(Option[String]) -> Unit]
   pub mut on_s3_test : Option[(station_replica::NormalizedS3Target) -> Result[Unit, String]]
   pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
+  pub mut drive_for_ws : Option[(String) -> station_screens::Drive]
+  pub mut on_session_retry : Option[(String, Int64, Int64) -> Result[Unit, station_api::ApiError]]
+  pub mut on_session_compact : Option[(String) -> Result[Unit, station_api::ApiError]]
+  pub mut on_project_rename_merge : Option[(String, String, String, String, Option[String]) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut read_only_handover_cell : Array[Bool]
 }
 
@@ -59,6 +63,10 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_mcp_reload: None,
     on_s3_test: None,
     on_screens_browser_open: None,
+    drive_for_ws: None,
+    on_session_retry: None,
+    on_session_compact: None,
+    on_project_rename_merge: None,
     read_only_handover_cell: [true],
   }
 }
@@ -238,6 +246,7 @@ pub fn WholeApiRuntimePort::production(
   whole_store : WholeStore,
   agents : WholeAgents,
   home_ws_str : String,
+  shared_transfers : station_screens::TransfersManager,
 ) -> WholeApiRuntimePort {
   WholeApiRuntimePort::{
     os_name: station_sys::os_name,
@@ -666,7 +675,7 @@ pub fn WholeApiRuntimePort::production(
       }
     },
     vault_plain: VaultPlainStorePort::production(whole_store),
-    readops: ReadOpsPort::production(whole_store, agents, home_ws_str),
+    readops: ReadOpsPort::production(whole_store, agents, home_ws_str, shared_transfers),
   }
 }
 
