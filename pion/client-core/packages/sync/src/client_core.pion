@@ -1589,7 +1589,8 @@ pub fn ClientCore::viewer_role(self : ClientCore) -> String {
 
 /// Rebind the default `(station, workspace)` across `ClientCore` and ALL station/workspace consumers
 /// (`self.station`, `self.workspace`, `self.md_store`, `self.local_outbox`, `self.router`, `self.events`,
-/// `self.sync`, and `wire_station_hooks`), ensuring zero residue leaks across same-process account switches!
+/// `self.sync`, and `wire_station_hooks`), AND hydrate the target workspace's lock root & viewer role
+/// when `new_ws` changes so verified logins NEVER skip `restore_lock_state()`!
 pub fn ClientCore::rebind_default_station(
   self : ClientCore,
   new_station : String,
@@ -1601,6 +1602,7 @@ pub fn ClientCore::rebind_default_station(
   self.events.set_transport(off)
   self.sync.bump_epoch()
   self.sync.set_transport(off)
+  let prev_ws = self.workspace
   let eff_ws = if new_ws.length() > 0 { new_ws } else { "ws-default" }
   let eff_st = if new_station.length() > 0 { new_station } else { "st-local" }
   let prev_email = self.events.viewer_email
@@ -1620,6 +1622,23 @@ pub fn ClientCore::rebind_default_station(
   self.sync = next_sync
   self.wire_station_hooks(eff_st, next_events, next_sync)
   self.auth.ensure_workspace(eff_ws)
+  if eff_ws != prev_ws {
+    self.lock_state = None
+    self.lock_root = None
+    self.lock_kept_entries = []
+    self.lock_kept_aside = []
+    self.lock_seen = None
+    self.lock_corrupt = false
+    self.lock_read_pending = false
+    self.lock_effective = None
+    if !self.membership.is_unauthenticated() {
+      self.viewer_role = match self.membership.role_of(eff_ws) {
+        Some(r) => if is_valid_workspace_role(r) { r } else { "member" }
+        None => "member"
+      }
+      self.restore_lock_state()
+    }
+  }
 }
 
 /// Atomically switch ALL DB holders (`self.db`, `md_store`, `router`, `events`, `local_outbox`,

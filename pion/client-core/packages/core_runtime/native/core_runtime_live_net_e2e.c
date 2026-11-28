@@ -39,6 +39,23 @@
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
+extern void pion_core_test_set_fail_dir_fsync(int32_t enable);
+
+static void write_test_lease(const char *data_dir, const char *account_db_key, const char *sid, const char *ref) {
+    char p[320];
+    snprintf(p, sizeof(p), "%s/.session_verified_%s", data_dir, account_db_key);
+    FILE *f = fopen(p, "w");
+    assert(f != NULL);
+    fprintf(f, "{\"session\":\"%s\",\"refresh\":\"%s\"}", sid, ref);
+    fclose(f);
+}
+
+static int lease_exists(const char *data_dir, const char *account_db_key) {
+    char p[320];
+    snprintf(p, sizeof(p), "%s/.session_verified_%s", data_dir, account_db_key);
+    struct stat st;
+    return stat(p, &st) == 0;
+}
 
 static int64_t mono_ms_now(void) {
     struct timespec ts;
@@ -905,6 +922,8 @@ int main(void) {
               "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
               "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FBW\"}]", af);
         fclose(af);
+        write_test_lease(data_dir, "account-u-live", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "ref-exchanged-42");
+        write_test_lease(data_dir, "account-u-bob", "01ARZ3NDEKTSV4RRFFQ69G5FBW", "ref-bob-1");
 
         reset_host_ctx(&g_host);
         mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
@@ -985,6 +1004,8 @@ int main(void) {
               "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
               "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R8B\"}]", af);
         fclose(af);
+        write_test_lease(data_dir, "account-u-live", "01ARZ3NDEKTSV4RRFFQ69G5R8A", "ref-exchanged-42");
+        write_test_lease(data_dir, "account-u-bob", "01ARZ3NDEKTSV4RRFFQ69G5R8B", "ref-bob-1");
 
         reset_host_ctx(&g_host);
         mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
@@ -1056,14 +1077,17 @@ int main(void) {
         printf("[live_net_e2e] Phase 9 PASSED (sync 401 removal + P1-3 account.switch guard + 0ms stop + cold-boot Bob mount)\n");
     }
 
-    // ── PHASE 10 (R12 P1-1 extreme I/O fallback + P1-4 same-process default station rebind):
-    //    10a. Both `write_atomic` AND `overwrite_inplace` fail (`chmod 0500` dir + `chmod 0400` accounts)
-    //         during Alice's 401 -> `meta("membership:rejected_tuple")` written to `account-u-live.db`
-    //         before `:memory:` switch -> after restoring perms, cold boot refuses Alice, prunes Alice
-    //         from `<dir>/accounts`, and mounts sibling Bob (`bob-private-marker-phase9`)!
-    //    10b. Cold boot Alice with persisted `WS1_ID/st-local` -> 401 -> same-process login as Bob
-    //         (no persisted station) -> no-arg `station.connect` MUST NOT leak `WS1_ID/st-local`! ──
-    printf("[live_net_e2e] Phase 10: extreme-IO rejected_tuple cold-boot prune + same-process default station rebind\n");
+    // ── PHASE 10 (R13 P1-2 + P1-4 + P1-5):
+    //    10a. Inactive sibling Bob 401 while dir fsync fails (`-2`): unlinks Bob's lease + records Bob
+    //         in `rejected_tuples_in_memory` while active Alice stays intact -> restore `[Alice, Bob]`
+    //         on disk -> Alice 401 strips BOTH Alice and rejected Bob from disk -> cold restart mounts
+    //         `:memory:` (Bob is NOT resurrected!).
+    //    10b. Extreme `ENOSPC` / read-only DB 401 where BOTH `<dir>/accounts` AND SQLite `rejected_tuple`
+    //         write fail, and ONLY zero-block `unlink(.session_verified_account-u-live)` succeeds ->
+    //         offline cold restart refuses opening Alice's cached DB (`lease_armed == "1"` without lease)!
+    //    10c. Device pref `prefs.set("workspace", WS1_ID)` persisted by Alice -> Alice 401 -> same-process
+    //         Bob login (Bob's DB does NOT contain `WS1_ID`) -> no-arg `station.connect` MUST NOT return `WS1_ID`! ──
+    printf("[live_net_e2e] Phase 10: P1-2 inactive sibling lease+filter, ENOSPC unlink-only fail-closed, & P1-5 prefs workspace isolation\n");
     {
         atomic_store(&g_host.stopped, 1);
         mb_core_stop();
@@ -1071,54 +1095,125 @@ int main(void) {
 
         char accts_path[256];
         snprintf(accts_path, sizeof(accts_path), "%s/accounts", data_dir);
+        const char *both_json =
+            "[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+            "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+            "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R13A\"},"
+            "{\"sub\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"picture\":\"\","
+            "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
+            "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R13B\"}]";
         FILE *af = fopen(accts_path, "w");
         assert(af != NULL);
-        fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
-              "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
-              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12A\"},"
-              "{\"sub\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"picture\":\"\","
-              "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
-              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12B\"}]", af);
+        fputs(both_json, af);
         fclose(af);
+        write_test_lease(data_dir, "account-u-live", "01ARZ3NDEKTSV4RRFFQ69G5R13A", "ref-exchanged-42");
+        write_test_lease(data_dir, "account-u-bob", "01ARZ3NDEKTSV4RRFFQ69G5R13B", "ref-bob-1");
 
+        // 10a: Inactive Bob 401 under `-2` write failure -> Bob lease unlinked + tracked in memory, Alice stays alive!
         reset_host_ctx(&g_host);
         mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
         wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
         send_json("{\"id\":700,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
         wait_for_matching_msg(&g_host, "\"id\":700,", "persisted-alice-draft", 10);
 
-        // Lock `<data_dir>` (0500) + `<data_dir>/accounts` (0400) so BOTH atomic rename and inplace overwrite fail
-        // while SQLite inside `<data_dir>/databases/` remains writable (if running non-root):
-        if (geteuid() != 0) {
-            assert(chmod(accts_path, 0400) == 0);
-            assert(chmod(data_dir, 0500) == 0);
-            send_json("{\"id\":701,\"call\":\"auth.refresh\",\"params\":{}}");
-            wait_for_matching_msg(&g_host, "\"id\":701,", "\"error\"", 10);
+        pion_core_test_set_fail_dir_fsync(1);
+        send_json("{\"id\":701,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-bob\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":701,", "\"error\"", 10);
+        // Bob's positive lease MUST have been unlinked immediately, while active Alice stays readable!
+        assert(!lease_exists(data_dir, "account-u-bob"));
+        assert(lease_exists(data_dir, "account-u-live"));
+        send_json("{\"id\":702,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":702,", "persisted-alice-draft", 10);
 
-            atomic_store(&g_host.stopped, 1);
-            mb_core_stop();
-            assert(chmod(data_dir, 0700) == 0);
-            assert(chmod(accts_path, 0600) == 0);
-
-            // Confirm disk `accounts` STILL had `[u-live, u-bob]` (both writes genuinely failed!):
-            af = fopen(accts_path, "r");
-            assert(af != NULL);
+        // Simulate Bob still lingering in `<dir>/accounts` (as if `write_atomic` had failed with `-1` ENOSPC)
+        // and restore dir fsync -> Alice 401 MUST filter out BOTH Alice AND rejected Bob from disk!
+        pion_core_test_set_fail_dir_fsync(0);
+        af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs(both_json, af);
+        fclose(af);
+        send_json("{\"id\":703,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-live\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":703,", "\"error\"", 10);
+        assert(!lease_exists(data_dir, "account-u-live"));
+        // Verify disk `<dir>/accounts` no longer resurrects rejected Bob!
+        af = fopen(accts_path, "r");
+        if (af != NULL) {
             char abuf2[2048];
             size_t an2 = fread(abuf2, 1, sizeof(abuf2) - 1, af);
             fclose(af);
             abuf2[an2] = '\0';
-            assert(strstr(abuf2, "\"sub\":\"u-live\"") != NULL && strstr(abuf2, "\"sub\":\"u-bob\"") != NULL);
+            assert(strstr(abuf2, "\"sub\":\"u-bob\"") == NULL && strstr(abuf2, "\"sub\":\"u-live\"") == NULL);
+        }
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
 
-            // Cold restart MUST see `meta("membership:rejected_tuple")` in `account-u-live.db`, refuse Alice,
-            // prune `u-live` from `<dir>/accounts`, and mount sibling Bob (`bob-private-marker-phase9`)!
+        // Cold restart MUST stay unauthenticated `:memory:` (NEITHER Alice NOR rejected Bob activates!):
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":704,\"call\":\"settings.get\",\"params\":{\"key\":\"bob_marker\"}}");
+        char *m_no_bob = wait_for_matching_msg(&g_host, "\"id\":704,", NULL, 10);
+        assert(strstr(m_no_bob, "bob-private-marker-phase9") == NULL);
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+
+        // 10b (P1-2 Scenario B): Both `<dir>/accounts` AND SQLite `rejected_tuple` fail during Alice's 401;
+        // ONLY zero-block `unlink(.session_verified_account-u-live)` succeeds -> offline cold restart MUST
+        // refuse opening Alice's cached DB because `lease_armed == "1"` and lease file is missing!
+        const char *alice_only_b =
+            "[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+            "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+            "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R13C\"}]";
+        af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs(alice_only_b, af);
+        fclose(af);
+        write_test_lease(data_dir, "account-u-live", "01ARZ3NDEKTSV4RRFFQ69G5R13C", "ref-exchanged-42");
+
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":705,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":705,", "persisted-alice-draft", 10);
+
+        if (geteuid() != 0) {
+            char alice_db_p[320], alice_wal_p[320], alice_shm_p[320];
+            snprintf(alice_db_p, sizeof(alice_db_p), "%s/databases/account-u-live.db", data_dir);
+            snprintf(alice_wal_p, sizeof(alice_wal_p), "%s/databases/account-u-live.db-wal", data_dir);
+            snprintf(alice_shm_p, sizeof(alice_shm_p), "%s/databases/account-u-live.db-shm", data_dir);
+            assert(chmod(alice_db_p, 0400) == 0);
+            (void)chmod(alice_wal_p, 0400);
+            (void)chmod(alice_shm_p, 0400);
+            pion_core_test_set_fail_dir_fsync(1);
+
+            send_json("{\"id\":706,\"call\":\"auth.refresh\",\"params\":{}}");
+            wait_for_matching_msg(&g_host, "\"id\":706,", "\"error\"", 10);
+            assert(!lease_exists(data_dir, "account-u-live"));
+
+            atomic_store(&g_host.stopped, 1);
+            mb_core_stop();
+            pion_core_test_set_fail_dir_fsync(0);
+            assert(chmod(alice_db_p, 0600) == 0);
+            (void)chmod(alice_wal_p, 0600);
+            (void)chmod(alice_shm_p, 0600);
+
+            // Put Alice back into `<dir>/accounts` WITHOUT restoring `.session_verified_account-u-live`
+            // (modeling pre-rename ENOSPC where `<dir>/accounts` was untouched & SQLite failed, ONLY unlink succeeded!):
+            af = fopen(accts_path, "w");
+            assert(af != NULL);
+            fputs(alice_only_b, af);
+            fclose(af);
+            assert(!lease_exists(data_dir, "account-u-live"));
+
+            // Offline cold restart MUST refuse opening Alice's cached DB (`workspaces.list` == `[]`, 0 draft leak!):
             reset_host_ctx(&g_host);
-            mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+            mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_host);
             wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
-            send_json("{\"id\":702,\"call\":\"settings.get\",\"params\":{\"key\":\"bob_marker\"}}");
-            wait_for_matching_msg(&g_host, "\"id\":702,", "\"value\":\"bob-private-marker-phase9\"", 10);
-            send_json("{\"id\":703,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
-            char *m_no_alice = wait_for_matching_msg(&g_host, "\"id\":703,", NULL, 10);
-            assert(strstr(m_no_alice, "persisted-alice-draft") == NULL);
+            send_json("{\"id\":707,\"call\":\"workspaces.list\",\"params\":{}}");
+            wait_for_matching_msg(&g_host, "\"id\":707,", "\"workspaces\":[]", 10);
+            send_json("{\"id\":708,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+            char *m_unleased = wait_for_matching_msg(&g_host, "\"id\":708,", NULL, 10);
+            assert(strstr(m_unleased, "persisted-alice-draft") == NULL);
             atomic_store(&g_host.stopped, 1);
             mb_core_stop();
         } else {
@@ -1126,17 +1221,24 @@ int main(void) {
             mb_core_stop();
         }
 
-        // 10b (P1-4): Cold boot Alice (persisted `WS1_ID/st-local`) -> 401 -> same-process Bob login ->
-        // no-arg `station.connect` MUST NOT resolve to Alice's `WS1_ID/st-local`!
+        // 10c (P1-5 + P1-4): Alice persists device pref `prefs.set("workspace", WS1_ID)` -> Alice 401 ->
+        // same-process Bob login (Bob DB does NOT contain `WS1_ID`!) -> no-arg `station.connect` MUST NOT
+        // return `WS1_ID` (nor `WS1_ID/st-local`)!
         af = fopen(accts_path, "w");
         assert(af != NULL);
         fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
               "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
-              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12C\"}]", af);
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R13D\"}]", af);
         fclose(af);
+        write_test_lease(data_dir, "account-u-live", "01ARZ3NDEKTSV4RRFFQ69G5R13D", "ref-exchanged-42");
+
         reset_host_ctx(&g_host);
         mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
         wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        // Alice persists her workspace `WS1_ID` into device prefs!
+        send_json("{\"id\":709,\"call\":\"prefs.set\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":709,", "\"ok\":", 10);
+
         send_json("{\"id\":710,\"call\":\"auth.refresh\",\"params\":{}}");
         wait_for_matching_msg(&g_host, "\"id\":710,", "\"error\"", 10);
 
@@ -1161,7 +1263,7 @@ int main(void) {
         send_json("{\"id\":713,\"call\":\"station.connect\",\"params\":{}}");
         char *m_conn10 = wait_for_matching_msg(&g_host, "\"id\":713,", NULL, 10);
         assert(strstr(m_conn10, WS1_ID) == NULL);
-        printf("[live_net_e2e] Phase 10 PASSED (extreme-IO rejected_tuple prune + zero station leak across account switch)\n");
+        printf("[live_net_e2e] Phase 10 PASSED (P1-2 inactive sibling lease+filter, unlink-only fail-closed, & P1-5 prefs workspace isolation)\n");
     }
 
     atomic_store(&g_host.stopped, 1);

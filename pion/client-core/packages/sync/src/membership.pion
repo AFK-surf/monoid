@@ -430,10 +430,66 @@ pub fn check_rejected_tuple_in_db(
   }
 }
 
+/// Single-owner positive lease marker in `<account>.db` `meta`:
+/// Once armed (`"1"`), cold startup MUST verify `<dir>/.session_verified_<sanitized_sub>`
+/// matches `(session, refresh)` before opening the cached read gate (enabling zero-block `unlink`
+/// revocation even when both `<dir>/accounts` and SQLite are unwritable under `ENOSPC`!).
+pub let META_LEASE_ARMED_KEY : String = "membership:lease_armed"
+
+pub fn arm_lease_in_db(db : sql::Sql) -> Result[Unit, String] {
+  match store::put_meta(db, META_LEASE_ARMED_KEY, "1") {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Fail-closed check of `meta("membership:lease_armed")`:
+/// - Absent -> `Ok(false)`
+/// - `"1"` -> `Ok(true)`
+/// - Corrupt/unexpected value or SQLite error -> `Err(reason)` (fail-closed!)
+pub fn is_lease_armed_in_db(db : sql::Sql) -> Result[Bool, String] {
+  match store::get_meta(db, META_LEASE_ARMED_KEY) {
+    sql::SqlResult::Err(e) => Err(e.to_string())
+    sql::SqlResult::Ok(None) => Ok(false)
+    sql::SqlResult::Ok(Some(v)) => if v == "1" {
+      Ok(true)
+    } else {
+      Err("corrupt lease_armed meta: " + v)
+    }
+  }
+}
+
+pub fn format_lease_json(session_id : String, refresh : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("session", base_codec::json_str(session_id)),
+    ("refresh", base_codec::json_str(refresh)),
+  ])
+}
+
+/// Strict parser verifying `<dir>/.session_verified_<key>` matches `(session_id, refresh)`.
+pub fn check_lease_json_matches(raw : String, session_id : String, refresh : String) -> Bool {
+  if refresh.length() == 0 {
+    return false
+  }
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => match j {
+      base_codec::Json::Obj(_) => {
+        match (base_codec::json_get(j, "session"), base_codec::json_get(j, "refresh")) {
+          (Some(base_codec::Json::Str(lsid)), Some(base_codec::Json::Str(lref))) => {
+            lsid == session_id && lref == refresh
+          }
+          _ => false
+        }
+      }
+      _ => false
+    }
+    _ => false
+  }
+}
+
 pub struct AccountRefreshHost {
   pub read_accounts_k : ((HostStorageRead) -> Unit) -> Unit
   pub write_accounts_k : (base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit
-  pub write_accounts_401_k : Option[(base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit]
   pub do_refresh_http_k : (String, Int64, (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit
   pub get_mem_tuple : (String) -> Option[(String, String)]
   pub on_adopt_or_update : (views::StoredAccount, String, Array[views::StoredAccount], Map[String, String]) -> Unit
@@ -697,10 +753,6 @@ pub fn AccountRefreshCoordinator::refresh_k(
   let get_mem = host.get_mem_tuple
   let read_disk = host.read_accounts_k
   let write_disk = host.write_accounts_k
-  let write_disk_401 = match host.write_accounts_401_k {
-    Some(f) => f
-    None => host.write_accounts_k
-  }
   let do_http = host.do_refresh_http_k
   let on_adopt = host.on_adopt_or_update
   let on_inval = host.on_invalidated
@@ -956,7 +1008,7 @@ pub fn AccountRefreshCoordinator::refresh_k(
                                   }
                                   disk_sessions.remove(sub)
                                   let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
-                                  write_disk_401(encoded, fn(wres : Result[Unit, String]) -> Unit {
+                                  write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
                                     match wres {
                                       Ok(_) => {
                                         let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, Some((next_list, disk_sessions)))

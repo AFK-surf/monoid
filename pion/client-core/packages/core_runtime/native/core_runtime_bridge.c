@@ -41,7 +41,14 @@ static int g_owner_lock_fd = -1;
 
 static uint8_t *g_accts_buf = NULL;
 static size_t g_accts_len = 0;
+static uint8_t *g_lease_buf = NULL;
+static size_t g_lease_len = 0;
 static _Atomic uint64_t g_accts_write_seq = 0;
+static _Atomic int g_test_fail_dir_fsync = 0;
+
+void pion_core_test_set_fail_dir_fsync(int32_t enable) {
+    atomic_store_explicit(&g_test_fail_dir_fsync, enable != 0 ? 1 : 0, memory_order_release);
+}
 
 static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, const char *name) {
     size_t pos = dlen;
@@ -155,19 +162,11 @@ static int fsync_fd_strict(int fd) {
     return (rc == 0) ? 0 : -1;
 }
 
-static int fdatasync_fd_strict(int fd) {
-    int rc;
-    do {
-#if defined(__APPLE__)
-        rc = fsync(fd);
-#else
-        rc = fdatasync(fd);
-#endif
-    } while (rc != 0 && errno == EINTR);
-    return (rc == 0) ? 0 : -1;
-}
-
 static int fsync_dir_strict(const char *dir_path) {
+    if (atomic_load_explicit(&g_test_fail_dir_fsync, memory_order_acquire) != 0) {
+        errno = EIO;
+        return -1;
+    }
     int dfd = open(dir_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0) {
         return -1;
@@ -294,6 +293,11 @@ void pion_core_dir_owner_lock_release(int64_t handle) {
         g_accts_buf = NULL;
     }
     g_accts_len = 0;
+    if (g_lease_buf != NULL) {
+        free(g_lease_buf);
+        g_lease_buf = NULL;
+    }
+    g_lease_len = 0;
     atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
 }
 
@@ -550,137 +554,14 @@ int32_t pion_core_accounts_write_atomic(
         return -1;
     }
     if (fsync_dir_strict(dir_copy) != 0) {
-        return -1;
-    }
-    return 0;
-#endif
-}
-
-// Single-owner zero-block in-place overwrite fallback for 401 removal under `ENOSPC`:
-// only succeeds when `len <= existing_file_size <= PION_ACCOUNTS_MAX_BYTES`, writes `bytes`
-// followed by trailing JSON spaces (`0x20`) to preserve file size with 0 new blocks / 0 new inodes,
-// and calls `fdatasync` (POSIX) / `FlushFileBuffers` (Windows).
-int32_t pion_core_accounts_overwrite_inplace(
-    const char *dir,
-    int64_t dir_len,
-    const uint8_t *bytes,
-    int64_t len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 ||
-        (uint64_t)len > (uint64_t)PION_ACCOUNTS_MAX_BYTES || (len > 0 && bytes == NULL)) {
-        return -1;
-    }
-    char dir_copy[3840];
-    memcpy(dir_copy, dir, (size_t)dir_len);
-    dir_copy[dir_len] = '\0';
-    char accts_path[4096];
-    join_dir_file(accts_path, sizeof(accts_path), dir_copy, (size_t)dir_len, "accounts");
-    if (accts_path[0] == '\0') {
-        return -1;
-    }
-    uint8_t spaces[4096];
-    memset(spaces, ' ', sizeof(spaces));
-#ifdef _WIN32
-    wchar_t wpath[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wpath, 4096) <= 0) {
-        return -1;
-    }
-    HANDLE h = CreateFileW(
-        wpath,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        return -1;
-    }
-    LARGE_INTEGER fsz;
-    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart < len ||
-        (uint64_t)fsz.QuadPart > (uint64_t)PION_ACCOUNTS_MAX_BYTES) {
-        CloseHandle(h);
-        return -1;
-    }
-    LARGE_INTEGER zero;
-    zero.QuadPart = 0;
-    if (!SetFilePointerEx(h, zero, NULL, FILE_BEGIN)) {
-        CloseHandle(h);
-        return -1;
-    }
-    size_t off = 0;
-    while (off < (size_t)len) {
-        DWORD wrote = 0;
-        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
-            CloseHandle(h);
-            return -1;
-        }
-        off += (size_t)wrote;
-    }
-    size_t pad = (size_t)(fsz.QuadPart - len);
-    while (pad > 0) {
-        DWORD chunk = (pad > sizeof(spaces)) ? (DWORD)sizeof(spaces) : (DWORD)pad;
-        DWORD wrote = 0;
-        if (!WriteFile(h, spaces, chunk, &wrote, NULL) || wrote == 0) {
-            CloseHandle(h);
-            return -1;
-        }
-        pad -= (size_t)wrote;
-    }
-    if (!FlushFileBuffers(h)) {
-        CloseHandle(h);
-        return -1;
-    }
-    CloseHandle(h);
-    return 0;
-#else
-    int fd = open(accts_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        return -1;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-        st.st_size < (off_t)len || (uint64_t)st.st_size > (uint64_t)PION_ACCOUNTS_MAX_BYTES) {
-        close(fd);
-        return -1;
-    }
-    size_t off = 0;
-    while (off < (size_t)len) {
-        ssize_t n = pwrite(fd, bytes + off, (size_t)len - off, (off_t)off);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            close(fd);
-            return -1;
-        }
-        off += (size_t)n;
-    }
-    size_t pad = (size_t)st.st_size - (size_t)len;
-    while (pad > 0) {
-        size_t chunk = (pad > sizeof(spaces)) ? sizeof(spaces) : pad;
-        ssize_t n = pwrite(fd, spaces, chunk, (off_t)off);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            close(fd);
-            return -1;
-        }
-        off += (size_t)n;
-        pad -= (size_t)n;
-    }
-    if (fdatasync_fd_strict(fd) != 0) {
-        close(fd);
-        return -1;
-    }
-    if (close(fd) != 0) {
-        return -1;
+        return -2;
     }
     return 0;
 #endif
 }
 
 // Zero-block atomic removal of `<dir>/accounts` (used as ENOSPC-safe fallback when clearing the last account).
+// Returns 0 = confirmed durable, -1 = unlink failed before removal, -2 = unlink succeeded but dir fsync failed.
 int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len) {
     if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
         return -1;
@@ -708,7 +589,322 @@ int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len) {
         return -1;
     }
     if (fsync_dir_strict(dir_copy) != 0) {
+        return -2;
+    }
+    return 0;
+#endif
+}
+
+// Explicitly fsync `<dir>` to reconcile a post-replace `-2` (uncertain dir fsync) state.
+int32_t pion_core_accounts_sync_dir(const char *dir, int64_t dir_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
         return -1;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+#ifdef _WIN32
+    if (atomic_load_explicit(&g_test_fail_dir_fsync, memory_order_acquire) != 0) {
+        return -1;
+    }
+    wchar_t wdir[3840];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) <= 0) {
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(wdir);
+    return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 0 : -1;
+#else
+    return (fsync_dir_strict(dir_copy) == 0) ? 0 : -1;
+#endif
+}
+
+// ── Positive per-account session lease file (`<dir>/.session_verified_<key>`) ──
+// Armed on verified login/activation/200 refresh and revoked via zero-block `unlink` on any
+// 401 whose `<dir>/accounts` update fails (even under total `ENOSPC` / unwritable SQLite!).
+static int build_lease_filename(char *out, size_t cap, const char *key, int64_t key_len) {
+    if (key == NULL || key_len <= 0 || key_len > 200) {
+        return -1;
+    }
+    const char *prefix = ".session_verified_";
+    size_t plen = strlen(prefix);
+    if (plen + (size_t)key_len + 1 > cap) {
+        return -1;
+    }
+    for (int64_t i = 0; i < key_len; i++) {
+        unsigned char c = (unsigned char)key[i];
+        int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                 (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) {
+            return -1;
+        }
+    }
+    memcpy(out, prefix, plen);
+    memcpy(out + plen, key, (size_t)key_len);
+    out[plen + (size_t)key_len] = '\0';
+    return 0;
+}
+
+int32_t pion_core_lease_read(const char *dir, int64_t dir_len, const char *key, int64_t key_len) {
+    if (g_lease_buf != NULL) {
+        free(g_lease_buf);
+        g_lease_buf = NULL;
+    }
+    g_lease_len = 0;
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
+        return -1;
+    }
+    char fname[256];
+    if (build_lease_filename(fname, sizeof(fname), key, key_len) != 0) {
+        return -1;
+    }
+    char lpath[4096];
+    join_dir_file(lpath, sizeof(lpath), dir, (size_t)dir_len, fname);
+    if (lpath[0] == '\0') {
+        return -1;
+    }
+    const size_t max_lease = 65536u;
+#ifdef _WIN32
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lpath, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+    }
+    uint8_t *buf = (uint8_t *)malloc(max_lease);
+    if (buf == NULL) {
+        CloseHandle(h);
+        return -1;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == max_lease) {
+            uint8_t probe = 0;
+            DWORD got_extra = 0;
+            if (!ReadFile(h, &probe, 1, &got_extra, NULL) || got_extra > 0) {
+                free(buf);
+                CloseHandle(h);
+                return -1;
+            }
+            break;
+        }
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, (DWORD)(max_lease - total), &got, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += (size_t)got;
+    }
+    CloseHandle(h);
+    g_lease_buf = buf;
+    g_lease_len = total;
+    return 1;
+#else
+    int fd = open(lpath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return (errno == ENOENT) ? 0 : -1;
+    }
+    uint8_t *buf = (uint8_t *)malloc(max_lease);
+    if (buf == NULL) {
+        close(fd);
+        return -1;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == max_lease) {
+            uint8_t probe = 0;
+            ssize_t extra;
+            do {
+                extra = read(fd, &probe, 1);
+            } while (extra < 0 && errno == EINTR);
+            if (extra != 0) {
+                free(buf);
+                close(fd);
+                return -1;
+            }
+            break;
+        }
+        ssize_t n = read(fd, buf + total, max_lease - total);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            free(buf);
+            close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+    g_lease_buf = buf;
+    g_lease_len = total;
+    return 1;
+#endif
+}
+
+const uint8_t *pion_core_lease_data(void) {
+    return g_lease_buf;
+}
+
+int64_t pion_core_lease_len(void) {
+    return (int64_t)g_lease_len;
+}
+
+int32_t pion_core_lease_write_atomic(
+    const char *dir,
+    int64_t dir_len,
+    const char *key,
+    int64_t key_len,
+    const uint8_t *bytes,
+    int64_t len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 || len > 65536 ||
+        (len > 0 && bytes == NULL)) {
+        return -1;
+    }
+    char fname[256];
+    if (build_lease_filename(fname, sizeof(fname), key, key_len) != 0) {
+        return -1;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+    char dst_path[4096];
+    join_dir_file(dst_path, sizeof(dst_path), dir_copy, (size_t)dir_len, fname);
+    uint64_t seq = atomic_fetch_add_explicit(&g_accts_write_seq, 1, memory_order_relaxed) + 1;
+    char tmp_name[320];
+#ifdef _WIN32
+    snprintf(tmp_name, sizeof(tmp_name), "%s.partial.%lu.%llu",
+             fname, (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
+#else
+    snprintf(tmp_name, sizeof(tmp_name), "%s.partial.%ld.%llu",
+             fname, (long)getpid(), (unsigned long long)seq);
+#endif
+    char tmp_path[4096];
+    join_dir_file(tmp_path, sizeof(tmp_path), dir_copy, (size_t)dir_len, tmp_name);
+    if (dst_path[0] == '\0' || tmp_path[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    wchar_t wdir[3840];
+    wchar_t wtmp[4096];
+    wchar_t wdst[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dst_path, -1, wdst, 4096) <= 0) {
+        return -1;
+    }
+    if (ensure_dir_recursive_wide(wdir) != 0) {
+        return -1;
+    }
+    (void)DeleteFileW(wtmp);
+    HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        DWORD wrote = 0;
+        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            (void)DeleteFileW(wtmp);
+            return -1;
+        }
+        off += (size_t)wrote;
+    }
+    if (!FlushFileBuffers(h)) {
+        CloseHandle(h);
+        (void)DeleteFileW(wtmp);
+        return -1;
+    }
+    CloseHandle(h);
+    if (!MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        (void)DeleteFileW(wtmp);
+        return -1;
+    }
+    return 0;
+#else
+    if (ensure_dir_recursive_posix(dir_copy) != 0) {
+        return -1;
+    }
+    (void)unlink(tmp_path);
+    int fd = open(tmp_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        ssize_t n = write(fd, bytes + off, (size_t)len - off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            (void)unlink(tmp_path);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    if (fsync_fd_strict(fd) != 0) {
+        close(fd);
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, dst_path) != 0) {
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    if (fsync_dir_strict(dir_copy) != 0) {
+        return -2;
+    }
+    return 0;
+#endif
+}
+
+int32_t pion_core_lease_remove(const char *dir, int64_t dir_len, const char *key, int64_t key_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
+        return -1;
+    }
+    char fname[256];
+    if (build_lease_filename(fname, sizeof(fname), key, key_len) != 0) {
+        return -1;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+    char lpath[4096];
+    join_dir_file(lpath, sizeof(lpath), dir_copy, (size_t)dir_len, fname);
+    if (lpath[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lpath, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    if (DeleteFileW(wpath)) {
+        return 0;
+    }
+    DWORD err = GetLastError();
+    return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+#else
+    if (unlink(lpath) != 0 && errno != ENOENT) {
+        return -1;
+    }
+    if (fsync_dir_strict(dir_copy) != 0) {
+        return -2;
     }
     return 0;
 #endif

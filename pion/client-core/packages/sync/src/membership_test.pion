@@ -653,7 +653,6 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       http_calls += 1
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::Transient("must not be called"))))
@@ -696,7 +695,6 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       sent_refresh = rtok
       hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
@@ -751,7 +749,6 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       write_called_on_stale_401 = true
       wk(Ok(()))
     },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       // Simulate another core rotating disk while HTTP was in-flight!
       disk_doc_ref[0] = HostStorageRead::Found(serialize_stored_accounts([alice_disk_rot4, bob0], sessions=Some(mem_sess)))
@@ -783,7 +780,6 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
@@ -1139,7 +1135,6 @@ test "Slice 2B-1 R2: fail-closed direct auth.complete, unauth switch + sessions/
       }
     },
     write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Ok(())) },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
@@ -2050,7 +2045,6 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
   let host_a = AccountRefreshHost::{
     read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_a[0])) },
     write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Err("enospc")) },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
         access: "acc-R2", refresh: "R2", access_expires: 999999L, name: None,
@@ -2102,7 +2096,6 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
         wk(Ok(()))
       }
     },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
@@ -2373,7 +2366,6 @@ test "Slice 2B-1 R12: rejected_tuple fail-closed + self-heal, inactive 401 ReadE
       }
     },
     write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Ok(())) },
-    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
@@ -2432,4 +2424,130 @@ test "Slice 2B-1 R12: rejected_tuple fail-closed + self-heal, inactive 401 ReadE
   }
   debug_assert(mt_opt_str_is(acore.db_account_sub, "u-bob"), "real Bob DB bound cleanly")
   debug_assert(acore.station == "st-local" && acore.events.station == "st-local" && acore.sync.station == "st-local" && acore.md_store.station == "st-local" && acore.local_outbox.station == "st-local", "Bob login MUST NOT leak Alice's st-alice")
+}
+
+// ── Test 15 (R13): Verified login rebind_default_station restores pinned lock root (P1-1) & positive lease helpers (P1-2) ──
+
+test "Slice 2B-1 R13: rebind_default_station hydrates persisted Ed25519 lock root and rejects forged lock, plus positive lease helpers" {
+  let rt = effect::Runtime::new()
+
+  // 1. Codex P1-1: Pre-locked non-default workspace `ULID_WS1` -> 401 unauth `:memory:` (`ws-default`) ->
+  //    verified login calls `switch_account_db(locked_db, "u-lock")` (on `ws-default`) THEN
+  //    `rebind_default_station(ULID_WS1 + "/st-1", ULID_WS1)`:
+  //    MUST hydrate `ULID_WS1`'s pinned Ed25519 lock root (`locked:true`) and reject forged `G_evil`!
+  let (_, locked_db) = make_sim_db(rt)
+  let (_, mem_db) = make_sim_db(rt)
+  let setup_core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, locked_db, core_offline_transport(), fn() -> Unit {})
+  let _ = setup_core.set_db_account_sub("u-lock")
+  let _ = setup_core.commit_cloud_me(mt_make_me("u-lock", "lock@still.fail", [(ULID_WS1, "Locked WS", "owner")]), req_seq=1L)
+  let _ = setup_core.membership.bind_station_checked(ULID_WS1, "st-1")
+  let seed = make_seed(93)
+  let key = ed25519_key_id(seed)
+  let gen_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ULID_WS1)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("u-lock")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("u-lock")),
+              ("email", form::Json::Str("lock@still.fail")),
+              ("role", form::Json::Str("owner")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(hex_64("9"))),
+              ("sub", form::Json::Str("u-lock")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Mac")),
+              ("sign_key", form::Json::Str(key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let gen_signed = match sign_lock_entry(seed, gen_unsigned) {
+    Ok(e) => e
+    Err(why) => panic("sign genesis failed: " + why)
+  }
+  let genesis_good = match lock::entry_hash(gen_signed, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("entry_hash failed")
+  }
+  match setup_core.apply_lock_chain([gen_signed], genesis_good) {
+    Ok(_) => ()
+    Err(e) => panic("apply_lock_chain failed: " + e)
+  }
+
+  // Exact `finish_verified_auth_complete_k` sequence: unauth `:memory:` -> `switch_account_db` -> `rebind_default_station`:
+  setup_core.switch_to_unauthenticated_db(mem_db)
+  debug_assert(setup_core.workspace == "ws-default" && setup_core.lock_root.is_none(), "unauth reset to ws-default")
+  match setup_core.switch_account_db(locked_db, "u-lock", emit_auth_boundary=false) {
+    Ok(_) => ()
+    Err(e) => panic("switch_account_db failed: " + e)
+  }
+  setup_core.rebind_default_station(ULID_WS1 + "/st-1", ULID_WS1)
+  debug_assert(setup_core.workspace == ULID_WS1 && setup_core.station == ULID_WS1 + "/st-1", "rebound to ULID_WS1/st-1")
+  match setup_core.lock_root {
+    Some(r) => debug_assert(r == genesis_good, "rebind_default_station MUST hydrate persisted lock root G_good")
+    None => panic("P1-1 regression: rebind_default_station left lock_root None!")
+  }
+  let ls = base_codec::json_stringify(mt_expect_ok_json(mt_call(setup_core, 501L, "lock.status", base_codec::json_obj([])), "lock.status"))
+  debug_assert(ls.contains("\"locked\":true") && ls.contains(genesis_good), "lock.status reports locked:true + G_good")
+  // Forged lock root MUST be rejected!
+  setup_core.pin_lock_root("genesis_forged_evil_r13")
+  let evs = setup_core.drain_frame()
+  let mut rejected_forged = false
+  for i in 0..<evs.length() {
+    match evs[i] {
+      CoreEvent::LockRejected(ws, _) => if ws == ULID_WS1 { rejected_forged = true }
+      _ => ()
+    }
+  }
+  debug_assert(rejected_forged, "forged lock root MUST be rejected after verified login rebind")
+  match setup_core.lock_root {
+    Some(r) => debug_assert(r == genesis_good, "pinned root stays G_good after forged attempt")
+    None => panic("lock_root cleared")
+  }
+
+  // 2. Codex P1-2: Positive lease meta (`arm_lease_in_db` / `is_lease_armed_in_db`) & JSON matcher:
+  let (_, ldb) = make_sim_db(rt)
+  match is_lease_armed_in_db(ldb) {
+    Ok(false) => ()
+    _ => panic("fresh DB lease_armed must be Ok(false)")
+  }
+  match arm_lease_in_db(ldb) {
+    Ok(_) => ()
+    Err(e) => panic("arm_lease_in_db failed: " + e)
+  }
+  match is_lease_armed_in_db(ldb) {
+    Ok(true) => ()
+    _ => panic("armed DB lease_armed must be Ok(true)")
+  }
+  let _ = store::put_meta(ldb, META_LEASE_ARMED_KEY, "corrupt")
+  debug_assert(is_lease_armed_in_db(ldb).is_err(), "corrupt lease_armed meta MUST fail closed with Err")
+  let lease_raw = base_codec::json_stringify(format_lease_json("sid-1", "ref-1"))
+  debug_assert(check_lease_json_matches(lease_raw, "sid-1", "ref-1"), "exact lease matches")
+  debug_assert(!check_lease_json_matches(lease_raw, "sid-2", "ref-1"), "mismatched session rejected")
+  debug_assert(!check_lease_json_matches(lease_raw, "sid-1", "ref-2"), "mismatched refresh rejected")
+  debug_assert(!check_lease_json_matches("{bad", "sid-1", "ref-1"), "corrupt lease json rejected")
 }

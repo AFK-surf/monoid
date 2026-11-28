@@ -24,8 +24,14 @@ extern int32_t pion_core_accounts_read(const char *dir, int64_t dir_len);
 extern const uint8_t *pion_core_accounts_data(void);
 extern int64_t pion_core_accounts_len(void);
 extern int32_t pion_core_accounts_write_atomic(const char *dir, int64_t dir_len, const uint8_t *bytes, int64_t len);
-extern int32_t pion_core_accounts_overwrite_inplace(const char *dir, int64_t dir_len, const uint8_t *bytes, int64_t len);
 extern int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len);
+extern int32_t pion_core_accounts_sync_dir(const char *dir, int64_t dir_len);
+extern void pion_core_test_set_fail_dir_fsync(int32_t enable);
+extern int32_t pion_core_lease_read(const char *dir, int64_t dir_len, const char *key, int64_t key_len);
+extern const uint8_t *pion_core_lease_data(void);
+extern int64_t pion_core_lease_len(void);
+extern int32_t pion_core_lease_write_atomic(const char *dir, int64_t dir_len, const char *key, int64_t key_len, const uint8_t *bytes, int64_t len);
+extern int32_t pion_core_lease_remove(const char *dir, int64_t dir_len, const char *key, int64_t key_len);
 extern int mb_core_deliver_media(
     uint64_t call,
     int kind,
@@ -760,8 +766,8 @@ int main(int argc, char **argv) {
         // After releasing `h2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
         assert(run_exec_lock_probe(argv[0], data_dir) == 0);
 
-        // Verify zero-block `pion_core_accounts_overwrite_inplace` (ENOSPC shrink fallback for [Alice, Bob] -> [Bob])
-        // + `pion_core_accounts_remove_atomic` on an isolated temp dir:
+        // P1-3 + P1-4: Verify strict 3-state `write_atomic` / `remove_atomic` (`0`, `-1`, `-2`) +
+        // `pion_core_accounts_sync_dir` + positive session lease file primitives (ZERO in-place overwrite!):
         char rm_dir[256];
         snprintf(rm_dir, sizeof(rm_dir), "%s_rm", data_dir);
         assert(mkdir(rm_dir, 0700) == 0);
@@ -769,20 +775,34 @@ int main(int argc, char **argv) {
         const char *two_accts = "[{\"sub\":\"u-alice\",\"refresh\":\"ref-a\"},{\"sub\":\"u-bob\",\"refresh\":\"ref-b\"}]";
         const char *one_acct = "[{\"sub\":\"u-bob\",\"refresh\":\"ref-b\"}]";
         assert(pion_core_accounts_write_atomic(rm_dir, rlen, (const uint8_t *)two_accts, (int64_t)strlen(two_accts)) == 0);
-        assert(pion_core_accounts_overwrite_inplace(rm_dir, rlen, (const uint8_t *)one_acct, (int64_t)strlen(one_acct)) == 0);
+        assert(pion_core_accounts_sync_dir(rm_dir, rlen) == 0);
+
+        // Inject directory fsync failure: `rename`/`unlink` succeeds and MUST return `-2` (NOT `-1`!),
+        // and `pion_core_accounts_sync_dir` MUST return `-1` until cleared!
+        pion_core_test_set_fail_dir_fsync(1);
+        assert(pion_core_accounts_write_atomic(rm_dir, rlen, (const uint8_t *)one_acct, (int64_t)strlen(one_acct)) == -2);
         assert(pion_core_accounts_read(rm_dir, rlen) == 1);
-        assert(pion_core_accounts_len() == (int64_t)strlen(two_accts)); // exact size preserved (0 new blocks!)
+        assert(pion_core_accounts_len() == (int64_t)strlen(one_acct));
         assert(memcmp(pion_core_accounts_data(), one_acct, strlen(one_acct)) == 0);
-        for (size_t pi = strlen(one_acct); pi < strlen(two_accts); pi++) {
-            assert(pion_core_accounts_data()[pi] == ' ');
-        }
-        // In-place overwrite MUST reject growing beyond existing file size:
-        char oversized_inplace[256];
-        memset(oversized_inplace, 'x', sizeof(oversized_inplace));
-        assert(pion_core_accounts_overwrite_inplace(rm_dir, rlen, (const uint8_t *)oversized_inplace, (int64_t)sizeof(oversized_inplace)) == -1);
-        assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0);
+        assert(pion_core_accounts_sync_dir(rm_dir, rlen) == -1);
+        assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == -2);
         assert(pion_core_accounts_read(rm_dir, rlen) == 0);
+        pion_core_test_set_fail_dir_fsync(0);
+        assert(pion_core_accounts_sync_dir(rm_dir, rlen) == 0);
         assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0); // idempotent on ENOENT
+
+        // Verify positive per-account lease file primitives + strict key validation:
+        const char *lkey = "account-u-alice";
+        const char *lval = "{\"session\":\"sid-1\",\"refresh\":\"ref-1\"}";
+        assert(pion_core_lease_read(rm_dir, rlen, lkey, (int64_t)strlen(lkey)) == 0);
+        assert(pion_core_lease_write_atomic(rm_dir, rlen, lkey, (int64_t)strlen(lkey), (const uint8_t *)lval, (int64_t)strlen(lval)) == 0);
+        assert(pion_core_lease_read(rm_dir, rlen, lkey, (int64_t)strlen(lkey)) == 1);
+        assert(pion_core_lease_len() == (int64_t)strlen(lval) && memcmp(pion_core_lease_data(), lval, strlen(lval)) == 0);
+        assert(pion_core_lease_remove(rm_dir, rlen, lkey, (int64_t)strlen(lkey)) == 0);
+        assert(pion_core_lease_read(rm_dir, rlen, lkey, (int64_t)strlen(lkey)) == 0);
+        // Reject path-traversal lease keys fail-closed (`-1`):
+        assert(pion_core_lease_write_atomic(rm_dir, rlen, "../evil", 7, (const uint8_t *)lval, (int64_t)strlen(lval)) == -1);
+        assert(pion_core_lease_read(rm_dir, rlen, "../evil", 7) == -1);
 
         // P2-1: Recursive directory creation (3-level nested nonexistent path) BEFORE `.core.lock`!
         char nested_dir[320];
@@ -813,7 +833,7 @@ int main(int argc, char **argv) {
         assert(pion_core_accounts_read(rm_dir, rlen) == -1);
         assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0);
         free(big_buf);
-        printf("[core_runtime_e2e] .core.lock flock + stale immunity + inplace shrink + nested mkdir + 16 MiB boundary OK\n");
+        printf("[core_runtime_e2e] .core.lock flock + stale immunity + 3-state -2/sync_dir + lease + nested mkdir + 16 MiB boundary OK\n");
     }
 
     // 7c. R11 E2E: Real `fork()+execl()` single-owner `<dir>/.core.lock` fail-fast enforcement:
