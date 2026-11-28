@@ -24,60 +24,24 @@
 
 #include "core_api.h"
 
-// Synchronous atomic C transaction for `<dir>/accounts` (`client/shell/src/fs_ops.rs:144-153`):
-// - Acquires a process-wide mutex (`pthread_mutex_t` / `CRITICAL_SECTION`) AND an exclusive OS
-//   file lock on `<dir>/.accounts.lock` (`flock` / UTF-16 `CreateFileW` + `LockFileEx`).
-// - Synchronously reads `<dir>/accounts` into an owned buffer distinguishing Found (1),
-//   Absent (0), and ReadError (-1).
-// - Returns a strictly monotonic logical `tx_id >= 1` (NEVER exposing raw OS fd/HANDLE numbers).
-// - `commit` writes `<dir>/accounts.partial.<pid>.<tx_id>` (`0600`), `fsync`s, and atomically
-//   renames over `<dir>/accounts` BEFORE releasing the OS lock (zero Rust background disk thread!).
-// - `end(tx_id)` validates `tx_id == active_id` before releasing; stale or duplicate `tx_id` calls
-//   are guaranteed no-ops and can NEVER release a newer transaction's lock!
-// - Because every transaction is synchronous and non-yielding, `mb_core_stop()` can NEVER strand
-//   a held mutex, OS file lock, or cross-session semaphore.
-
+// ── Process-lifetime exclusive data-directory ownership lock (`<dir>/.core.lock`) ──
+// Guarantees at most ONE live `core_runtime` instance owns `<dir>` at any time:
+// - Non-blocking `flock(LOCK_EX | LOCK_NB)` (POSIX) / UTF-16 `CreateFileW` + `LockFileEx` (Windows).
+// - Second instance fails fast (`0` -> `data_dir_locked`) without blocking or touching any DB.
+// - Released on `pion_core_runtime_stop()` or automatically by the OS kernel on crash / `SIGKILL`.
 #define ACCOUNTS_MAX_BYTES (16 * 1024 * 1024)
 
+static _Atomic int64_t g_owner_lock_next_id = 1;
+static _Atomic int64_t g_owner_lock_active_id = 0;
 #ifdef _WIN32
-static INIT_ONCE g_accts_tx_once = INIT_ONCE_STATIC_INIT;
-static CRITICAL_SECTION g_accts_tx_cs;
-static BOOL CALLBACK init_accts_tx_cs_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
-    (void)once;
-    (void)param;
-    (void)ctx;
-    InitializeCriticalSection(&g_accts_tx_cs);
-    return TRUE;
-}
-static int accts_mu_trylock(void) {
-    InitOnceExecuteOnce(&g_accts_tx_once, init_accts_tx_cs_cb, NULL, NULL);
-    return TryEnterCriticalSection(&g_accts_tx_cs) ? 0 : -1;
-}
-static void accts_mu_unlock(void) {
-    LeaveCriticalSection(&g_accts_tx_cs);
-}
+static HANDLE g_owner_lock_handle = INVALID_HANDLE_VALUE;
 #else
-static pthread_mutex_t g_accts_tx_mu = PTHREAD_MUTEX_INITIALIZER;
-static int accts_mu_trylock(void) {
-    return pthread_mutex_trylock(&g_accts_tx_mu) == 0 ? 0 : -1;
-}
-static void accts_mu_unlock(void) {
-    pthread_mutex_unlock(&g_accts_tx_mu);
-}
+static int g_owner_lock_fd = -1;
 #endif
 
-static _Atomic int64_t g_accts_tx_next_id = 1;
-static _Atomic int64_t g_accts_tx_active_id = 0;
-static char g_accts_tx_dir[3840];
-static size_t g_accts_tx_dir_len = 0;
-#ifdef _WIN32
-static HANDLE g_accts_tx_lock_handle = INVALID_HANDLE_VALUE;
-#else
-static int g_accts_tx_lock_fd = -1;
-#endif
-static int32_t g_accts_tx_status = 0;
-static uint8_t *g_accts_tx_buf = NULL;
-static size_t g_accts_tx_len = 0;
+static uint8_t *g_accts_buf = NULL;
+static size_t g_accts_len = 0;
+static _Atomic uint64_t g_accts_write_seq = 0;
 
 static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, const char *name) {
     size_t pos = dlen;
@@ -99,22 +63,135 @@ static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, c
     memcpy(out + pos, name, nlen + 1);
 }
 
-static void accts_tx_reset_buf(void) {
-    if (g_accts_tx_buf != NULL) {
-        free(g_accts_tx_buf);
-        g_accts_tx_buf = NULL;
+// Acquire process-lifetime exclusive ownership of `<dir>/.core.lock` (0ms non-blocking):
+// - returns handle >= 1 on success
+// - returns 0 if already owned by another core instance (in-process or another process)
+// - returns -1 on I/O, read-only (`EROFS`), or invalid path error
+int64_t pion_core_dir_owner_lock_acquire(const char *dir, int64_t dir_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
+        return -1;
     }
-    g_accts_tx_len = 0;
-    g_accts_tx_status = 0;
+    int64_t expected = 0;
+    if (!atomic_compare_exchange_strong(&g_owner_lock_active_id, &expected, -1)) {
+        return 0;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+
+    char lock_path[4096];
+    join_dir_file(lock_path, sizeof(lock_path), dir_copy, (size_t)dir_len, ".core.lock");
+    if (lock_path[0] == '\0') {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
+
+#ifdef _WIN32
+    wchar_t wdir[3840];
+    wchar_t wlock[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lock_path, -1, wlock, 4096) <= 0) {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
+    (void)CreateDirectoryW(wdir, NULL);
+    HANDLE h = CreateFileW(
+        wlock,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &ov)) {
+        DWORD err = GetLastError();
+        CloseHandle(h);
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return (err == ERROR_LOCK_VIOLATION) ? 0 : -1;
+    }
+    g_owner_lock_handle = h;
+#else
+    (void)mkdir(dir_copy, 0700);
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        int e = errno;
+        close(fd);
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return (e == EWOULDBLOCK || e == EAGAIN) ? 0 : -1;
+    }
+    g_owner_lock_fd = fd;
+#endif
+    int64_t id = atomic_fetch_add_explicit(&g_owner_lock_next_id, 1, memory_order_relaxed);
+    if (id <= 0) {
+        id = 1;
+    }
+    atomic_store_explicit(&g_owner_lock_active_id, id, memory_order_release);
+    return id;
 }
 
-static void accts_tx_read_file_locked(const char *accts_path) {
-    accts_tx_reset_buf();
+void pion_core_dir_owner_lock_release(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    int64_t expected = handle;
+    if (!atomic_compare_exchange_strong(&g_owner_lock_active_id, &expected, -1)) {
+        return;
+    }
+#ifdef _WIN32
+    if (g_owner_lock_handle != INVALID_HANDLE_VALUE) {
+        HANDLE h = g_owner_lock_handle;
+        g_owner_lock_handle = INVALID_HANDLE_VALUE;
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
+        (void)CloseHandle(h);
+    }
+#else
+    if (g_owner_lock_fd >= 0) {
+        int fd = g_owner_lock_fd;
+        g_owner_lock_fd = -1;
+        (void)flock(fd, LOCK_UN);
+        (void)close(fd);
+    }
+#endif
+    if (g_accts_buf != NULL) {
+        free(g_accts_buf);
+        g_accts_buf = NULL;
+    }
+    g_accts_len = 0;
+    atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+}
+
+// ── Synchronous atomic `<dir>/accounts` read / write / remove under exclusive `.core.lock` ──
+// Returns 1 = Found (use `data`/`len`), 0 = Absent (`ENOENT`), -1 = I/O or invalid path error.
+int32_t pion_core_accounts_read(const char *dir, int64_t dir_len) {
+    if (g_accts_buf != NULL) {
+        free(g_accts_buf);
+        g_accts_buf = NULL;
+    }
+    g_accts_len = 0;
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
+        return -1;
+    }
+    char accts_path[4096];
+    join_dir_file(accts_path, sizeof(accts_path), dir, (size_t)dir_len, "accounts");
+    if (accts_path[0] == '\0') {
+        return -1;
+    }
 #ifdef _WIN32
     wchar_t wpath[4096];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wpath, 4096) <= 0) {
-        g_accts_tx_status = -1;
-        return;
+        return -1;
     }
     HANDLE h = CreateFileW(
         wpath,
@@ -126,15 +203,13 @@ static void accts_tx_read_file_locked(const char *accts_path) {
         NULL);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD err = GetLastError();
-        g_accts_tx_status = (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
-        return;
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
     }
     size_t cap = 4096;
     uint8_t *buf = (uint8_t *)malloc(cap);
     if (buf == NULL) {
         CloseHandle(h);
-        g_accts_tx_status = -1;
-        return;
+        return -1;
     }
     size_t total = 0;
     for (;;) {
@@ -142,8 +217,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
             if (cap >= ACCOUNTS_MAX_BYTES) {
                 free(buf);
                 CloseHandle(h);
-                g_accts_tx_status = -1;
-                return;
+                return -1;
             }
             size_t ncap = cap * 2;
             if (ncap > ACCOUNTS_MAX_BYTES) {
@@ -153,8 +227,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
             if (nbuf == NULL) {
                 free(buf);
                 CloseHandle(h);
-                g_accts_tx_status = -1;
-                return;
+                return -1;
             }
             buf = nbuf;
             cap = ncap;
@@ -163,8 +236,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
         if (!ReadFile(h, buf + total, (DWORD)(cap - total), &got, NULL)) {
             free(buf);
             CloseHandle(h);
-            g_accts_tx_status = -1;
-            return;
+            return -1;
         }
         if (got == 0) {
             break;
@@ -172,21 +244,19 @@ static void accts_tx_read_file_locked(const char *accts_path) {
         total += (size_t)got;
     }
     CloseHandle(h);
-    g_accts_tx_buf = buf;
-    g_accts_tx_len = total;
-    g_accts_tx_status = 1;
+    g_accts_buf = buf;
+    g_accts_len = total;
+    return 1;
 #else
     int fd = open(accts_path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        g_accts_tx_status = (errno == ENOENT) ? 0 : -1;
-        return;
+        return (errno == ENOENT) ? 0 : -1;
     }
     size_t cap = 4096;
     uint8_t *buf = (uint8_t *)malloc(cap);
     if (buf == NULL) {
         close(fd);
-        g_accts_tx_status = -1;
-        return;
+        return -1;
     }
     size_t total = 0;
     for (;;) {
@@ -194,8 +264,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
             if (cap >= ACCOUNTS_MAX_BYTES) {
                 free(buf);
                 close(fd);
-                g_accts_tx_status = -1;
-                return;
+                return -1;
             }
             size_t ncap = cap * 2;
             if (ncap > ACCOUNTS_MAX_BYTES) {
@@ -205,8 +274,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
             if (nbuf == NULL) {
                 free(buf);
                 close(fd);
-                g_accts_tx_status = -1;
-                return;
+                return -1;
             }
             buf = nbuf;
             cap = ncap;
@@ -218,8 +286,7 @@ static void accts_tx_read_file_locked(const char *accts_path) {
             }
             free(buf);
             close(fd);
-            g_accts_tx_status = -1;
-            return;
+            return -1;
         }
         if (n == 0) {
             break;
@@ -227,179 +294,59 @@ static void accts_tx_read_file_locked(const char *accts_path) {
         total += (size_t)n;
     }
     close(fd);
-    g_accts_tx_buf = buf;
-    g_accts_tx_len = total;
-    g_accts_tx_status = 1;
+    g_accts_buf = buf;
+    g_accts_len = total;
+    return 1;
 #endif
 }
 
-// Non-blocking attempt to start an atomic `<dir>/accounts` transaction:
-// - returns tx_id >= 1 on success (holds process mutex + exclusive OS file lock)
-// - returns 0 if currently contended (process mutex or OS file lock held elsewhere)
-// - returns -1 on I/O or invalid path error
-int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= (int64_t)sizeof(g_accts_tx_dir)) {
+const uint8_t *pion_core_accounts_data(void) {
+    return g_accts_buf;
+}
+
+int64_t pion_core_accounts_len(void) {
+    return (int64_t)g_accts_len;
+}
+
+int32_t pion_core_accounts_write_atomic(
+    const char *dir,
+    int64_t dir_len,
+    const uint8_t *bytes,
+    int64_t len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 || (len > 0 && bytes == NULL)) {
         return -1;
-    }
-    if (accts_mu_trylock() != 0) {
-        return 0;
     }
     char dir_copy[3840];
     memcpy(dir_copy, dir, (size_t)dir_len);
     dir_copy[dir_len] = '\0';
 
-    char lock_path[4096];
-    join_dir_file(lock_path, sizeof(lock_path), dir_copy, (size_t)dir_len, ".accounts.lock");
-    if (lock_path[0] == '\0') {
-        accts_mu_unlock();
-        return -1;
-    }
-
-#ifdef _WIN32
-    wchar_t wdir[3840];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) > 0) {
-        (void)CreateDirectoryW(wdir, NULL);
-    }
-    wchar_t wlock[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lock_path, -1, wlock, 4096) <= 0) {
-        accts_mu_unlock();
-        return -1;
-    }
-    HANDLE h = CreateFileW(
-        wlock,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        accts_mu_unlock();
-        return -1;
-    }
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof(ov));
-    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &ov)) {
-        DWORD err = GetLastError();
-        CloseHandle(h);
-        accts_mu_unlock();
-        return (err == ERROR_LOCK_VIOLATION) ? 0 : -1;
-    }
-    g_accts_tx_lock_handle = h;
-#else
-    (void)mkdir(dir_copy, 0700);
-    int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        accts_mu_unlock();
-        return -1;
-    }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        int e = errno;
-        close(fd);
-        accts_mu_unlock();
-        return (e == EWOULDBLOCK || e == EAGAIN) ? 0 : -1;
-    }
-    g_accts_tx_lock_fd = fd;
-#endif
-
-    memcpy(g_accts_tx_dir, dir_copy, (size_t)dir_len + 1);
-    g_accts_tx_dir_len = (size_t)dir_len;
-
     char accts_path[4096];
-    join_dir_file(accts_path, sizeof(accts_path), g_accts_tx_dir, g_accts_tx_dir_len, "accounts");
-    accts_tx_read_file_locked(accts_path);
-
-    int64_t tx_id = atomic_fetch_add_explicit(&g_accts_tx_next_id, 1, memory_order_relaxed);
-    atomic_store_explicit(&g_accts_tx_active_id, tx_id, memory_order_release);
-    return tx_id;
-}
-
-// Bounded short-backoff wrapper ONLY for synchronous startup reads (<= 500ms total; NEVER blocks forever):
-// - returns tx_id >= 1 on success, 0 on busy timeout, -1 on I/O error
-int64_t pion_core_accounts_tx_begin_bounded(const char *dir, int64_t dir_len, int32_t max_wait_ms) {
-    if (max_wait_ms < 0) {
-        max_wait_ms = 0;
-    }
-    if (max_wait_ms > 500) {
-        max_wait_ms = 500;
-    }
-    int32_t waited = 0;
-    int32_t step = 10;
-    for (;;) {
-        int64_t tx_id = pion_core_accounts_tx_try_begin(dir, dir_len);
-        if (tx_id != 0 || waited >= max_wait_ms) {
-            return tx_id;
-        }
-        int32_t sleep_ms = step;
-        if (waited + sleep_ms > max_wait_ms) {
-            sleep_ms = max_wait_ms - waited;
-        }
-#ifdef _WIN32
-        Sleep((DWORD)sleep_ms);
-#else
-        struct timespec req;
-        req.tv_sec = 0;
-        req.tv_nsec = (long)sleep_ms * 1000000L;
-        (void)nanosleep(&req, NULL);
-#endif
-        waited += sleep_ms;
-        if (step < 80) {
-            step *= 2;
-        }
-    }
-}
-
-int32_t pion_core_accounts_tx_status(int64_t tx_id) {
-    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
-        return -2;
-    }
-    return g_accts_tx_status;
-}
-
-const uint8_t *pion_core_accounts_tx_data(int64_t tx_id) {
-    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
-        return NULL;
-    }
-    return g_accts_tx_status == 1 ? g_accts_tx_buf : NULL;
-}
-
-int64_t pion_core_accounts_tx_len(int64_t tx_id) {
-    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
-        return 0;
-    }
-    return g_accts_tx_status == 1 ? (int64_t)g_accts_tx_len : 0;
-}
-
-int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_t len) {
-    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
-        return -1;
-    }
-    if (len < 0 || (len > 0 && bytes == NULL)) {
-        return -1;
-    }
-    char accts_path[4096];
-    join_dir_file(accts_path, sizeof(accts_path), g_accts_tx_dir, g_accts_tx_dir_len, "accounts");
+    join_dir_file(accts_path, sizeof(accts_path), dir_copy, (size_t)dir_len, "accounts");
+    uint64_t seq = atomic_fetch_add_explicit(&g_accts_write_seq, 1, memory_order_relaxed) + 1;
     char tmp_name[128];
 #ifdef _WIN32
-    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%lu.%lld",
-             (unsigned long)GetCurrentProcessId(), (long long)tx_id);
+    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%lu.%llu",
+             (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
 #else
-    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%ld.%lld",
-             (long)getpid(), (long long)tx_id);
+    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%ld.%llu",
+             (long)getpid(), (unsigned long long)seq);
 #endif
     char tmp_path[4096];
-    join_dir_file(tmp_path, sizeof(tmp_path), g_accts_tx_dir, g_accts_tx_dir_len, tmp_name);
+    join_dir_file(tmp_path, sizeof(tmp_path), dir_copy, (size_t)dir_len, tmp_name);
     if (accts_path[0] == '\0' || tmp_path[0] == '\0') {
         return -1;
     }
 
 #ifdef _WIN32
+    wchar_t wdir[3840];
     wchar_t wtmp[4096];
     wchar_t wdst[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wdst, 4096) <= 0) {
         return -1;
     }
+    (void)CreateDirectoryW(wdir, NULL);
     (void)DeleteFileW(wtmp);
     HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
@@ -427,6 +374,7 @@ int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_
     }
     return 0;
 #else
+    (void)mkdir(dir_copy, 0700);
     (void)unlink(tmp_path);
     int fd = open(tmp_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
     if (fd < 0) {
@@ -458,7 +406,7 @@ int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_
         (void)unlink(tmp_path);
         return -1;
     }
-    int dfd = open(g_accts_tx_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int dfd = open(dir_copy, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd >= 0) {
         (void)fsync(dfd);
         (void)close(dfd);
@@ -467,419 +415,46 @@ int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_
 #endif
 }
 
-void pion_core_accounts_tx_end(int64_t tx_id) {
-    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
-        return;
+// Zero-block atomic removal of `<dir>/accounts` (used as ENOSPC-safe fallback when clearing the last account).
+int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840) {
+        return -1;
     }
-    atomic_store_explicit(&g_accts_tx_active_id, 0, memory_order_release);
-    accts_tx_reset_buf();
-    g_accts_tx_dir[0] = '\0';
-    g_accts_tx_dir_len = 0;
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+    char accts_path[4096];
+    join_dir_file(accts_path, sizeof(accts_path), dir_copy, (size_t)dir_len, "accounts");
+    if (accts_path[0] == '\0') {
+        return -1;
+    }
 #ifdef _WIN32
-    if (g_accts_tx_lock_handle != INVALID_HANDLE_VALUE) {
-        HANDLE h = g_accts_tx_lock_handle;
-        g_accts_tx_lock_handle = INVALID_HANDLE_VALUE;
-        OVERLAPPED ov;
-        memset(&ov, 0, sizeof(ov));
-        (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
-        (void)CloseHandle(h);
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wpath, 4096) <= 0) {
+        return -1;
     }
+    if (DeleteFileW(wpath)) {
+        return 0;
+    }
+    DWORD err = GetLastError();
+    return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
 #else
-    if (g_accts_tx_lock_fd >= 0) {
-        int fd = g_accts_tx_lock_fd;
-        g_accts_tx_lock_fd = -1;
-        (void)flock(fd, LOCK_UN);
-        (void)close(fd);
+    if (unlink(accts_path) != 0 && errno != ENOENT) {
+        return -1;
     }
+    int dfd = open(dir_copy, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        (void)close(dfd);
+    }
+    return 0;
 #endif
-    accts_mu_unlock();
 }
 
 void pion_core_log_warn(const char *msg, int64_t len) {
     if (msg != NULL && len > 0) {
         fprintf(stderr, "[pion-core] %.*s\n", (int)len, msg);
     }
-}
-
-// ── Preallocated fixed 8192-byte (2 x 4096B A/B) in-place rejected-tuple slot ──
-// Zero dependency on `.accounts.lock` or SQLite, and 0 new inodes/blocks on write (`ENOSPC`-immune!).
-#define REJECTED_SLOT_SIZE 4096
-#define REJECTED_FILE_SIZE 8192
-
-static uint8_t g_rejected_slot_buf[REJECTED_FILE_SIZE];
-static size_t g_rejected_slot_len = 0;
-
-static int is_safe_sidecar_name(const char *name, size_t len) {
-    if (name == NULL || len == 0 || len > 160) {
-        return 0;
-    }
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)name[i];
-        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                 (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-        if (!ok) {
-            return 0;
-        }
-    }
-    if (strstr(name, "..") != NULL) {
-        return 0;
-    }
-    return 1;
-}
-
-static void format_padded_slot_page(uint8_t out[REJECTED_SLOT_SIZE], const uint8_t *json, size_t json_len) {
-    memset(out, ' ', REJECTED_SLOT_SIZE);
-    memcpy(out, json, json_len);
-    out[REJECTED_SLOT_SIZE - 1] = '\n';
-}
-
-// Preallocate `<dir>/<name>` to exact 8192 bytes (Slot 0: seq=1, Slot 1: seq=0) if absent.
-// Never overwrites an existing valid 8192-byte file; returns -1 on I/O error or corrupt wrong size.
-int32_t pion_core_rejected_slot_ensure(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
-        return -1;
-    }
-    char name_copy[192];
-    memcpy(name_copy, name, (size_t)name_len);
-    name_copy[name_len] = '\0';
-    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
-        return -1;
-    }
-    char dir_copy[3840];
-    memcpy(dir_copy, dir, (size_t)dir_len);
-    dir_copy[dir_len] = '\0';
-    char final_path[4096];
-    join_dir_file(final_path, sizeof(final_path), dir_copy, (size_t)dir_len, name_copy);
-    if (final_path[0] == '\0') {
-        return -1;
-    }
-
-    uint8_t init_buf[REJECTED_FILE_SIZE];
-    const char *s0 = "{\"seq\":1,\"tuples\":[]}";
-    const char *s1 = "{\"seq\":0,\"tuples\":[]}";
-    format_padded_slot_page(init_buf, (const uint8_t *)s0, strlen(s0));
-    format_padded_slot_page(init_buf + REJECTED_SLOT_SIZE, (const uint8_t *)s1, strlen(s1));
-
-    static _Atomic uint64_t s_slot_init_seq = 0;
-    uint64_t seq = atomic_fetch_add_explicit(&s_slot_init_seq, 1, memory_order_relaxed) + 1;
-    char tmp_name[256];
-#ifdef _WIN32
-    snprintf(tmp_name, sizeof(tmp_name), "%s.init.%lu.%llu",
-             name_copy, (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
-#else
-    snprintf(tmp_name, sizeof(tmp_name), "%s.init.%lld.%llu",
-             name_copy, (long long)getpid(), (unsigned long long)seq);
-#endif
-    char tmp_path[4096];
-    join_dir_file(tmp_path, sizeof(tmp_path), dir_copy, (size_t)dir_len, tmp_name);
-    if (tmp_path[0] == '\0') {
-        return -1;
-    }
-
-#ifdef _WIN32
-    wchar_t wdir[4096];
-    wchar_t wtmp[4096];
-    wchar_t wdst[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 4096) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, final_path, -1, wdst, 4096) <= 0) {
-        return -1;
-    }
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExW(wdst, GetFileExInfoStandard, &fad)) {
-        if ((fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            return -1;
-        }
-        return (fad.nFileSizeHigh == 0 && fad.nFileSizeLow == REJECTED_FILE_SIZE) ? 0 : -1;
-    }
-    (void)CreateDirectoryW(wdir, NULL);
-    (void)DeleteFileW(wtmp);
-    HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        return -1;
-    }
-    size_t off = 0;
-    while (off < REJECTED_FILE_SIZE) {
-        DWORD wrote = 0;
-        if (!WriteFile(h, init_buf + off, (DWORD)(REJECTED_FILE_SIZE - off), &wrote, NULL) || wrote == 0) {
-            CloseHandle(h);
-            (void)DeleteFileW(wtmp);
-            return -1;
-        }
-        off += (size_t)wrote;
-    }
-    if (!FlushFileBuffers(h)) {
-        CloseHandle(h);
-        (void)DeleteFileW(wtmp);
-        return -1;
-    }
-    CloseHandle(h);
-    // Non-clobbering publish (NO `MOVEFILE_REPLACE_EXISTING`) so a peer's concurrent slot is preserved.
-    if (!MoveFileExW(wtmp, wdst, MOVEFILE_WRITE_THROUGH)) {
-        DWORD err = GetLastError();
-        (void)DeleteFileW(wtmp);
-        if (err == ERROR_ALREADY_EXISTS || err == ERROR_FILE_EXISTS) {
-            if (GetFileAttributesExW(wdst, GetFileExInfoStandard, &fad) &&
-                (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
-                fad.nFileSizeHigh == 0 && fad.nFileSizeLow == REJECTED_FILE_SIZE) {
-                return 0;
-            }
-        }
-        return -1;
-    }
-    return 0;
-#else
-    struct stat st;
-    if (stat(final_path, &st) == 0) {
-        return (S_ISREG(st.st_mode) && st.st_size == REJECTED_FILE_SIZE) ? 0 : -1;
-    }
-    if (errno != ENOENT) {
-        return -1;
-    }
-    (void)mkdir(dir_copy, 0700);
-    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        return -1;
-    }
-    size_t off = 0;
-    while (off < REJECTED_FILE_SIZE) {
-        ssize_t n = write(fd, init_buf + off, REJECTED_FILE_SIZE - off);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            close(fd);
-            (void)unlink(tmp_path);
-            return -1;
-        }
-        off += (size_t)n;
-    }
-    if (fsync(fd) != 0) {
-        close(fd);
-        (void)unlink(tmp_path);
-        return -1;
-    }
-    close(fd);
-    // Atomic non-clobbering publish via `link()` + `unlink(tmp)`: NEVER overwrites a peer's slot!
-    if (link(tmp_path, final_path) != 0) {
-        int lerr = errno;
-        (void)unlink(tmp_path);
-        if (lerr == EEXIST) {
-            if (stat(final_path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == REJECTED_FILE_SIZE) {
-                return 0;
-            }
-        }
-        return -1;
-    }
-    (void)unlink(tmp_path);
-    int dfd = open(dir_copy, O_RDONLY | O_CLOEXEC);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        close(dfd);
-    }
-    return 0;
-#endif
-}
-
-// Read exact 8192-byte A/B rejected slot file:
-// Returns 1 = found (exact 8192 bytes in `g_rejected_slot_buf`), 0 = absent (ENOENT), -1 = I/O or wrong size.
-int32_t pion_core_rejected_slot_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
-    g_rejected_slot_len = 0;
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
-        return -1;
-    }
-    char name_copy[192];
-    memcpy(name_copy, name, (size_t)name_len);
-    name_copy[name_len] = '\0';
-    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
-        return -1;
-    }
-    char path[4096];
-    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
-    if (path[0] == '\0') {
-        return -1;
-    }
-    uint8_t tmp[REJECTED_FILE_SIZE + 1];
-    size_t total = 0;
-#ifdef _WIN32
-    wchar_t wpath[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
-        return -1;
-    }
-    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
-    }
-    while (total <= REJECTED_FILE_SIZE) {
-        DWORD got = 0;
-        if (!ReadFile(h, tmp + total, (DWORD)(sizeof(tmp) - total), &got, NULL)) {
-            CloseHandle(h);
-            return -1;
-        }
-        if (got == 0) {
-            break;
-        }
-        total += (size_t)got;
-    }
-    CloseHandle(h);
-#else
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return (errno == ENOENT) ? 0 : -1;
-    }
-    while (total <= REJECTED_FILE_SIZE) {
-        ssize_t n = read(fd, tmp + total, sizeof(tmp) - total);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            close(fd);
-            return -1;
-        }
-        if (n == 0) {
-            break;
-        }
-        total += (size_t)n;
-    }
-    close(fd);
-#endif
-    if (total != REJECTED_FILE_SIZE) {
-        return -1;
-    }
-    memcpy(g_rejected_slot_buf, tmp, REJECTED_FILE_SIZE);
-    g_rejected_slot_len = REJECTED_FILE_SIZE;
-    return 1;
-}
-
-const uint8_t *pion_core_rejected_slot_data(void) {
-    return g_rejected_slot_buf;
-}
-
-int64_t pion_core_rejected_slot_len(void) {
-    return (int64_t)g_rejected_slot_len;
-}
-
-// In-place 4096-byte write to slot 0 or slot 1 (`O_RDWR`, NO `O_TRUNC`, NO temp file, 0 new inodes/blocks!).
-// Survives `ENOSPC` (0 bytes free) once preallocated by `pion_core_rejected_slot_ensure`.
-int32_t pion_core_rejected_slot_write_inplace(
-    const char *dir,
-    int64_t dir_len,
-    const char *name,
-    int64_t name_len,
-    int32_t slot_index,
-    const uint8_t *bytes,
-    int64_t len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160 ||
-        (slot_index != 0 && slot_index != 1) || bytes == NULL || len <= 0 || len > REJECTED_SLOT_SIZE - 1) {
-        return -1;
-    }
-    char name_copy[192];
-    memcpy(name_copy, name, (size_t)name_len);
-    name_copy[name_len] = '\0';
-    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
-        return -1;
-    }
-    char path[4096];
-    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
-    if (path[0] == '\0') {
-        return -1;
-    }
-    uint8_t page[REJECTED_SLOT_SIZE];
-    format_padded_slot_page(page, bytes, (size_t)len);
-    int64_t file_off = (int64_t)slot_index * (int64_t)REJECTED_SLOT_SIZE;
-
-#ifdef _WIN32
-    wchar_t wpath[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
-        return -1;
-    }
-    HANDLE h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
-            if (pion_core_rejected_slot_ensure(dir, dir_len, name, name_len) != 0) {
-                return -1;
-            }
-            h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        }
-        if (h == INVALID_HANDLE_VALUE) {
-            return -1;
-        }
-    }
-    LARGE_INTEGER fsz;
-    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart != REJECTED_FILE_SIZE) {
-        CloseHandle(h);
-        return -1;
-    }
-    LARGE_INTEGER pos;
-    pos.QuadPart = file_off;
-    if (!SetFilePointerEx(h, pos, NULL, FILE_BEGIN)) {
-        CloseHandle(h);
-        return -1;
-    }
-    size_t off = 0;
-    while (off < REJECTED_SLOT_SIZE) {
-        DWORD wrote = 0;
-        if (!WriteFile(h, page + off, (DWORD)(REJECTED_SLOT_SIZE - off), &wrote, NULL) || wrote == 0) {
-            CloseHandle(h);
-            return -1;
-        }
-        off += (size_t)wrote;
-    }
-    if (!FlushFileBuffers(h)) {
-        CloseHandle(h);
-        return -1;
-    }
-    CloseHandle(h);
-    return 0;
-#else
-    int fd = open(path, O_RDWR | O_CLOEXEC);
-    if (fd < 0 && errno == ENOENT) {
-        if (pion_core_rejected_slot_ensure(dir, dir_len, name, name_len) != 0) {
-            return -1;
-        }
-        fd = open(path, O_RDWR | O_CLOEXEC);
-    }
-    if (fd < 0) {
-        return -1;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != REJECTED_FILE_SIZE) {
-        close(fd);
-        return -1;
-    }
-    size_t off = 0;
-    while (off < REJECTED_SLOT_SIZE) {
-        ssize_t n = pwrite(fd, page + off, REJECTED_SLOT_SIZE - off, (off_t)(file_off + (int64_t)off));
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            close(fd);
-            return -1;
-        }
-        off += (size_t)n;
-    }
-#ifdef __APPLE__
-    if (fsync(fd) != 0) {
-        close(fd);
-        return -1;
-    }
-#else
-    if (fdatasync(fd) != 0) {
-        close(fd);
-        return -1;
-    }
-#endif
-    close(fd);
-    return 0;
-#endif
 }
 
 int64_t pion_core_wall_now_ms(void) {

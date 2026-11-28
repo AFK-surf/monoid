@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,24 +18,13 @@
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
-extern int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len);
-extern int32_t pion_core_accounts_tx_status(int64_t tx_id);
-extern const uint8_t *pion_core_accounts_tx_data(int64_t tx_id);
-extern int64_t pion_core_accounts_tx_len(int64_t tx_id);
-extern int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_t len);
-extern void pion_core_accounts_tx_end(int64_t tx_id);
-extern int32_t pion_core_rejected_slot_ensure(const char *dir, int64_t dir_len, const char *name, int64_t name_len);
-extern int32_t pion_core_rejected_slot_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len);
-extern const uint8_t *pion_core_rejected_slot_data(void);
-extern int64_t pion_core_rejected_slot_len(void);
-extern int32_t pion_core_rejected_slot_write_inplace(
-    const char *dir,
-    int64_t dir_len,
-    const char *name,
-    int64_t name_len,
-    int32_t slot_index,
-    const uint8_t *bytes,
-    int64_t len);
+extern int64_t pion_core_dir_owner_lock_acquire(const char *dir, int64_t dir_len);
+extern void pion_core_dir_owner_lock_release(int64_t handle);
+extern int32_t pion_core_accounts_read(const char *dir, int64_t dir_len);
+extern const uint8_t *pion_core_accounts_data(void);
+extern int64_t pion_core_accounts_len(void);
+extern int32_t pion_core_accounts_write_atomic(const char *dir, int64_t dir_len, const uint8_t *bytes, int64_t len);
+extern int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len);
 extern int mb_core_deliver_media(
     uint64_t call,
     int kind,
@@ -166,25 +156,38 @@ static int run_exec_lock_probe(const char *self_exe, const char *dir) {
 }
 
 int main(int argc, char **argv) {
-    // Self-exec child mode for genuine cross-process OS `flock` testing (clean unlocked mutex!).
+    // Self-exec child mode for genuine cross-process OS `flock` testing on `<dir>/.core.lock`.
     if (argc >= 3 && strcmp(argv[1], "--lock-probe") == 0) {
         const char *probe_dir = argv[2];
-        int64_t tx = pion_core_accounts_tx_try_begin(probe_dir, (int64_t)strlen(probe_dir));
-        if (tx == 0) {
+        int64_t h = pion_core_dir_owner_lock_acquire(probe_dir, (int64_t)strlen(probe_dir));
+        if (h == 0) {
             return 2; // contended on OS `flock`
         }
-        if (tx >= 1) {
-            pion_core_accounts_tx_end(tx);
+        if (h >= 1) {
+            pion_core_dir_owner_lock_release(h);
             return 0; // acquired & released cleanly
         }
         return 3; // I/O error
     }
-    // Self-exec child mode holding `<dir>/.accounts.lock` behind a deterministic dual-pipe barrier:
-    // writes 'L' to stdout once locked, then blocks reading stdin until parent writes 'R' (or closes).
-    if (argc >= 3 && strcmp(argv[1], "--lock-hold-barrier") == 0) {
+    // Self-exec child mode testing real `mb_core_start(<dir>)` fail-fast `data_dir_locked` against
+    // a live parent core instance holding `<dir>/.core.lock`!
+    if (argc >= 3 && strcmp(argv[1], "--second-core-start") == 0) {
+        const char *target_dir = argv[2];
+        memset(&g_ctx, 0, sizeof(g_ctx));
+        pthread_mutex_init(&g_ctx.mu, NULL);
+        pthread_cond_init(&g_ctx.cv, NULL);
+        mb_core_attach_pion_runtime();
+        mb_core_start(target_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        recorded_msg_t *fm = wait_for_msg_index(&g_ctx, 0);
+        int ok_locked = (strstr(fm->json, "\"fatal\"") != NULL && strstr(fm->json, "data_dir_locked") != NULL) ? 1 : 0;
+        mb_core_stop();
+        return ok_locked ? 0 : 5;
+    }
+    // Self-exec child mode holding `<dir>/.core.lock` until SIGKILLed by parent (crash recovery test!).
+    if (argc >= 3 && strcmp(argv[1], "--lock-hold-sigkill") == 0) {
         const char *hold_dir = argv[2];
-        int64_t tx = pion_core_accounts_tx_try_begin(hold_dir, (int64_t)strlen(hold_dir));
-        if (tx < 1) {
+        int64_t h = pion_core_dir_owner_lock_acquire(hold_dir, (int64_t)strlen(hold_dir));
+        if (h < 1) {
             return 4;
         }
         char locked = 'L';
@@ -193,7 +196,7 @@ int main(int argc, char **argv) {
         char rel = 0;
         ssize_t rd = read(STDIN_FILENO, &rel, 1);
         (void)rd;
-        pion_core_accounts_tx_end(tx);
+        pion_core_dir_owner_lock_release(h);
         return 0;
     }
     memset(&g_ctx, 0, sizeof(g_ctx));
@@ -732,227 +735,124 @@ int main(int argc, char **argv) {
         printf("[core_runtime_e2e] post-stop restart non-deadlock + accounts preservation OK\n");
     }
 
-    // 7b. Genuine separate-process (`fork` + `execl`) OS `flock` mutual exclusion + monotonic
-    //     logical `tx_id` stale-end immunity (child runs fresh image with unlocked process mutex)!
+    // 7b. Genuine separate-process (`fork` + `execl`) exclusive `<dir>/.core.lock` mutual exclusion +
+    //     stale-handle release immunity + zero-block `accounts_remove_atomic`!
     {
         int64_t dlen = (int64_t)strlen(data_dir);
-        int64_t tx1 = pion_core_accounts_tx_try_begin(data_dir, dlen);
-        assert(tx1 >= 1);
-        assert(pion_core_accounts_tx_status(tx1) == 1);
-        assert(pion_core_accounts_tx_len(tx1) > 0 && pion_core_accounts_tx_data(tx1) != NULL);
+        int64_t h1 = pion_core_dir_owner_lock_acquire(data_dir, dlen);
+        assert(h1 >= 1);
         // Same-process second acquire MUST be contended (`0`).
-        assert(pion_core_accounts_tx_try_begin(data_dir, dlen) == 0);
-        // Independent exec'd child process (fresh unlocked mutex!) MUST observe OS `flock` contention (`exit 2`).
+        assert(pion_core_dir_owner_lock_acquire(data_dir, dlen) == 0);
+        // Independent exec'd child process MUST observe OS `flock` contention (`exit 2`).
         assert(run_exec_lock_probe(argv[0], data_dir) == 2);
-        pion_core_accounts_tx_end(tx1);
+        assert(pion_core_accounts_read(data_dir, dlen) == 1);
+        assert(pion_core_accounts_len() > 0 && pion_core_accounts_data() != NULL);
+        pion_core_dir_owner_lock_release(h1);
 
-        // Acquire new `tx2 > tx1` and invoke STALE `tx_end(tx1)`: MUST be a no-op and MUST NOT release `tx2`!
-        int64_t tx2 = pion_core_accounts_tx_try_begin(data_dir, dlen);
-        assert(tx2 > tx1);
-        pion_core_accounts_tx_end(tx1); // stale tx_id: MUST NOT release tx2!
+        // Acquire new `h2 > h1` and invoke STALE `release(h1)`: MUST be a no-op and MUST NOT release `h2`!
+        int64_t h2 = pion_core_dir_owner_lock_acquire(data_dir, dlen);
+        assert(h2 > h1);
+        pion_core_dir_owner_lock_release(h1);
         assert(run_exec_lock_probe(argv[0], data_dir) == 2);
-        pion_core_accounts_tx_end(tx2);
+        pion_core_dir_owner_lock_release(h2);
 
-        // After ending `tx2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
+        // After releasing `h2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
         assert(run_exec_lock_probe(argv[0], data_dir) == 0);
-        printf("[core_runtime_e2e] accounts_tx exec cross-process flock + stale tx_id immunity OK\n");
+
+        // Verify zero-block `pion_core_accounts_remove_atomic` on an isolated temp dir:
+        char rm_dir[256];
+        snprintf(rm_dir, sizeof(rm_dir), "%s_rm", data_dir);
+        assert(mkdir(rm_dir, 0700) == 0);
+        int64_t rlen = (int64_t)strlen(rm_dir);
+        const char *sample = "[{\"sub\":\"u-rm\"}]";
+        assert(pion_core_accounts_write_atomic(rm_dir, rlen, (const uint8_t *)sample, (int64_t)strlen(sample)) == 0);
+        assert(pion_core_accounts_read(rm_dir, rlen) == 1);
+        assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0);
+        assert(pion_core_accounts_read(rm_dir, rlen) == 0);
+        assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0); // idempotent on ENOENT
+        printf("[core_runtime_e2e] .core.lock cross-process flock + stale handle immunity + remove_atomic OK\n");
     }
 
-    // 7c. Deterministic dual-pipe barrier test for startup `accounts lock busy`:
-    //     1) Child holds `.accounts.lock` and signals 'L' on ready_pipe, then blocks on release_pipe.
-    //     2) Parent starts core and BEFORE releasing lock asserts `accounts` is `[]` and private
-    //        `settings.get("theme")` is gated (no `"light"` leak!).
-    //     3) Parent also calls `auth.begin` + `auth.cancel` WHILE lock is held (Codex P1-5: MUST NOT
-    //        cancel startup recovery because startup tracks `active_account_gen`, not `login_gen`!).
-    //     4) Parent writes 'R' to release_pipe -> asserts core asynchronously recovers `alice@still.fail`
-    //        and automatically installs `account-u-e2e.db` (`settings.get("theme") == "light"`)!
+    // 7c. R11 E2E: Real `fork()+execl()` single-owner `<dir>/.core.lock` fail-fast enforcement:
+    //     1) Parent starts live core on `data_dir` (holding `<dir>/.core.lock`).
+    //     2) Independent exec'd child calls `mb_core_start(data_dir)` -> MUST fail fast with
+    //        `data_dir_locked` fatal WITHOUT touching parent's DB or `accounts`!
+    //     3) Parent calls `mb_core_stop()` -> subsequent cold boot immediately acquires `.core.lock`,
+    //        recovers `alice@still.fail`, persisted `theme=light`, and persisted `default_station`!
+    {
+        atomic_store(&g_ctx.stopped, 0);
+        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+
+        // Spawn independent exec'd second core instance targeting the SAME `data_dir`:
+        pid_t second = fork();
+        assert(second >= 0);
+        if (second == 0) {
+            execl(argv[0], argv[0], "--second-core-start", data_dir, (char *)NULL);
+            _exit(127);
+        }
+        int sst = 0;
+        assert(waitpid(second, &sst, 0) == second && WIFEXITED(sst) && WEXITSTATUS(sst) == 0);
+
+        // Parent's live core state is 100% intact (`alice@still.fail` & `theme=light`):
+        send_json("{\"id\":62,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":62") != NULL && strstr(m->json, "alice@still.fail") != NULL);
+        send_json("{\"id\":63,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":63") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL);
+        mb_core_stop();
+
+        // After parent stops, a fresh restart immediately acquires `.core.lock` and reads Alice + `theme=light`!
+        atomic_store(&g_ctx.stopped, 0);
+        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+        send_json("{\"id\":64,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":64") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL);
+        mb_core_stop();
+        printf("[core_runtime_e2e] single-owner .core.lock fail-fast data_dir_locked + clean handoff OK\n");
+    }
+
+    // 7d. R11 E2E: Real `SIGKILL` crash recovery — OS kernel automatically releases `<dir>/.core.lock`
+    //     on sudden process death (ZERO zombie lock!), and parent starts immediately!
     {
         int ready_pipe[2];
-        int release_pipe[2];
         assert(pipe(ready_pipe) == 0);
-        assert(pipe(release_pipe) == 0);
         pid_t holder = fork();
         assert(holder >= 0);
         if (holder == 0) {
             close(ready_pipe[0]);
-            close(release_pipe[1]);
             dup2(ready_pipe[1], STDOUT_FILENO);
-            dup2(release_pipe[0], STDIN_FILENO);
             close(ready_pipe[1]);
-            close(release_pipe[0]);
-            execl(argv[0], argv[0], "--lock-hold-barrier", data_dir, (char *)NULL);
+            execl(argv[0], argv[0], "--lock-hold-sigkill", data_dir, (char *)NULL);
             _exit(127);
         }
         close(ready_pipe[1]);
-        close(release_pipe[0]);
         char locked = 0;
         assert(read(ready_pipe[0], &locked, 1) == 1 && locked == 'L');
         close(ready_pipe[0]);
 
-        // Start core WHILE separate process holds `.accounts.lock` indefinitely behind barrier!
+        // While child holds `.core.lock`, probe MUST report contended (`2`)!
+        assert(run_exec_lock_probe(argv[0], data_dir) == 2);
+
+        // Hard-kill child with `SIGKILL` (no cleanup handler can run!):
+        assert(kill(holder, SIGKILL) == 0);
+        int kst = 0;
+        assert(waitpid(holder, &kst, 0) == holder && WIFSIGNALED(kst) && WTERMSIG(kst) == SIGKILL);
+
+        // OS kernel released `.core.lock` immediately -> parent `mb_core_start` succeeds at 0ms!
         atomic_store(&g_ctx.stopped, 0);
         mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
         m = wait_for_msg_index(&g_ctx, next_idx++);
         assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
-
-        // BEFORE releasing lock: assert `accounts` sub is empty `[]` AND private `theme` is blocked!
-        send_json("{\"id\":62,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        send_json("{\"id\":65,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
         m = wait_for_msg_index(&g_ctx, next_idx++);
-        assert(strstr(m->json, "\"id\":62") != NULL && strstr(m->json, "\"value\":[]") != NULL);
-
-        send_json("{\"id\":620,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
-        m = wait_for_msg_index(&g_ctx, next_idx++);
-        assert(strstr(m->json, "\"id\":620") != NULL && strstr(m->json, "\"value\":\"light\"") == NULL);
-
-        // Call `auth.begin` + `auth.cancel` WHILE lock is still held: MUST NOT kill startup recovery!
-        send_json("{\"id\":621,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
-        m = wait_for_msg_index(&g_ctx, next_idx++);
-        assert(strstr(m->json, "\"id\":621") != NULL && strstr(m->json, "\"state\":\"") != NULL);
-        send_json("{\"id\":622,\"call\":\"auth.cancel\",\"params\":{}}");
-        m = wait_for_msg_index(&g_ctx, next_idx++);
-        assert(strstr(m->json, "\"id\":622") != NULL && strstr(m->json, "\"ok\":") != NULL);
-
-        // Release barrier and wait for child to drop `.accounts.lock`!
-        char rel = 'R';
-        assert(write(release_pipe[1], &rel, 1) == 1);
-        close(release_pipe[1]);
-        int hst = 0;
-        assert(waitpid(holder, &hst, 0) == holder && WIFEXITED(hst) && WEXITSTATUS(hst) == 0);
-
-        // Wait until an emitted message for sub 62 contains `alice@still.fail` (recovered from disk)!
-        int found_recovered_acct = 0;
-        for (int tries = 0; tries < 20; tries++) {
-            m = wait_for_msg_index(&g_ctx, next_idx++);
-            if (strstr(m->json, "\"id\":62") != NULL && strstr(m->json, "alice@still.fail") != NULL) {
-                found_recovered_acct = 1;
-                break;
-            }
-        }
-        assert(found_recovered_acct == 1);
-
-        // Verify `account-u-e2e.db` was opened and installed automatically: persisted `theme=light` (set before restart) is readable!
-        send_json("{\"id\":63,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
-        int found_theme = 0;
-        for (int tries = 0; tries < 20; tries++) {
-            m = wait_for_msg_index(&g_ctx, next_idx++);
-            if (strstr(m->json, "\"id\":63") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL) {
-                found_theme = 1;
-                break;
-            }
-        }
-        assert(found_theme == 1);
+        assert(strstr(m->json, "\"id\":65") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL);
         mb_core_stop();
-        printf("[core_runtime_e2e] startup lock-busy dual-pipe barrier + auth.begin/cancel survival + auto-install OK\n");
-    }
-
-    // 7d. R10 C unit test: Preallocated fixed 8192-byte (2 x 4096B A/B) in-place rejected slot:
-    //     - `ensure` creates exact 8192 bytes, preserves existing file without clobbering.
-    //     - Alternating `write_inplace` to slot 1 and slot 0 keeps EXACT SAME `st_ino` (0 new inodes/blocks -> ENOSPC-immune!).
-    //     - Max 4095-byte payload succeeds; 4096-byte payload rejected (-1); wrong-size file fails closed (`read == -1`).
-    {
-        const char *slot_name = ".rejected_slot_unit_test.json";
-        char slot_path[512];
-        snprintf(slot_path, sizeof(slot_path), "%s/%s", data_dir, slot_name);
-        (void)unlink(slot_path);
-
-        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
-        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
-        struct stat st0;
-        assert(stat(slot_path, &st0) == 0 && st0.st_size == 8192);
-
-        const char *p2 = "{\"seq\":2,\"tuples\":[{\"session\":\"s-a\",\"refresh\":\"r-a\"}]}";
-        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 1, (const uint8_t *)p2, (int64_t)strlen(p2)) == 0);
-        // Second `ensure` MUST NOT clobber our written slot 1!
-        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
-        struct stat st1;
-        assert(stat(slot_path, &st1) == 0 && st1.st_size == 8192 && st1.st_ino == st0.st_ino);
-
-        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 1);
-        assert(pion_core_rejected_slot_len() == 8192);
-        const char *buf = (const char *)pion_core_rejected_slot_data();
-        assert(memcmp(buf + 4096, p2, strlen(p2)) == 0 && buf[8191] == '\n');
-
-        // Exact 4095-byte boundary payload succeeds; 4096-byte payload rejected!
-        char max_payload[4096];
-        memset(max_payload, ' ', sizeof(max_payload));
-        const char *p3 = "{\"seq\":3,\"tuples\":[]}";
-        memcpy(max_payload, p3, strlen(p3));
-        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 0, (const uint8_t *)max_payload, 4095) == 0);
-        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 0, (const uint8_t *)max_payload, 4096) == -1);
-        struct stat st2;
-        assert(stat(slot_path, &st2) == 0 && st2.st_size == 8192 && st2.st_ino == st0.st_ino);
-        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 1);
-        assert(pion_core_rejected_slot_len() == 8192);
-
-        // Wrong-size file fails closed!
-        FILE *cf = fopen(slot_path, "wb");
-        assert(cf != NULL);
-        fputs("{\"seq\":1,\"tuples\":[]}", cf);
-        fclose(cf);
-        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == -1);
-        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == -1);
-        (void)unlink(slot_path);
-        printf("[core_runtime_e2e] 8KB A/B in-place rejected slot (inode-preserving, 4095/4096 boundary, fail-closed) OK\n");
-    }
-
-    // 7e. R10 E2E: SQLite unwritable (`chmod 0444 account-u-e2e.db`, 0 rejected rows in SQLite `meta`) +
-    //     8 KB A/B in-place slot persists rejected Alice tuple -> cold restart MUST refuse Alice's DB
-    //     (0 `"light"` leak!), CAS-remove Alice from disk `accounts`, and stay cleanly isolated!
-    {
-        char e2e_db_path[512];
-        snprintf(e2e_db_path, sizeof(e2e_db_path), "%s/databases/account-u-e2e.db", data_dir);
-        assert(chmod(e2e_db_path, 0444) == 0);
-        // Write Alice's exact `(session, refresh)` tuple ONLY into the 8 KB A/B in-place slot!
-        const char *alice_slot = ".rejected_slot_account-u-e2e.json";
-        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), alice_slot, (int64_t)strlen(alice_slot)) == 0);
-        const char *rej_json = "{\"seq\":5,\"tuples\":[{\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"refresh\":\"ref-e2e\"}]}";
-        assert(pion_core_rejected_slot_write_inplace(
-            data_dir, (int64_t)strlen(data_dir), alice_slot, (int64_t)strlen(alice_slot),
-            1, (const uint8_t *)rej_json, (int64_t)strlen(rej_json)) == 0);
-        // Restore DB mode so cold restart CAN open SQLite (proving SQLite `meta` has ZERO rejected tuples,
-        // so ONLY the 8 KB A/B in-place slot blocks Alice at cold boot!).
-        assert(chmod(e2e_db_path, 0600) == 0);
-
-        atomic_store(&g_ctx.stopped, 0);
-        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
-        m = wait_for_msg_index(&g_ctx, next_idx++);
-        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
-
-        // Private `theme=light` from `account-u-e2e.db` MUST NOT leak!
-        send_json("{\"id\":640,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
-        int saw_640 = 0;
-        for (int tries = 0; tries < 20; tries++) {
-            m = wait_for_msg_index(&g_ctx, next_idx++);
-            if (strstr(m->json, "\"id\":640") != NULL) {
-                assert(strstr(m->json, "\"value\":\"light\"") == NULL);
-                saw_640 = 1;
-                break;
-            }
-        }
-        assert(saw_640 == 1);
-
-        // Wait briefly for background CAS removal to wipe `u-e2e` from disk `accounts`!
-        char e2e_accts_path[512];
-        snprintf(e2e_accts_path, sizeof(e2e_accts_path), "%s/accounts", data_dir);
-        int disk_cleaned = 0;
-        for (int tries = 0; tries < 40; tries++) {
-            FILE *af = fopen(e2e_accts_path, "r");
-            if (af != NULL) {
-                char abuf[1024];
-                size_t an = fread(abuf, 1, sizeof(abuf) - 1, af);
-                fclose(af);
-                abuf[an] = '\0';
-                if (strstr(abuf, "u-e2e") == NULL) {
-                    disk_cleaned = 1;
-                    break;
-                }
-            }
-            struct timespec ts = { 0, 50 * 1000 * 1000 };
-            nanosleep(&ts, NULL);
-        }
-        assert(disk_cleaned == 1);
-        mb_core_stop();
-        printf("[core_runtime_e2e] 8KB A/B slot cold-boot rejection (0 SQLite rejected rows) + CAS cleanup OK\n");
+        printf("[core_runtime_e2e] SIGKILL crash recovery (zero zombie .core.lock) OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),
