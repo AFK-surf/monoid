@@ -162,7 +162,16 @@ pub fn dispatch_integration_route(
   // Browser Sign-Ins
   if head == "browser" && m == "POST" && n == 4 && segs[1] == "sign-ins" &&
   (segs[3] == "fill" || segs[3] == "self" || segs[3] == "deny") {
-    return Some(call_with_json(host, "signins." + segs[3], r, [segment_decode(segs[2])]))
+    let ask_id = segment_decode(segs[2])
+    if segs[3] == "fill" {
+      // Preflight BEFORE reading/parsing any plaintext credential body so an unwired
+      // station returns honest 501 without ever calling `json_input` on passwords/codes.
+      match (host.call)("signins.fill.preflight", r, [ask_id], base_codec::json_null()) {
+        Err(e) => return Some(RouteResult::err(e))
+        Ok(_) => ()
+      }
+    }
+    return Some(call_with_json(host, "signins." + segs[3], r, [ask_id]))
   }
 
   None

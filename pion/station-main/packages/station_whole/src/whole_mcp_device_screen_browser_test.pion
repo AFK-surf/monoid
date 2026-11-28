@@ -51,7 +51,9 @@ fn make_dsb_mem_browser(now_cell : Array[Int64]) -> BrowserOsManager {
     hub,
     hold_hub,
     fn(s : String) -> String { s },
-    fn(_cid : String) -> Option[String] { None },
+    fn(cid : String) -> Option[String] {
+      if cid == "ctx-card" { Some("s-card") } else { None }
+    },
   )
 }
 
@@ -232,6 +234,24 @@ test "w17e2b: screens.browser.open URL policy, control chars, 503 noBrowser, 501
   if wake_urls[wake_urls.length() - 1] != "about:blank" {
     panic("expected about:blank, got " + wake_urls[wake_urls.length() - 1])
   }
+
+  // 6. Sleeping tab wake success rebinds `UserTabsState` to the new target (no longer sleeping!)
+  let slept = browser.user_tabs.tick_idle(now_cell[0] + 999_999_999L)
+  if slept.length() == 0 || !browser.user_tabs.is_sleeping("u_112233445566") {
+    panic("expected u_112233445566 to sleep after idle timeout")
+  }
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("https://example.com/woke")), ("id", base_codec::json_str("u_112233445566"))]),
+  ) {
+    Ok(_) => ()
+    Err(e) => panic("waking sleeping tab should succeed: " + e.message)
+  }
+  if browser.user_tabs.is_sleeping("u_112233445566") {
+    panic("sleeping tab MUST be rebound to the new target after wake success!")
+  }
 }
 
 test "w17e2b: DomainHandlers.device workspace isolation and honest unwired refusals (zero fake ports)" {
@@ -326,15 +346,19 @@ test "w17e2b: DomainHandlers.device workspace isolation and honest unwired refus
     panic("device_control stream_audio must honestly refuse instead of blocking main loop, got: " + dsb_reply_text(sa))
   }
 
-  // 3. `wired_tools` only advertises live-backed tools (omits unwired computer/permissions/browser/device_use/phone_use/phone_send)
+  // 3. `wired_tools` ONLY advertises live-backed production tools (`device_list`, `screen`),
+  //    strictly omitting unwired `device_control`, `adb_devices`, `sign_in`, `computer`, `permissions`, `browser`, `device_use`, `phone_use`, `phone_send`!
   let wired = agents.wired_tools()
   let mut has_device_list = false
-  let mut has_sign_in = false
+  let mut has_screen = false
   for i in 0..<wired.length() {
     let tname = wired[i].name
     if tname == "device_list" { has_device_list = true }
-    if tname == "sign_in" { has_sign_in = true }
-    if tname == "computer"
+    if tname == "screen" { has_screen = true }
+    if tname == "device_control"
+    || tname == "adb_devices"
+    || tname == "sign_in"
+    || tname == "computer"
     || tname == "permissions"
     || tname == "browser"
     || tname == "device_use"
@@ -343,8 +367,8 @@ test "w17e2b: DomainHandlers.device workspace isolation and honest unwired refus
       panic("unwired tool falsely advertised in wired_tools: " + tname)
     }
   }
-  if !has_device_list || !has_sign_in {
-    panic("expected device_list and sign_in in wired_tools")
+  if !has_device_list || !has_screen {
+    panic("expected device_list and screen in wired_tools")
   }
 }
 
@@ -470,6 +494,17 @@ test "w17e2b: signins.{self,deny,fill} production-port 501 before plaintext, unk
   }
   let rt_prod = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, prod_ports)
   wire_device_screen_browser_with_port(rt_prod, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  // P1-2: HTTP route preflight MUST return 501 BEFORE `json_input` parses the body (even with invalid JSON!)
+  let bad_json_req = station_api::ApiRequest::{
+    ..req_alice,
+    body: "{not valid json".to_bytes(),
+  }
+  match station_api::dispatch_integration_route(bad_json_req, ["browser", "sign-ins", "g_ask1", "fill"], api.admin.host) {
+    Some(rr) => if rr.response.status != 501 {
+      panic("expected HTTP 501 preflight before json_input on malformed body, got " + rr.response.status.to_string())
+    }
+    None => panic("expected integration route match for POST /browser/sign-ins/g_ask1/fill")
+  }
   match (api.admin.host.call)(
     "signins.fill",
     req_alice,
@@ -698,5 +733,95 @@ test "w17e2b: signins.{self,deny,fill} production-port 501 before plaintext, unk
       }
     }
     None => panic("missing g_open_arch")
+  }
+
+  // 11. P1-1 + P1-3 + P1-4: `sign_in` card creation checks:
+  //     (a) external channel / missing chat_addr refused (no "CHAT/0" fallback)
+  //     (b) `CARD_OCCUPIED` refused without overwriting
+  //     (c) `"thread"` SSE payload uses `"id"` (not `"thread"`) + `"entries"`
+  //     (d) card options omit password-manager option when `async_signin_driver_available == false`
+  browser.tabs.on_target_created(station_browser::TargetSnapshot::{
+    target_id: "tab-c1",
+    target_type: "page",
+    title: "Sign in",
+    url: "https://gitlab.com/login",
+    attached: true,
+    opener_id: None,
+    browser_context_id: Some("ctx-card"),
+  })
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: None,
+  })
+  let no_addr_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !no_addr_r.is_error || !dsb_reply_text(no_addr_r).contains("no active chat address") {
+    panic("missing chat_addr must be refused (no CHAT/0 fallback), got: " + dsb_reply_text(no_addr_r))
+  }
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: Some("C12345/1700.1"),
+  })
+  let ext_ch_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !ext_ch_r.is_error || !dsb_reply_text(ext_ch_r).contains("external chat channel") {
+    panic("external chat channel must be honestly refused, got: " + dsb_reply_text(ext_ch_r))
+  }
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: Some("CHAT/ts-777"),
+  })
+  mem.open_card_threads.set(777L, true)
+  let occ_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !occ_r.is_error || !dsb_reply_text(occ_r).contains("CARD_OCCUPIED") {
+    panic("CARD_OCCUPIED must refuse without overwriting, got: " + dsb_reply_text(occ_r))
+  }
+  mem.open_card_threads.remove(777L)
+  // Wire production-default (no async autofill driver) and post a card: assert SSE has `"id": 777` and no password-manager option!
+  wire_device_screen_browser_with_port(rt_prod, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  let prod_signin_h = match agents.signin_tool_override { Some(f) => f, None => panic("missing prod signin") }
+  let ok_card = prod_signin_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("pull repo"))]),
+  )
+  if ok_card.is_error {
+    panic("expected sign_in card to post cleanly, got: " + dsb_reply_text(ok_card))
+  }
+  if mem.thread_sse_events.length() == 0 {
+    panic("expected thread SSE event on sign_in card post")
+  }
+  let sse_j = mem.thread_sse_events[mem.thread_sse_events.length() - 1]
+  let sse_s = base_codec::json_stringify(sse_j)
+  if base_codec::json_get(sse_j, "id") is None || base_codec::json_get(sse_j, "entries") is None {
+    panic("P1-1: thread SSE payload MUST have 'id' and 'entries', got: " + sse_s)
+  }
+  if sse_s.contains("用密码管理器登录") || !sse_s.contains("在画面中登录") {
+    panic("P1-3: card options MUST omit password-manager option when async autofill driver is unwired: " + sse_s)
   }
 }

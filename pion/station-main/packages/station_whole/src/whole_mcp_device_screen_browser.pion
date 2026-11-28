@@ -338,6 +338,8 @@ pub struct DsbMemStoreState {
   pub closed_cards : Array[(Int64, String)] // (thread, card_ts)
   pub notices : Array[(String, String)] // (session, text)
   pub vault_held : Map[String, String] // (session + "\x00" + site) -> message
+  pub open_card_threads : Map[Int64, Bool] // thread -> has unanswered card (`CARD_OCCUPIED`)
+  pub thread_sse_events : Array[base_codec::Json] // emitted `"thread"` SSE payloads
 }
 
 pub fn DsbMemStoreState::new() -> DsbMemStoreState {
@@ -348,7 +350,18 @@ pub fn DsbMemStoreState::new() -> DsbMemStoreState {
     closed_cards: [],
     notices: [],
     vault_held: Map::new(),
+    open_card_threads: Map::new(),
+    thread_sse_events: [],
   }
+}
+
+/// Build the `"thread"` SSE payload matching `client/core-ts/src/station/sync.ts:2321-2325`
+/// (`{"id": <thread_id>, "entries": [<entry>]}`).
+pub fn signin_thread_sse_payload(tid : Int64, entry_j : base_codec::Json) -> base_codec::Json {
+  base_codec::json_obj([
+    ("id", sql_db::int64_to_json(tid)),
+    ("entries", base_codec::json_arr([entry_j])),
+  ])
 }
 
 /// Pure in-memory `DsbStorePort` (zero SQLite FFI, zero OS FFI) wired to `agents.hub` so unit
@@ -391,13 +404,34 @@ pub fn DsbStorePort::in_memory(
       _owner : String,
       status : String,
       raw_body : String,
-      _tid : Int64,
-      _card_ts : String,
-      _text : String,
-      _card_json : String,
-      _now_ms : Int64,
+      tid : Int64,
+      card_ts : String,
+      text : String,
+      card_json : String,
+      now_ms : Int64,
     ) -> Result[Unit, String] {
+      match mem.open_card_threads.get(tid) {
+        Some(true) => return Err("CARD_OCCUPIED: this thread already has an unanswered card")
+        _ => ()
+      }
       mem.asks.set(id, (session, status, raw_body))
+      mem.open_card_threads.set(tid, true)
+      let card_parsed = match base_codec::json_parse(card_json) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => base_codec::json_obj([])
+      }
+      let entry_j = base_codec::json_obj([
+        ("thread", sql_db::int64_to_json(tid)),
+        ("n", sql_db::int64_to_json(1L)),
+        ("kind", base_codec::json_str("message")),
+        ("ts", base_codec::json_str(card_ts)),
+        ("authorKind", base_codec::json_str("agent")),
+        ("author", base_codec::json_str(session)),
+        ("text", base_codec::json_str(text)),
+        ("card", card_parsed),
+        ("at", sql_db::int64_to_json(now_ms)),
+      ])
+      mem.thread_sse_events.push(signin_thread_sse_payload(tid, entry_j))
       Ok(())
     },
     settle_signin_ask: fn(
@@ -571,8 +605,19 @@ pub fn DsbStorePort::sqlite(
         proposal: None,
         at: now_ms,
       }
-      // Single atomic SQLite transaction: card message + `signin_asks` row commit or roll back together!
+      // Single atomic SQLite transaction: check `CARD_OCCUPIED` + insert card message + `signin_asks` row!
       let inserted_n : Int64 = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+        let occupied = match txdb.first(
+          "SELECT 1 AS c FROM pending_cards WHERE thread = ?1 UNION ALL SELECT 1 AS c FROM pending_system_cards WHERE thread = ?1 LIMIT 1",
+          [sql_db::int64_to_json(tid)],
+        ) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        if occupied {
+          return Err(sql_db::SqlError::{ code: 19, message: "CARD_OCCUPIED: this thread already has an unanswered card" })
+        }
         let (msg_n, _) = match st.insert_message(msg) {
           Ok(pair) => pair
           Err(e) => return Err(e)
@@ -593,9 +638,13 @@ pub fn DsbStorePort::sqlite(
         Ok(msg_n)
       }) {
         Ok(n) => n
-        Err(e) => return Err("sign_in atomic persist failed: " + e.message)
+        Err(e) => if e.message.contains("CARD_OCCUPIED") {
+          return Err(e.message)
+        } else {
+          return Err("sign_in atomic persist failed: " + e.message)
+        }
       }
-      // Emit `"thread"` SSE event so live clients immediately render the new sign-in card
+      // Emit `"thread"` SSE event (`{"id": tid, "entries": [...]}`) aligned with `client/core-ts/src/station/sync.ts:2321-2325`
       let card_parsed = match base_codec::json_parse(card_json) {
         base_codec::JsonParseResult::Ok(j) => j
         _ => base_codec::json_obj([])
@@ -628,10 +677,7 @@ pub fn DsbStorePort::sqlite(
       }
       let _ = events.emit(
         "thread",
-        base_codec::json_obj([
-          ("thread", sql_db::int64_to_json(tid)),
-          ("entries", base_codec::json_arr([entry_j])),
-        ]),
+        signin_thread_sse_payload(tid, entry_j),
         ev_target,
         now_ms,
         None,
@@ -730,6 +776,8 @@ pub struct DeviceScreenBrowserPorts {
   pub helper_permissions : Option[(Option[String]) -> Result[String, String]]
   /// Optional non-blocking `phone_send` transport hook `(session, path, staged_name) -> Result[String, String]`.
   pub phone_send_file : Option[(String, String, String) -> Result[String, String]]
+  /// Whether real AirPlay / Android TV OS handlers are wired (`false` -> `device_control` omitted from `wired_tools`).
+  pub device_control_available : () -> Bool
   /// Rig-device approval check `(ws, session, device_id) -> Bool`.
   pub rig_device_approved : (String, String, String) -> Bool
   /// Filesystem port for `device_control`.
@@ -766,6 +814,7 @@ pub fn DeviceScreenBrowserPorts::in_memory() -> DeviceScreenBrowserPorts {
     computer_act: None,
     helper_permissions: None,
     phone_send_file: None,
+    device_control_available: fn() -> Bool { false },
     rig_device_approved: fn(_ws : String, _session : String, _dev_id : String) -> Bool { false },
     device_fs: DeviceFsPort::{
       stat_size: fn(_p : String) -> Result[Int64, String] { Err("not found") },
@@ -1167,6 +1216,14 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
   }
   let viewer_email = match json_field_str(body, "_viewerEmail") { Some(s) => s, None => "" }
   let viewer_ws = match json_field_str(body, "_viewerWorkspace") { Some(s) => s, None => "" }
+
+  // P1-2: Pre-body-parse preflight called by `routes_integrations.pion` BEFORE `json_input`.
+  if op == "signins.fill.preflight" {
+    if !(self.ports.async_signin_driver_available)() || self.ports.step_async_signin_fill is None {
+      return Err(station_api::ApiError::new(501, "signins.fill async CDP autofill driver is not yet wired on Pion station"))
+    }
+    return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+  }
 
   if op != "signins.self" && op != "signins.deny" && op != "signins.fill" {
     return Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
@@ -1652,18 +1709,31 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
     Some(t) if t > 0L => t
     _ => return station_tools::error_reply("This session has no chat to ask in.")
   }
-  let chat_addr = match sinfo.chat_addr { Some(a) => a, None => "CHAT/0" }
+  let chat_addr = match sinfo.chat_addr {
+    Some(a) if a.trim().length() > 0 => a.trim()
+    _ => return station_tools::error_reply("This session has no active chat address to ask in.")
+  }
+  if !chat_addr.starts_with("CHAT/") && !chat_addr.starts_with("EMBER/") {
+    return station_tools::error_reply(
+      "sign_in on external chat channel (" + chat_addr + ") is not yet wired on Pion station (Connects text + screen link posting is pending).",
+    )
+  }
   let ask_id = "g_" + (self.ports.random_hex)(6)
   let card_ts = now_ms.to_string() + "." + (self.ports.random_hex)(3)
+  let has_fill_driver = (self.ports.async_signin_driver_available)() && self.ports.step_async_signin_fill is Some(_)
+  let card_options : Array[base_codec::Json] = if has_fill_driver {
+    [
+      base_codec::json_obj([("label", base_codec::json_str("在画面中登录")), ("detail", base_codec::json_str("打开此网页，自行输入"))]),
+      base_codec::json_obj([("label", base_codec::json_str("用密码管理器登录")), ("detail", base_codec::json_str("由 station 填入并提交")), ("recommended", base_codec::json_bool(true))]),
+    ]
+  } else {
+    [
+      base_codec::json_obj([("label", base_codec::json_str("在画面中登录")), ("detail", base_codec::json_str("打开此网页，自行输入")), ("recommended", base_codec::json_bool(true))]),
+    ]
+  }
   let card_j = base_codec::json_obj([
     ("type", base_codec::json_str("options")),
-    (
-      "options",
-      base_codec::json_arr([
-        base_codec::json_obj([("label", base_codec::json_str("在画面中登录")), ("detail", base_codec::json_str("打开此网页，自行输入"))]),
-        base_codec::json_obj([("label", base_codec::json_str("用密码管理器登录")), ("detail", base_codec::json_str("由 station 填入并提交")), ("recommended", base_codec::json_bool(true))]),
-      ]),
-    ),
+    ("options", base_codec::json_arr(card_options)),
     ("assignee", base_codec::json_str(owner)),
     (
       "signin",
@@ -1893,14 +1963,14 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
       items.push(device_entry_json(kept[i], station_id, rig_in, ok_grant))
     }
     if items.length() == 0 {
-      return station_tools::text_reply("No device is attached to this workspace's stations, and no phone is lent to this station. A member adds one on a station's page in the still.fail app (添加设备); a person lends their Android phone by turning on 共享调试 in the app on it.")
+      return station_tools::text_reply("No device is attached to this workspace's station. A member can add one on the station's page in the still.fail app (添加设备). Phone lending is not yet supported on Pion station.")
     }
     return station_tools::text_reply(base_codec::json_stringify(base_codec::json_arr(items)))
   }
 
   if tool == "adb_devices" {
-    return station_tools::text_reply(
-      "No Android phone is shared with every agent of this station. To use the phone of the person you work for, ask with phone_use (or device_use): its card in your chat is how they grant it, to this chat alone. Never post a link to 共享调试 to ask for it.",
+    return station_tools::error_reply(
+      "adb_devices is not yet wired on Pion station (shared Android phone listing and per-chat adb doors are pending).",
     )
   }
 
@@ -2279,10 +2349,15 @@ pub fn DeviceScreenBrowserRuntime::handle_browser_tool(
 // ---------------------------------------------------------------------------
 
 /// Compute the honest list of extra MCP tool names backed by live handlers in `rt`.
-/// Unwired backends (`device_use`, `phone_use`, `phone_send`, `computer`, `permissions`, `browser`)
-/// are NOT advertised until their live OS/door/CDP backends are wired!
+/// Production default ONLY advertises `["device_list", "screen"]`!
+/// Unwired backends (`device_control`, `adb_devices`, `device_use`, `phone_use`, `phone_send`,
+/// `computer`, `permissions`, `browser`, `sign_in`) are NOT advertised until their live OS/door/CDP
+/// backends are wired.
 pub fn DeviceScreenBrowserRuntime::honest_wired_tool_names(self : DeviceScreenBrowserRuntime) -> Array[String] {
-  let names : Array[String] = ["device_list", "device_control", "adb_devices", "screen", "sign_in"]
+  let names : Array[String] = ["device_list", "screen"]
+  if (self.ports.device_control_available)() {
+    names.push("device_control")
+  }
   if self.ports.computer_act is Some(_) {
     names.push("computer")
   }
@@ -2291,9 +2366,7 @@ pub fn DeviceScreenBrowserRuntime::honest_wired_tool_names(self : DeviceScreenBr
   }
   if self.ports.ensure_session_browser is Some(_) {
     names.push("browser")
-  }
-  if self.ports.phone_send_file is Some(_) {
-    names.push("phone_send")
+    names.push("sign_in")
   }
   names
 }
@@ -2347,4 +2420,10 @@ pub fn wire_device_screen_browser_runtime(
 ) -> Unit {
   let store_port = DsbStorePort::sqlite(whole_store, agents, api.events, api.hooks)
   wire_device_screen_browser_with_port(rt, store_port, agents, api.hooks, station_id, now_ms_fn)
+  agents.on_session_archived_dsb = Some(fn(sk : String, ended_ids : Array[String], now_ms : Int64) -> Unit {
+    rt.purge_mem_for_archived_session(sk, ended_ids, now_ms)
+    if ended_ids.length() > 0 {
+      let _ = drain_card_outbox_once(whole_store, Some(api.events), now_ms)
+    }
+  })
 }

@@ -1159,9 +1159,6 @@ pub fn UserTabsState::open_new(
   target_id : String,
   now_ms : Int64,
 ) -> Result[String, String] {
-  if self.by_key.contains(key) {
-    return Ok("browser:" + key)
-  }
   let url_str = if trim_ascii(raw_url).length() == 0 {
     BLANK_PAGE
   } else {
@@ -1169,6 +1166,22 @@ pub fn UserTabsState::open_new(
       Some(u) => u
       None => return Err("station.screen.badUrl")
     }
+  }
+  match self.by_key.get(key) {
+    Some(existing) => {
+      if existing.target_id is Some(_) && !existing.discarded {
+        return Ok("browser:" + key)
+      }
+      // Sleeping or discarded tab waking up: rebind to the newly created CDP target!
+      let next_url = if trim_ascii(raw_url).length() > 0 { url_str } else { existing.url }
+      existing.url = next_url
+      existing.target_id = Some(target_id)
+      existing.idle_deadline_ms = Some(now_ms + self.idle_ms)
+      existing.discarded = false
+      self.by_target.set(target_id, key)
+      return Ok("browser:" + key)
+    }
+    None => ()
   }
   self.by_key.set(
     key,

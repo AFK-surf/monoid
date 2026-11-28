@@ -3136,6 +3136,8 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
 
   const siFill = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
   assert.equal(siFill.status, 501, `signins.fill without async CDP driver must return honest 501 before touching plaintext, got ${siFill.status}`);
+  const siFillBadJson = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from("{not-json"));
+  assert.equal(siFillBadJson.status, 501, `signins.fill preflight must return 501 BEFORE json_input parses body, got ${siFillBadJson.status}`);
   const siDeny = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/deny", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(siDeny.status, 409, `signins.deny unknown ask must return 409 signin_refused, got ${siDeny.status}`);
 
@@ -3215,6 +3217,35 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
     assert.equal(list2.status, 200, list2.body);
     assert.ok(!list2.body.includes("Lab Bench Box"), `device_list must diff-delete removed device immediately: ${list2.body}`);
 
+    // Verify MCP tools/list ONLY advertises live-backed production tools (`device_list`, `screen`)
+    const toolsList = await httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokRow!.token}`,
+        host: `127.0.0.1:${mcpPort}`,
+      },
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    );
+    assert.equal(toolsList.status, 200, toolsList.body);
+    const advertisedNames = (JSON.parse(toolsList.body).result.tools as Array<{ name: string }>).map((t) => t.name);
+    assert.ok(advertisedNames.includes("device_list") && advertisedNames.includes("screen"), `expected device_list and screen in tools/list: ${advertisedNames.join(",")}`);
+    for (const unwired of ["device_control", "adb_devices", "sign_in", "computer", "permissions", "browser", "device_use", "phone_use", "phone_send"]) {
+      assert.ok(!advertisedNames.includes(unwired), `unwired tool ${unwired} must NOT be advertised in production tools/list`);
+    }
+
+    // Seed a real card entry on sess-w17e2b-r2's thread + an OPEN signin_asks referencing its thread & cardTs
+    const thRow = dbRw.prepare("SELECT thread AS id FROM thread_sessions WHERE session = ? LIMIT 1").get("sess-w17e2b-r2") as { id: number } | undefined;
+    assert.ok(thRow && thRow.id > 0, "expected real thread for sess-w17e2b-r2");
+    const maxNRow = dbRw.prepare("SELECT COALESCE(MAX(n), 0) AS mn FROM entries WHERE thread = ?").get(thRow!.id) as { mn: number };
+    const cardN = maxNRow.mn + 1;
+    const cardTs = "1700000000.001";
+    const cardJson = JSON.stringify({ type: "options", assignee: "owner@example.com", options: [{ label: "在画面中登录" }], signin: { id: "g_r2_arch1", site: "github.com" } });
+    dbRw
+      .prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, card, at) VALUES (?, ?, 'message', ?, 'agent', ?, 'sign in card', ?, ?)")
+      .run(thRow!.id, cardN, cardTs, "sess-w17e2b-r2", cardJson, Date.now());
     const askBody = JSON.stringify({
       id: "g_r2_arch1",
       session: "sess-w17e2b-r2",
@@ -3223,6 +3254,8 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
       tab: "tab-1",
       at: Math.floor(Date.now() / 1000),
       status: "pending",
+      thread: thRow!.id,
+      cardTs,
       customSurvive: "keep-r2-field",
     });
     dbRw.prepare("INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?, ?, ?, ?, ?)").run("g_r2_arch1", "sess-w17e2b-r2", "owner@example.com", "pending", askBody);
@@ -3239,6 +3272,11 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
     assert.ok(row, "expected g_r2_arch1 in signin_asks");
     assert.equal(row!.status, "ended", `archive_session must close open signin_asks to 'ended', got ${row!.status}`);
     assert.ok(row!.body.includes("keep-r2-field"), `archive_session must preserve unknown JSON fields in signin_asks.body: ${row!.body}`);
+    const parsedAsk = JSON.parse(row!.body) as { thread: number };
+    const closedRow = dbCheckR2.prepare("SELECT n FROM closed_cards WHERE thread = ? LIMIT 1").get(parsedAsk.thread) as { n: number } | undefined;
+    assert.ok(closedRow, "archive_session must close the signin card in closed_cards via card_outbox drain");
+    const editRow = dbCheckR2.prepare("SELECT kind, card FROM entries WHERE thread = ? AND kind = 'edit' LIMIT 1").get(parsedAsk.thread) as { kind: string; card: string } | undefined;
+    assert.ok(editRow, "archive_session must append a card edit entry via card_outbox drain");
   } finally {
     dbCheckR2.close();
   }

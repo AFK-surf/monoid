@@ -801,6 +801,7 @@ pub fn wire_whole_core_runtime_hooks(
     computer_act: base_ports.computer_act,
     helper_permissions: base_ports.helper_permissions,
     phone_send_file: base_ports.phone_send_file,
+    device_control_available: fn() -> Bool { false },
     rig_device_approved: fn(ws : String, session : String, dev_id : String) -> Bool {
       core.rig.grants.device_refusal(ws, ctx.station_key.id, session, dev_id, false) is None
     },
