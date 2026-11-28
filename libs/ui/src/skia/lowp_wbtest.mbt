@@ -512,91 +512,108 @@ test "lowp gradient fast paths byte-exact equivalence with generic stage pipelin
 }
 
 ///|
-test "LowP per-blitter scratch isolates interleaved pipelines and allocates lazily" {
-  let dst1 = Pixmap::new(16, 2).unwrap()
-  let dst2 = Pixmap::new(16, 2).unwrap()
-  let ref1 = Pixmap::new(16, 2).unwrap()
-  let ref2 = Pixmap::new(16, 2).unwrap()
+test "LowP per-blitter scratch isolates pipelines, wires through generic, and reuses lazily" {
+  // 1. lowp_start_generic genuinely writes into the passed LowPScratch (including mask_c)
+  //    without touching an independent LowPScratch.
+  let dst1 = Pixmap::new(16, 4).unwrap()
+  let dst2 = Pixmap::new(16, 4).unwrap()
+  let ref1 = Pixmap::new(16, 4).unwrap()
+  let ref2 = Pixmap::new(16, 4).unwrap()
   fill_pattern_pixmap(dst1)
   fill_pattern_pixmap(ref1)
   fill_pattern_pixmap(dst2)
   fill_pattern_pixmap(ref2)
 
-  let m1 = Mask::new(16, 2).unwrap()
-  let m2 = Mask::new(16, 2).unwrap()
-  for i in 0..<32 {
+  let m1 = Mask::new(16, 4).unwrap()
+  let m2 = Mask::new(16, 4).unwrap()
+  let m_zero = Mask::new(16, 4).unwrap()
+  for i in 0..<64 {
     m1.data[i] = ((i * 37 + 19) % 256).to_byte()
     m2.data[i] = ((i * 83 + 101) % 256).to_byte()
   }
 
   let ctx1 = Context::new()
   ctx1.uniform_rgba = (200, 30, 10, 220)
-  let ctx2 = Context::new()
-  ctx2.uniform_rgba = (15, 70, 190, 210)
+  let s_used = LowPScratch::new()
+  let s_clean = LowPScratch::new()
+  assert_true(!physical_equal(s_used.r, s_clean.r))
+  assert_true(!physical_equal(s_used.mask_c, s_clean.mask_c))
 
-  let s1 = LowPScratch::new()
-  let s2 = LowPScratch::new()
-  assert_true(!physical_equal(s1.r, s2.r))
-  assert_true(!physical_equal(s1.mask_c, s2.mask_c))
-
-  let p1 : LowP = {
-    r: s1.r,
-    g: s1.g,
-    b: s1.b,
-    a: s1.a,
-    dr: s1.dr,
-    dg: s1.dg,
-    db: s1.db,
-    da: s1.da,
-    fx: s1.fx,
-    fy: s1.fy,
-    mask_c: s1.mask_c,
-    tail: 16,
-    dx: 0,
-    dy: 0,
-    ctx: ctx1,
-    mask_ctx: m1.mask_ctx(),
-    aa_mask_ctx: aa_mask_none,
-    dst: dst1.as_subpixmap(),
-  }
-  let p2 : LowP = {
-    r: s2.r,
-    g: s2.g,
-    b: s2.b,
-    a: s2.a,
-    dr: s2.dr,
-    dg: s2.dg,
-    db: s2.db,
-    da: s2.da,
-    fx: s2.fx,
-    fy: s2.fy,
-    mask_c: s2.mask_c,
-    tail: 16,
-    dx: 0,
-    dy: 0,
-    ctx: ctx2,
-    mask_ctx: m2.mask_ctx(),
-    aa_mask_ctx: aa_mask_none,
-    dst: dst2.as_subpixmap(),
-  }
   let stages : Array[Stage] = [UniformColor, MaskU8, LoadDestination, StSourceOver, Store]
-  for st in stages {
-    assert_true(p1.stage(st))
-    assert_true(p2.stage(st))
-  }
   let r16 = ScreenIntRect::from_xywh(0, 0, 16, 1).unwrap()
-  lowp_start_generic(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, ref1.as_subpixmap(), LowPScratch::new())
-  lowp_start_generic(stages, r16, aa_mask_none, m2.mask_ctx(), ctx2, ref2.as_subpixmap(), LowPScratch::new())
-  assert_bytes_eq(dst1.data, ref1.data)
-  assert_bytes_eq(dst2.data, ref2.data)
+  lowp_start_generic(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst1.as_subpixmap(), s_used)
+  let mut wrote_r = false
+  let mut wrote_mask = false
+  for i in 0..<16 {
+    if s_used.r[i] != 0 || s_used.a[i] != 0 {
+      wrote_r = true
+    }
+    if s_used.mask_c[i] != 0 {
+      wrote_mask = true
+    }
+    assert_eq(s_clean.r[i], 0)
+    assert_eq(s_clean.mask_c[i], 0)
+  }
+  assert_true(wrote_r)
+  assert_true(wrote_mask)
 
-  // PipelineScratch stays None on fast path and reuses one LowPScratch across generic runs.
+  // MaskU8 all-zero early-return leaves dst untouched.
+  let dst_zero = Pixmap::new(16, 4).unwrap()
+  let ref_zero = Pixmap::new(16, 4).unwrap()
+  fill_pattern_pixmap(dst_zero)
+  fill_pattern_pixmap(ref_zero)
+  lowp_start_generic(stages, r16, aa_mask_none, m_zero.mask_ctx(), ctx1, dst_zero.as_subpixmap(), LowPScratch::new())
+  assert_bytes_eq(dst_zero.data, ref_zero.data)
+
+  // 2. PipelineScratch stays None on solid and gradient fast paths, and reuses one LowPScratch on generic runs.
   let ps = PipelineScratch::new()
-  lowp_start([UniformColor, SourceOverRgba], r16, aa_mask_none, mask_none, ctx1, dst1.as_subpixmap(), ps)
+  lowp_start([UniformColor, SourceOverRgba], r16, aa_mask_none, mask_none, ctx1, dst2.as_subpixmap(), ps)
   assert_true(ps.lowp is None)
-  lowp_start(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst1.as_subpixmap(), ps)
+
+  let grad = LinearGradient::new(
+    Point::from_xy(0.0, 0.0),
+    Point::from_xy(16.0, 0.0),
+    [GradientStop::new(0.0, Color::from_rgba8(255, 0, 0, 255)), GradientStop::new(1.0, Color::from_rgba8(0, 0, 255, 255))],
+    Pad,
+    Transform::identity(),
+  ).unwrap()
+  let gpb = RasterPipelineBuilder::new()
+  assert_true(grad.push_stages(Linear, gpb))
+  gpb.push(SourceOverRgba)
+  let grp = gpb.compile()
+  assert_true(grp.low)
+  lowp_start(grp.stages, r16, aa_mask_none, mask_none, grp.ctx, dst2.as_subpixmap(), ps)
+  assert_true(ps.lowp is None)
+
+  lowp_start(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst2.as_subpixmap(), ps)
   let first = ps.lowp.unwrap()
-  lowp_start(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst1.as_subpixmap(), ps)
+  lowp_start(stages, r16, aa_mask_none, m2.mask_ctx(), ctx1, dst2.as_subpixmap(), ps)
   let second = ps.lowp.unwrap()
   assert_true(physical_equal(first.r, second.r))
+
+  // 3. Blitter-level invariants: two blitters own distinct LowPScratch, and one blitter reuses
+  //    a single LowPScratch across blit_rect, blit_anti_h, and blit_mask.
+  let p_masked = Paint::default()
+  p_masked.set_color_rgba8(180, 90, 40, 200)
+  let b1 = RasterPipelineBlitter::new(p_masked, Some(m1.mask_ctx()), ref1.as_subpixmap()).unwrap()
+  let b2 = RasterPipelineBlitter::new(p_masked, Some(m2.mask_ctx()), ref2.as_subpixmap()).unwrap()
+  assert_true(b1.scratch is None)
+  assert_true(b2.scratch is None)
+  b1.blit_rect(r16)
+  let b1_s0 = b1.scratch.unwrap()
+  let b1_lp0 = b1_s0.lowp.unwrap()
+  let aa : FixedArray[Int] = FixedArray::make(8, 128)
+  let runs : FixedArray[Int] = [4, 0, 0, 0, 0, 0, 0, 0]
+  b1.blit_anti_h(0, 1, aa, runs)
+  b1.blit_mask((100, 200), ScreenIntRect::from_xywh(0, 2, 2, 1).unwrap(), 2, ScreenIntRect::from_xywh(0, 2, 2, 1).unwrap())
+  let b1_s1 = b1.scratch.unwrap()
+  let b1_lp1 = b1_s1.lowp.unwrap()
+  assert_true(physical_equal(b1_s0, b1_s1))
+  assert_true(physical_equal(b1_lp0.r, b1_lp1.r))
+
+  b2.blit_rect(r16)
+  let b2_s0 = b2.scratch.unwrap()
+  let b2_lp0 = b2_s0.lowp.unwrap()
+  assert_true(!physical_equal(b1_s0, b2_s0))
+  assert_true(!physical_equal(b1_lp0.r, b2_lp0.r))
 }
