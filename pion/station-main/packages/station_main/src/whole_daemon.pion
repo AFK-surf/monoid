@@ -6969,13 +6969,18 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
           }
           let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
+          st.live_runners.set_handover_state_path(lr_ho_path)
           match ctx.ops_fs.read_text(lr_ho_path) {
             Ok(lr_raw) => {
               match base_codec::json_parse(lr_raw) {
-                base_codec::JsonParseResult::Ok(lr_j) => st.live_runners.import_handover_state_json(lr_j)
+                base_codec::JsonParseResult::Ok(lr_j) => {
+                  st.live_runners.import_handover_state_json(lr_j)
+                  // R12 P1-1: Keep `whole-live-runners.json` on disk until ALL pending_end_turns
+                  // and draining_stopping_ids are truly drained (unlink only when empty).
+                  st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+                }
                 base_codec::JsonParseResult::Err(e) => ctx.log("[live-runner] failed to parse " + lr_ho_path + ": " + e)
               }
-              let _ = (ctx.ops_fs.remove)(lr_ho_path)
             }
             Err(_) => ()
           }
@@ -8457,7 +8462,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       match state_opt {
         Some(st) => {
           match base_codec::json_get(carried, "liveRunnerHandover") {
-            Some(lr_j) => st.live_runners.import_handover_state_json(lr_j)
+            Some(lr_j) => {
+              let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
+              st.live_runners.set_handover_state_path(lr_ho_path)
+              st.live_runners.import_handover_state_json(lr_j)
+              st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+            }
             None => ()
           }
           match base_codec::json_get(carried, "handoverFailed") {
@@ -8498,8 +8508,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     let lr_j = st.live_runners.export_handover_state_json()
                     ctx.carry(base_codec::json_obj([("liveRunnerHandover", lr_j)]))
                     let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
-                    let lr_body = base_codec::json_stringify(lr_j)
-                    let _ = station_ops::write_private(ctx.ops_fs, lr_ho_path, lr_body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep)
+                    st.live_runners.set_handover_state_path(lr_ho_path)
+                    st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
                   }
                   st.connects.stop()
                   if st.replica.kept_log.entries.length() > 0 {

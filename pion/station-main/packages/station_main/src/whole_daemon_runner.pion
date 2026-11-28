@@ -1801,6 +1801,7 @@ pub struct LiveRunnerManager {
   by_spawn_ev : Map[Int64, Int]
   pending_end_turns : Map[String, ManagerPendingEndTurn]
   draining_stopping_ids : Map[String, Bool]
+  mut handover_state_path : Option[String]
   reprompt_restarts : Map[String, Int]
   mut next_conn_id : Int
   mut next_ev_id : Int64
@@ -1815,11 +1816,66 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     by_spawn_ev: Map::new(),
     pending_end_turns: Map::new(),
     draining_stopping_ids: Map::new(),
+    handover_state_path: None,
     reprompt_restarts: Map::new(),
     next_conn_id: 1,
     next_ev_id: LIVE_RUNNER_EV_BASE,
     next_turn_seq: 1,
   }
+}
+
+pub fn LiveRunnerManager::set_handover_state_path(self : LiveRunnerManager, path : String) -> Unit {
+  if path.length() > 0 {
+    self.handover_state_path = Some(path)
+  }
+}
+
+/// R12 P1-1: Atomically persists `whole-live-runners.json` while `pending_end_turns` or
+/// `draining_stopping_ids` is non-empty, and unlinks the file ONLY once BOTH are truly drained.
+pub fn LiveRunnerManager::sync_handover_state_file(
+  self : LiveRunnerManager,
+  ops_fs : station_ops::OpsFs,
+  pid : Int,
+  sep : String,
+  log_fn~ : (String) -> Unit = fn(_m : String) -> Unit {},
+) -> Unit {
+  match self.handover_state_path {
+    Some(p) => {
+      if self.has_handover_carry_state() {
+        let body = base_codec::json_stringify(self.export_handover_state_json())
+        match station_ops::write_private(ops_fs, p, body.to_bytes(), pid, 1, sep=sep) {
+          Ok(_) => ()
+          Err(e) => log_fn("[live-runner] failed to persist handover state to " + p + ": " + station_ops::fs_err_msg(e))
+        }
+      } else {
+        match (ops_fs.remove)(p) {
+          Ok(_) => ()
+          Err(station_ops::FsErr::NotFound) => ()
+          Err(e) => log_fn("[live-runner] failed to remove drained handover state " + p + ": " + station_ops::fs_err_msg(e))
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+/// R12 P1-2: Checks whether `(inst_id, runner_id)` matches a predecessor draining/stopping runner
+/// (supporting both full `instance_id` and startup-phase `"rid:" + runner_id`), removing both keys on match.
+pub fn LiveRunnerManager::match_and_consume_draining_stop(
+  self : LiveRunnerManager,
+  inst_id : String,
+  runner_id : String,
+) -> Bool {
+  let rid_key = "rid:" + runner_id
+  let hit = self.draining_stopping_ids.contains(inst_id)
+  || (runner_id.length() > 0 && self.draining_stopping_ids.contains(rid_key))
+  if hit {
+    self.draining_stopping_ids.remove(inst_id)
+    if runner_id.length() > 0 {
+      self.draining_stopping_ids.remove(rid_key)
+    }
+  }
+  hit
 }
 
 /// Returns true if any old runner instance for `session_key` is still draining/stopping.
@@ -2645,6 +2701,7 @@ fn live_runner_commit_manager_pending_end_turn(
       }) {
         Ok(_) => {
           mgr.pending_end_turns.remove(mpend.session_key)
+          mgr.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
           match mpend.launch_instance_id {
             Some(inst_id) => core.agents.delete_runner_launch(inst_id)
             None => ()
@@ -3277,9 +3334,9 @@ pub fn LiveRunnerManager::adopt_live_runner(
     Err(_) => None
   }
   let mut unauthorized_stop = false
-  if self.draining_stopping_ids.contains(inst_id) {
-    self.draining_stopping_ids.remove(inst_id)
-    ctx.log("[live-runner] adopt runner " + inst_id + " was draining/stopping on predecessor; continuing stop via socket")
+  if self.match_and_consume_draining_stop(inst_id, rinfo.id) {
+    self.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+    ctx.log("[live-runner] adopt runner " + inst_id + " (rid=" + rinfo.id + ") was draining/stopping on predecessor; continuing stop via socket")
     unauthorized_stop = true
   }
   let mut identity_verified = false
@@ -5474,6 +5531,21 @@ pub fn LiveRunnerManager::prepare_handover(
       None => ()
     }
   }
+  let record_stopping_ids = fn(s : LiveRunnerSession) -> Unit {
+    match live_runner_info_of(s.phase) {
+      Some(info) => {
+        let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
+        self.draining_stopping_ids.set(iid, true)
+      }
+      None => match s.adopted_instance_id {
+        Some(iid) => self.draining_stopping_ids.set(iid, true)
+        None => ()
+      }
+    }
+    if s.runner_id.length() > 0 {
+      self.draining_stopping_ids.set("rid:" + s.runner_id, true)
+    }
+  }
   let dcids = self.draining.keys()
   for di in 0..<dcids.length() {
     match self.draining.get(dcids[di]) {
@@ -5489,18 +5561,7 @@ pub fn LiveRunnerManager::prepare_handover(
         }
         match ds.phase {
           LiveRunnerPhase::Exited => ()
-          _ => {
-            match live_runner_info_of(ds.phase) {
-              Some(info) => {
-                let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
-                self.draining_stopping_ids.set(iid, true)
-              }
-              None => match ds.adopted_instance_id {
-                Some(iid) => self.draining_stopping_ids.set(iid, true)
-                None => ()
-              }
-            }
-          }
+          _ => record_stopping_ids(ds)
         }
       }
       None => ()
@@ -5519,6 +5580,12 @@ pub fn LiveRunnerManager::prepare_handover(
             }
           }
           None => ()
+        }
+        if sess.stopping {
+          match sess.phase {
+            LiveRunnerPhase::Exited => ()
+            _ => record_stopping_ids(sess)
+          }
         }
         match sess.phase {
           LiveRunnerPhase::Exited | LiveRunnerPhase::Stopping(_, _, _, _) => ()

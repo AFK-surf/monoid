@@ -1923,3 +1923,81 @@ test "W17C-1 R11 LiveRunnerManager handover carry state round-trip (pending_end_
     None => panic("expected imported ManagerPendingEndTurn for s-r11")
   }
 }
+
+test "W17C-1 R12 whole-live-runners.json persists across crash/restart until drained & Spawning rid: stop match" {
+  let mem = station_ops::MemFs::new()
+  let ops = mem.ops()
+  let ho_file = "/run/whole-live-runners.json"
+
+  // 1. Predecessor writes `whole-live-runners.json` containing uncommitted endTurn + Spawning `rid:` stop id
+  let mgr1 = LiveRunnerManager::new()
+  mgr1.set_handover_state_path(ho_file)
+  mgr1.draining_stopping_ids.set("rid:r-spawn-r12", true)
+  mgr1.pending_end_turns.set(
+    "s-r12",
+    ManagerPendingEndTurn::{
+      session_key: "s-r12",
+      ws: "ws-a",
+      runtime_str: "claude",
+      profile_id: "default",
+      person_opt: None,
+      thread_id_opt: None,
+      launch_instance_id: None,
+      pend: PendingEndTurn::{
+        turn_id: Some("turn-r12"),
+        outcome: "failed",
+        detail: Some("handover before prompt delivery"),
+        declared_str: None,
+        need_opt: None,
+        wait_secs_opt: None,
+        wait_for_opt: None,
+        wait_watch_opt: None,
+        wall_ms: 1700000010000L,
+        was_completed: false,
+        reprompt_reminder: None,
+      },
+    },
+  )
+  mgr1.sync_handover_state_file(ops, 1001, "/")
+  assert_true(ops.read_text(ho_file).is_ok(), "handover state file must be written")
+
+  // 2. Successor 1 loads file, SQLite transiently fails -> file MUST remain on disk (NEVER unlinked early!)
+  let mgr2 = LiveRunnerManager::new()
+  mgr2.set_handover_state_path(ho_file)
+  match ops.read_text(ho_file) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => mgr2.import_handover_state_json(j)
+      _ => panic("invalid json")
+    }
+    Err(_) => panic("missing handover state file for successor 1")
+  }
+  mgr2.sync_handover_state_file(ops, 1002, "/")
+  assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk while pending_end_turns/draining non-empty")
+
+  // 3. Successor 2 restarts from disk, matches Spawning `rid:` stop id on adopt, and drains pending_end_turns
+  let mgr3 = LiveRunnerManager::new()
+  mgr3.set_handover_state_path(ho_file)
+  match ops.read_text(ho_file) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => mgr3.import_handover_state_json(j)
+      _ => panic("invalid json")
+    }
+    Err(_) => panic("missing handover state file for successor 2")
+  }
+  // Spawning runner only knew `runner_id = "r-spawn-r12"` before handover; adopt matches via `"rid:" + rinfo.id`!
+  assert_true(
+    mgr3.match_and_consume_draining_stop("r-spawn-r12:9999:1700000099000", "r-spawn-r12"),
+    "adopt must match Spawning rid: stop id",
+  )
+  assert_true(
+    !mgr3.match_and_consume_draining_stop("r-spawn-r12:9999:1700000099000", "r-spawn-r12"),
+    "consumed rid: stop id must not match twice",
+  )
+  mgr3.sync_handover_state_file(ops, 1003, "/")
+  // Still has pending_end_turns -> file must STILL exist!
+  assert_true(ops.read_text(ho_file).is_ok(), "file must remain while pending_end_turns still uncommitted")
+  // Once pending_end_turns is committed & removed -> file is finally unlinked!
+  mgr3.pending_end_turns.remove("s-r12")
+  mgr3.sync_handover_state_file(ops, 1003, "/")
+  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file must be unlinked once truly drained")
+}

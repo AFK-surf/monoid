@@ -1659,3 +1659,178 @@ test "W17C-1 R11 Feishu catch_up_async clears reading lock on failure, stops wat
     panic("seen2=" + seen2.to_string())
   }
 }
+
+test "W17C-1 R12 Feishu multi-page (>10 pages) deferred read.token, on-demand taking & ConnectsOsRuntime::tick 5s backoff retry" {
+  let mem = station_ops::MemFs::new()
+  let now_ref : Array[Int64] = [10000L]
+  let fail_om1 : Array[Bool] = [true]
+  let seen_msgs : Array[String] = []
+
+  // Build 12 pages (`p0`..`p11`), 1 message per page (`om_0` at t=2000 .. `om_11` at t=13000).
+  let make_page = fn(page_idx : Int) -> String {
+    let ts_ms = (2000 + page_idx * 1000).to_string()
+    let mid = "om_" + page_idx.to_string()
+    let has_more = page_idx < 11
+    let next_tok = if has_more { "tok_" + (page_idx + 1).to_string() } else { "" }
+    let item = base_codec::json_obj([
+      ("message_id", base_codec::json_str(mid)),
+      ("chat_id", base_codec::json_str("oc_mp")),
+      ("msg_type", base_codec::json_str("text")),
+      ("create_time", base_codec::json_str(ts_ms)),
+      ("sender", base_codec::json_obj([("sender_type", base_codec::json_str("user")), ("id", base_codec::json_str("ou_u1"))])),
+      ("body", base_codec::json_obj([("content", base_codec::json_str("{\"text\":\"m\"}"))])),
+    ])
+    base_codec::json_stringify(
+      base_codec::json_obj([
+        ("code", base_codec::json_int(0)),
+        (
+          "data",
+          base_codec::json_obj([
+            ("has_more", base_codec::json_bool(has_more)),
+            ("page_token", base_codec::json_str(next_tok)),
+            ("items", base_codec::json_arr([item])),
+          ]),
+        ),
+      ]),
+    )
+  }
+  let token_resp = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("code", base_codec::json_int(0)),
+      ("tenant_access_token", base_codec::json_str("t-mp")),
+      ("expire", base_codec::json_int(7200)),
+    ]),
+  )
+
+  let mut next_sid = 100
+  let stream_bodies : Map[Int, String] = Map::new()
+  let stream_read_done : Map[Int, Bool] = Map::new()
+  let h = MockMuxHarness::new(
+    10000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "stream.open" {
+        let url = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "url") {
+            Some(base_codec::Json::Str(u)) => u
+            _ => ""
+          }
+          _ => ""
+        }
+        let body = if url.contains("tenant_access_token") {
+          token_resp
+        } else {
+          let mut p = 0
+          for idx in 1..<12 {
+            if url.contains("page_token=tok_" + idx.to_string()) {
+              p = idx
+            }
+          }
+          make_page(p)
+        }
+        let sid = next_sid
+        next_sid = next_sid + 1
+        stream_bodies.set(sid, body)
+        stream_read_done.set(sid, false)
+        let ok_json = "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[]}"
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: ok_json, bytes: None }))
+      } else if op == "stream.read" {
+        let sid = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "id") {
+            Some(base_codec::Json::Num(n, _)) => n.to_int()
+            _ => -1
+          }
+          _ => -1
+        }
+        let already = match stream_read_done.get(sid) {
+          Some(b) => b
+          None => true
+        }
+        if !already {
+          stream_read_done.set(sid, true)
+          let b = match stream_bodies.get(sid) { Some(s) => s; None => "" }
+          q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"end\":false}", bytes: Some(b.to_bytes()) }))
+        } else {
+          q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"end\":true}", bytes: None }))
+        }
+      } else if op == "stream.close" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{}", bytes: None }))
+      }
+    },
+  )
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => {
+          seen_msgs.push(m.ts)
+          if m.ts == "om_1" && fail_om1[0] {
+            fail_om1[0] = false
+            on_done(false)
+          } else {
+            on_done(true)
+          }
+        }
+        _ => on_done(true)
+      }
+    },
+    on_card_answer: fn(_cid, _ans, on_done) { on_done(true) },
+    on_interactive: fn(_cid, _eid, _p, on_done) { on_done(true) },
+    on_disconnect: fn(_cid, _r) {},
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-mp", cbs)
+  edge_assert(rt.register_feishu("feishu-mp", "cli_app_mp", "cli_sec_mp") is Ok(_))
+  // Seed watermark at t=1000L and trigger catch-up via ConnectsOsRuntime::tick
+  match rt.connectors.get("feishu-mp") {
+    Some(ConnectorEntry::Feishu(f)) => {
+      let sh = f.threads.taking("feishu-mp", "oc_mp", "om_seed", 1000L)
+      f.threads.commit_taking(sh)
+    }
+    _ => panic("missing feishu-mp")
+  }
+  rt.running_connects.set("feishu-mp", true)
+  rt.pending_feishu_catchup.set("feishu-mp", true)
+
+  // Tick 1 at t=10000: fetches 10 pages (`om_0`..`om_9`), delivers `om_0` ok, `om_1` fails!
+  // `om_2` MUST NOT be dispatched, `read.token` MUST be cleared (not jumped to tok_10!),
+  // and retry MUST be scheduled at 15000L!
+  let _ = rt.tick(10000L)
+  edge_assert(seen_msgs.length() == 2 && seen_msgs[0] == "om_0" && seen_msgs[1] == "om_1")
+  edge_assert(rt.pending_feishu_catchup.contains("feishu-mp"))
+  match rt.feishu_catchup_retry_at.get("feishu-mp") {
+    Some(due) => edge_assert(due == 15000L)
+    None => panic("expected 5s retry backoff scheduled at 15000L")
+  }
+
+  // Tick 2 at t=14000 (before 5s backoff): must NOT retry yet
+  h.clock.now = 14000L
+  let _ = rt.tick(14000L)
+  edge_assert(seen_msgs.length() == 2)
+
+  // Tick 3 at t=15000 (5s backoff reached): re-fetches from page 0 (`om_0`..`om_9`, >1999L -> `om_0`..`om_9`),
+  // all succeed, advances `read.token` to `tok_10`, and schedules next batch at 20000L!
+  h.clock.now = 15000L
+  let _ = rt.tick(15000L)
+  edge_assert(rt.pending_feishu_catchup.contains("feishu-mp"))
+
+  // Tick 4 at t=20000: fetches remaining pages `tok_10` (`om_10`, `om_11`), completes cleanly!
+  h.clock.now = 20000L
+  let _ = rt.tick(20000L)
+  edge_assert(!rt.pending_feishu_catchup.contains("feishu-mp"))
+  // Verify `om_1` and `om_11` were both delivered and watermark reached 13000L!
+  let mut saw_om1_twice = 0
+  let mut saw_om11 = false
+  for i in 0..<seen_msgs.length() {
+    if seen_msgs[i] == "om_1" { saw_om1_twice = saw_om1_twice + 1 }
+    if seen_msgs[i] == "om_11" { saw_om11 = true }
+  }
+  edge_assert(saw_om1_twice == 2)
+  edge_assert(saw_om11)
+  match rt.connectors.get("feishu-mp") {
+    Some(ConnectorEntry::Feishu(f)) => {
+      edge_assert(!f.threads.is_reading("feishu-mp", "oc_mp"))
+      edge_assert(f.threads.seen_of("feishu-mp", "oc_mp") == 13000L)
+    }
+    _ => panic("missing feishu-mp")
+  }
+  rt.stop()
+}

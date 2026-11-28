@@ -2392,7 +2392,8 @@ pub fn FeishuConnector::catch_up_async(
   let convs = self.threads.conversations(connect_id)
   let runs : Array[(String, FeishuCatchUpCursor, FeishuCatchUpToken)] = []
   let completes : Array[Bool] = []
-  let queued_msgs : Array[Array[(ChatEvent, FeishuHoldToken, Int64)]] = []
+  let next_tokens : Array[String] = []
+  let queued_msgs : Array[Array[(ChatEvent, String, String, Int64)]] = []
   let page_failed : Array[Bool] = []
   for i in 0..<convs.length() {
     let (chat, since) = convs[i]
@@ -2407,6 +2408,7 @@ pub fn FeishuConnector::catch_up_async(
     let cu_tok = self.threads.catching_up(connect_id, chat, since)
     runs.push((chat, read, cu_tok))
     completes.push(false)
+    next_tokens.push("")
     queued_msgs.push([])
     page_failed.push(false)
   }
@@ -2415,6 +2417,9 @@ pub fn FeishuConnector::catch_up_async(
   for r_idx in 0..<runs.length() {
     let (chat, read, _cu_tok) = runs[r_idx]
     let mut failed = false
+    // R12 P1-3: Keep pagination token in a local variable; NEVER advance `read.token` until
+    // every message in this batch has been confirmed with `on_done(true)`!
+    let mut page_tok = read.token
     for _page in 0..<10 {
       let tok = match self.tokens.get_or_refresh(transport) {
         Ok(t) => t
@@ -2432,8 +2437,8 @@ pub fn FeishuConnector::catch_up_async(
         ("sort_type", "ByCreateTimeAsc"),
         ("page_size", "50"),
       ]
-      if read.token != "" {
-        q_params.push(("page_token", read.token))
+      if page_tok != "" {
+        q_params.push(("page_token", page_tok))
       }
       let url = self.tokens.base_url + "/open-apis/im/v1/messages?" + encode_form_params(q_params)
       let resp = (transport.fetch)(
@@ -2525,7 +2530,6 @@ pub fn FeishuConnector::catch_up_async(
                   if m.addressed {
                     self.was_called(m.message_id)
                   }
-                  let hold = self.threads.taking(connect_id, m.chat_id, m.message_id, m.create_time_ms)
                   let thread_ts = resolve_feishu_thread(self, m)
                   let ev = ChatEvent::Message(
                     InboundMessage::{
@@ -2539,7 +2543,7 @@ pub fn FeishuConnector::catch_up_async(
                       quoted: m.parent_id,
                     },
                   )
-                  queued_msgs[r_idx].push((ev, hold, m.create_time_ms))
+                  queued_msgs[r_idx].push((ev, m.chat_id, m.message_id, m.create_time_ms))
                   delivered = delivered + 1
                 }
               }
@@ -2554,28 +2558,30 @@ pub fn FeishuConnector::catch_up_async(
       }
       if !json_bool_field(data, "has_more") {
         completes[r_idx] = true
-        self.catch_ups.remove(chat)
+        next_tokens[r_idx] = ""
         break
       }
       let next_tok = json_str_field(data, "page_token")
       if next_tok == "" {
         completes[r_idx] = true
-        self.catch_ups.remove(chat)
+        next_tokens[r_idx] = ""
         break
       }
-      read.token = next_tok
+      page_tok = next_tok
+      next_tokens[r_idx] = next_tok
     }
     if failed {
       page_failed[r_idx] = true
       break
     }
   }
-  // R10/R11 P1-5: Strictly 1-at-a-time ordered async delivery per conversation:
+  // R10/R11/R12 P1-3: Strictly 1-at-a-time ordered async delivery per conversation:
+  // - Create `taking` hold on-demand right when dispatching `msgs[idx]` (zero orphan holds).
+  // - Advance `read.token = next_tokens[r_idx]` ONLY after all messages in this batch succeed.
   // - Break closure self-reference (`step_fn[0] = fn() {}`) on BOTH completion and failure paths.
-  // - On `on_done(false)`, call `finish_catching_up(cu_tok, read.through, false)` so `reading`
-  //   is cleared while preserving the checkpoint watermark before the failed message.
-  // - Invoke `on_finished(true)` ONLY when every run completed with zero pagination/delivery errors;
-  //   otherwise invoke `on_finished(false)` so `ConnectsOsRuntime` schedules an online retry.
+  // - On `on_done(false)`, clear `read.token = ""` + `catch_ups.remove(chat)` so the 5s retry
+  //   re-fetches strictly from the last committed `read.through`, release `reading = false`,
+  //   and emit `on_finished(false)`.
   let pending_runs : Array[Int] = [0]
   let any_failed : Array[Bool] = [err_out is Some(_)]
   let finished_emitted : Array[Bool] = [false]
@@ -2586,10 +2592,17 @@ pub fn FeishuConnector::catch_up_async(
     }
   }
   for r_idx in 0..<runs.length() {
-    let (_, read, cu_tok) = runs[r_idx]
+    let (chat, read, cu_tok) = runs[r_idx]
     let msgs = queued_msgs[r_idx]
     let is_complete = completes[r_idx] && !page_failed[r_idx]
     if msgs.length() == 0 {
+      if is_complete {
+        read.token = ""
+        self.catch_ups.remove(chat)
+      } else if !page_failed[r_idx] {
+        read.token = next_tokens[r_idx]
+        self.catch_ups.set(chat, read)
+      }
       self.threads.finish_catching_up(cu_tok, read.through, is_complete)
       if !is_complete {
         any_failed[0] = true
@@ -2599,9 +2612,10 @@ pub fn FeishuConnector::catch_up_async(
     pending_runs[0] = pending_runs[0] + 1
   }
   for r_idx in 0..<runs.length() {
-    let (_, read, cu_tok) = runs[r_idx]
+    let (chat, read, cu_tok) = runs[r_idx]
     let msgs = queued_msgs[r_idx]
     let is_complete = completes[r_idx] && !page_failed[r_idx]
+    let next_tok_for_run = next_tokens[r_idx]
     if msgs.length() == 0 {
       continue
     }
@@ -2611,10 +2625,15 @@ pub fn FeishuConnector::catch_up_async(
       let idx = idx_ref[0]
       if idx >= msgs.length() {
         step_fn[0] = fn() -> Unit {}
-        self.threads.finish_catching_up(cu_tok, read.through, is_complete)
-        if !is_complete {
+        if is_complete {
+          read.token = ""
+          self.catch_ups.remove(chat)
+        } else {
+          read.token = next_tok_for_run
+          self.catch_ups.set(chat, read)
           any_failed[0] = true
         }
+        self.threads.finish_catching_up(cu_tok, read.through, is_complete)
         on_progress()
         pending_runs[0] = pending_runs[0] - 1
         if pending_runs[0] == 0 {
@@ -2622,7 +2641,8 @@ pub fn FeishuConnector::catch_up_async(
         }
         return
       }
-      let (ev, hold, msg_ts) = msgs[idx]
+      let (ev, msg_chat, msg_id, msg_ts) = msgs[idx]
+      let hold = self.threads.taking(connect_id, msg_chat, msg_id, msg_ts)
       let settled : Array[Bool] = [false]
       on_message(ev, fn(ok : Bool) -> Unit {
         if settled[0] {
@@ -2639,6 +2659,8 @@ pub fn FeishuConnector::catch_up_async(
           (step_fn[0])()
         } else {
           step_fn[0] = fn() -> Unit {}
+          read.token = ""
+          self.catch_ups.remove(chat)
           self.threads.finish_catching_up(cu_tok, read.through, false)
           any_failed[0] = true
           on_progress()
