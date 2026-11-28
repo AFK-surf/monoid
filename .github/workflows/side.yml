@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup
@@ -115,6 +116,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives

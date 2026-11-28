@@ -377,6 +377,25 @@ test("admin-cli run through a link to it runs, as it does by its own path", { sk
   assert.deepEqual(viaCommand, direct);
 });
 
+test("bin/stillfail does not concatenate partial stdout when readlink -f fails", { skip: skipUnix }, async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "sf-readlink-fail-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const app = join(base, "app");
+  const tools = toolsDir(base);
+  mkdirSync(join(app, "bin"), { recursive: true });
+  copyFileSync(join(root, "bin", "stillfail"), join(app, "bin", "stillfail"));
+  chmodSync(join(app, "bin", "stillfail"), 0o755);
+  symlinkSync(join(root, "bin", "admin-cli.ts"), join(app, "bin", "admin-cli.ts"));
+  // Model macOS BSD `readlink -f` printing a partial path to stdout and exiting 1.
+  rmSync(join(tools, "readlink"));
+  writeFileSync(join(tools, "readlink"), "#!/bin/sh\nprintf '%s\\n' '/nonexistent/.stillfail/app'\nexit 1\n");
+  chmodSync(join(tools, "readlink"), 0o755);
+  const env = { PATH: [tools, dirname(process.execPath)].join(delimiter), HOME: base, STILLFAIL_NODE: process.execPath, STILLFAIL_DATA: base };
+  const r = await run(join(app, "bin", "stillfail"), ["admin", "--help"], env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^Usage: stillfail admin/);
+});
+
 // Windows' command, read for the same order everywhere, and run under every PowerShell there (CI's ui-windows).
 function adminBlock(): string {
   const ps1 = readFileSync(join(root, "bin", "stillfail.ps1"), "utf8");

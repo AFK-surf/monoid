@@ -35,7 +35,11 @@
 # The data is in $STILLFAIL_DATA, default ~/.stillfail (another product's own: below).
 set -eu
 # Called through a link (~/.local/bin/stillfail): the app is where the link points.
-self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+# Avoid `$(readlink -f ... || echo "$0")`: macOS BSD `readlink -f` prints a partial path to stdout before exiting
+# non-zero when a target component is missing or mid-swap, which would concatenate two lines into `self`.
+if ! self=$(readlink -f "$0" 2>/dev/null) || [ -z "$self" ]; then
+  self=$0
+fi
 here=${STILLFAIL_REPLACE_APP:-$(cd "$(dirname "$self")/.." && pwd)}
 # Whose station this is: its product's data directory beside still.fail's (~/.monoid, client/i18n/brand.ts). Called as
 # another product's command (`monoid`: the installer links it so), that product's, whether its data is there now or not

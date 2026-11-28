@@ -78,10 +78,10 @@ function rssBytesOf(pid: number): number {
 
 after(async () => {
   for (const s of servers.splice(0)) {
-    try { s.close(); } catch {}
-  }
-  for (const ep of endpoints.splice(0)) {
-    try { await ep.close(); } catch {}
+    try {
+      if ("closeAllConnections" in s && typeof s.closeAllConnections === "function") s.closeAllConnections();
+      s.close();
+    } catch {}
   }
   for (const p of extraPids.splice(0)) {
     try { process.kill(-p, "SIGKILL"); } catch {}
@@ -94,6 +94,16 @@ after(async () => {
       } catch {}
       try { c.kill("SIGKILL"); } catch {}
     }
+  }
+  for (const ep of endpoints.splice(0)) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        ep.close(),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 5000); timer.unref?.(); }),
+      ]);
+    } catch {}
+    finally { if (timer !== undefined) clearTimeout(timer); }
   }
   for (const d of dirs.splice(0)) {
     rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });

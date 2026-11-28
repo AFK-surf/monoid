@@ -37,7 +37,7 @@ for part in $parts; do
     # `station-pion` binary via scripts/native.ts instead of compiling from scratch inside each run.
     station-pion) (
       cd station && node ../scripts/native.ts run mesh runner archive-rs reader launcher station-pion -- \
-        node --import ./test/setup-env.mjs --test --test-concurrency=1 side/pion-station-*.test.ts
+        node --import ./test/setup-env.mjs --test --test-concurrency=2 side/pion-station-*.test.ts
     ) || status=1 ;;
     # The native parts' tests of real processes' timing (#[ignore = "side: …"]): a handover with no gap on real ports,
     # restarts' backoff, a signal that leaves a grandchild be.
