@@ -331,7 +331,7 @@ pub enum PeerIdentity {
 pub struct PeerAuthPolicy {
   pub station_id : String
   pub station_build : String
-  pub home_workspace : String
+  pub mut home_workspace : String
   pub allowed_workspaces : Array[String]
   /// Optional `station_rules_bridge::shell_verifier` callback (`libcrux`); `None` uses pure-Pion crypto.
   pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
@@ -348,6 +348,15 @@ pub fn PeerAuthPolicy::add_workspace(self : PeerAuthPolicy, ws : String) -> Unit
     }
   }
   self.allowed_workspaces.push(ws)
+}
+
+/// Promote a newly joined workspace to `home_workspace` (e.g. rig promoted to full home workspace).
+pub fn PeerAuthPolicy::set_home_workspace(self : PeerAuthPolicy, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.home_workspace = ws
+  self.add_workspace(ws)
 }
 
 fn ws_allowed(allowed : Array[String], ws : String) -> Bool {
@@ -1573,9 +1582,9 @@ pub fn WholeApi::new(
         Ok(s) => s
         Err(e) => return Err(station_api::ApiError::new(503, e))
       }
-      let info_entries = match read_projects_info_map(agents.jobs.fs, agents.config.data_dir) {
-        Ok(m) => m
-        Err(e) => return Err(station_api::ApiError::new(500, e))
+      let jsonl_entries : Array[station_api::ProjectInfoEntry] = match read_workspace_projects_jsonl(agents.jobs.fs, agents.config.data_dir, req.viewer) {
+        Ok((_, parsed)) => parsed.entries
+        Err(_) => []
       }
       match st.db.all(
         "SELECT t.project, COUNT(*) AS cnt FROM threads t" +
@@ -1595,16 +1604,15 @@ pub fn WholeApi::new(
             let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
             let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
             seen_names.set(name, true)
-            let entry_key = req.viewer.workspace + ":" + name
             let mut note_str = ""
             let mut refs_arr : Array[String] = []
-            for j in 0..<info_entries.length() {
-              if info_entries[j].0 == entry_key {
-                match json_field_str(info_entries[j].1, "note") {
+            for j in 0..<jsonl_entries.length() {
+              if jsonl_entries[j].name == name {
+                match jsonl_entries[j].note {
                   Some(ns) => note_str = ns
                   None => ()
                 }
-                refs_arr = parse_str_array_field(info_entries[j].1, "refs")
+                refs_arr = jsonl_entries[j].refs
                 break
               }
             }
@@ -1617,23 +1625,18 @@ pub fn WholeApi::new(
               ]),
             )
           }
-          let ws_prefix = req.viewer.workspace + ":"
-          for j in 0..<info_entries.length() {
-            let (ek, ev) = info_entries[j]
-            if ek.starts_with(ws_prefix) {
-              let pname = ek.slice(ws_prefix.length(), ek.length())
-              if pname.length() > 0 && seen_names.get(pname).is_none() {
-                let note_str = match json_field_str(ev, "note") { Some(ns) => ns, None => "" }
-                let refs_arr = parse_str_array_field(ev, "refs")
-                projs.push(
-                  base_codec::json_obj([
-                    ("name", base_codec::json_str(pname)),
-                    ("count", base_codec::json_int(0)),
-                    ("note", base_codec::json_str(note_str)),
-                    ("refs", json_str_array(refs_arr)),
-                  ]),
-                )
-              }
+          for j in 0..<jsonl_entries.length() {
+            let je = jsonl_entries[j]
+            if je.name.length() > 0 && seen_names.get(je.name).is_none() {
+              let note_str = match je.note { Some(ns) => ns, None => "" }
+              projs.push(
+                base_codec::json_obj([
+                  ("name", base_codec::json_str(je.name)),
+                  ("count", base_codec::json_int(0)),
+                  ("note", base_codec::json_str(note_str)),
+                  ("refs", json_str_array(je.refs)),
+                ]),
+              )
             }
           }
           return Ok(base_codec::json_obj([("projects", base_codec::json_arr(projs))]))

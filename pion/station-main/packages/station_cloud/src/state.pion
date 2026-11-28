@@ -1360,6 +1360,29 @@ pub fn CloudStore::open(
   }
 }
 
+/// Reload `cloud.json` and pinned lock caches from disk after an external or join update
+/// (1:1 with Node `Cloud.reload(true)`).
+pub fn CloudStore::reload(self : CloudStore) -> Bool {
+  let next_state = match read_state(self.data, self.fs, sep=self.sep) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  self.state = next_state
+  self.lock = read_lock(self.data, self.fs, ws=None, sep=self.sep, verify_fn=self.verify_fn)
+  self.joined_locks = Map::new()
+  let removed = match next_state {
+    Some(s) => match s.removed_at {
+      Some(_) => true
+      None => false
+    }
+    None => false
+  }
+  if removed {
+    self.peers_current = false
+  }
+  true
+}
+
 /// Production constructor: wires `CloudFs::from_shell` and defaults signature verification
 /// to `client/shell`'s formally verified `libcrux` `crypto.verify` op.
 pub fn CloudStore::open_with_shell(

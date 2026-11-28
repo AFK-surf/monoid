@@ -1729,27 +1729,26 @@ pub fn dispatch_extra_call_op(
     // Honest 501 until managed-mcp-config.ts / routes/mcp-servers.ts full schema & response contract is ported.
     return Some(Err(err_not_implemented(op)))
   }
-  if op == "tools.access.get" {
-    let raw = read_config_raw(cfg_opt)
-    let access = match base_codec::json_get(raw, "toolsAccess") {
-      Some(v) => v
-      None => base_codec::json_obj([])
-    }
-    return Some(Ok(base_codec::json_obj([("access", access)])))
-  }
-  if op == "tools.access.put" || op == "xshare.hosts.put" {
+  if op == "xshare.hosts.put" {
     return Some(Err(err_not_implemented(op)))
   }
   if op == "workspaces.list" {
+    let can_manage = req.viewer.manages_station()
     let arr : Array[base_codec::Json] = []
     for i in 0..<auth_policy.allowed_workspaces.length() {
       let ws = auth_policy.allowed_workspaces[i]
-      arr.push(base_codec::json_obj([
-        ("id", base_codec::json_str(ws)),
-        ("home", base_codec::json_bool(ws == auth_policy.home_workspace)),
-      ]))
+      if can_manage || ws == req.viewer.workspace {
+        arr.push(base_codec::json_obj([
+          ("id", base_codec::json_str(ws)),
+          ("workspace", base_codec::json_str(ws)),
+          ("home", base_codec::json_bool(ws == auth_policy.home_workspace)),
+        ]))
+      }
     }
-    return Some(Ok(base_codec::json_obj([("workspaces", base_codec::json_arr(arr))])))
+    return Some(Ok(base_codec::json_obj([
+      ("workspaces", base_codec::json_arr(arr)),
+      ("canJoin", base_codec::json_bool(can_manage)),
+    ])))
   }
   if op == "workspaces.join" {
     match hooks.on_workspace_join {

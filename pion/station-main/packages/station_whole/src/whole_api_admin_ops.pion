@@ -1792,6 +1792,7 @@ fn tools_access_view_json(access : String) -> base_codec::Json {
   base_codec::json_obj([
     ("access", base_codec::json_str(access)),
     ("levels", json_str_array(["off", "read", "full"])),
+    ("read_ops", json_str_array(["fs.read", "fs.list", "fs.stat", "runtime.probe", "process.list", "process.tail", "session.status"])),
     ("about", base_codec::json_obj([
       ("off", base_codec::json_str("The control plane's agents cannot use this machine.")),
       ("read", base_codec::json_str("Agents can read every file this machine's user can read, except the station's own data, and see processes, runtimes and chat states.")),

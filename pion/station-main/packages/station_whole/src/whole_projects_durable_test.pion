@@ -1,0 +1,254 @@
+// Wave 17E-4B pure-Pion unit tests (run via `pionc test --json pion/station-main`):
+// 1. CSPRNG UUID v4 `opId` generation (RFC 4122 v4 bits, non-identical across draws, fail-closed on RNG error).
+// 2. Causal chain `forward_resolve_target` (multi-hop rename, same-ms origin_seq tie-break, self_op_id skip).
+// 3. `PROJECTS.jsonl` consumer (`rename_project_info_doc`, `ensure_project_registered_doc`,
+//    `prune_applied_op_ids_doc`, idempotent `op_id` receipt replay, `0600` private mode skip).
+// 4. Partial failure guard (`is_partial_rename_result` prevents caching degraded outcomes in `AdminApi`).
+// 5. `tools.access.get` / `tools.access.put` 1:1 parity (`read_ops`, `manages_station`, `read_only_handover`).
+
+import "base_codec"
+import "station_api"
+import "station_ops"
+
+test "wave17e4b: generate_csprng_uuid_v4 sets RFC 4122 v4 bits and fails closed on RNG error" {
+  let mut call_n = 0
+  let mock_rng = fn(n : Int) -> Result[Bytes, String] {
+    call_n = call_n + 1
+    let b = Bytes::new(n)
+    for i in 0..<n {
+      b[i] = ((i * 17 + call_n * 31) & 255).to_byte()
+    }
+    Ok(b)
+  }
+  let u1 = match generate_csprng_uuid_v4(mock_rng) {
+    Ok(s) => s
+    Err(e) => panic("generate_csprng_uuid_v4 failed: " + e)
+  }
+  let u2 = match generate_csprng_uuid_v4(mock_rng) {
+    Ok(s) => s
+    Err(e) => panic("generate_csprng_uuid_v4 second call failed: " + e)
+  }
+  if u1.length() != 36 || u2.length() != 36 {
+    panic("expected 36-char UUID v4, got: " + u1)
+  }
+  if u1 == u2 {
+    panic("CSPRNG UUID v4 must not collide: " + u1)
+  }
+  if u1.slice(14, 15) != "4" {
+    panic("expected UUID version 4, got: " + u1)
+  }
+  let vch = u1.slice(19, 20)
+  if vch != "8" && vch != "9" && vch != "a" && vch != "b" {
+    panic("expected RFC 4122 variant, got: " + u1)
+  }
+  // Fail-closed when RNG returns error or short buffer
+  match generate_csprng_uuid_v4(fn(_n : Int) -> Result[Bytes, String] { Err("entropy unavailable") }) {
+    Err(_) => ()
+    Ok(s) => panic("expected fail-closed error on RNG failure, got: " + s)
+  }
+  match generate_csprng_uuid_v4(fn(_n : Int) -> Result[Bytes, String] { Ok(Bytes::new(8)) }) {
+    Err(_) => ()
+    Ok(s) => panic("expected fail-closed error on short RNG bytes, got: " + s)
+  }
+}
+
+test "wave17e4b: forward_resolve_target resolves causal chains and respects origin_seq & self_op_id" {
+  let events : Array[station_api::ProjectRenameEventMeta] = [
+    station_api::ProjectRenameEventMeta::{
+      seq: 1L,
+      from: "Alpha",
+      to: "Beta",
+      renamed_at: 1000L,
+      wall_at: 1000L,
+      origin_seq: 1L,
+      op_id: Some("op-1"),
+    },
+    station_api::ProjectRenameEventMeta::{
+      seq: 2L,
+      from: "Beta",
+      to: "Gamma",
+      renamed_at: 1000L,
+      wall_at: 1000L,
+      origin_seq: 2L,
+      op_id: Some("op-2"),
+    },
+    station_api::ProjectRenameEventMeta::{
+      seq: 3L,
+      from: "Gamma",
+      to: "Delta",
+      renamed_at: 2000L,
+      wall_at: 2000L,
+      origin_seq: 3L,
+      op_id: Some("op-3"),
+    },
+  ]
+  let r1 = station_api::forward_resolve_target(events, "Beta", 1000L, 1L, Some("op-1"), 1000L)
+  if r1.target != "Delta" || !r1.advanced || r1.at != 2000L || r1.origin_seq != 3L || r1.seq != 3L {
+    panic("expected Delta at (2000, 3), got: " + r1.target)
+  }
+  let r2 = station_api::forward_resolve_target(events, "Beta", 1000L, 1L, Some("op-2"), 1000L)
+  if r2.target != "Beta" || r2.advanced {
+    panic("expected skip of self_op_id op-2 to stop at Beta, got: " + r2.target)
+  }
+}
+
+test "wave17e4b: PROJECTS.jsonl consumer rename/merge/replay/prune and 0600 private isolation" {
+  let init_jsonl = "{\"name\":\"Alpha\",\"note\":\"Alpha note\",\"noteAt\":100,\"refs\":[\"https://a.example\"],\"refsAt\":100,\"refAts\":{\"https://a.example\":100},\"updatedAt\":100}\n{\"name\":\"Beta\",\"note\":\"Beta note\",\"noteAt\":150,\"refs\":[\"https://b.example\"],\"refsAt\":150,\"refAts\":{\"https://b.example\":150},\"updatedAt\":150}\n"
+  // Verify MemFs 0600 private isolation with skip_private=true
+  let mfs = station_ops::MemFs::new()
+  let path = workspace_projects_jsonl_path("/agent", "ws-1", "ws-1", "/")
+  let _ = mfs.put_text(path, init_jsonl, 384) // 0600
+  match read_projects_jsonl_for_ws(mfs.ops(), "/agent", "ws-1", "ws-1", "/", true) {
+    Ok(p) => if p.entries.length() != 0 { panic("0600 PROJECTS.jsonl leaked with skip_private=true") }
+    Err(e) => panic("read_projects_jsonl_for_ws failed: " + e)
+  }
+  let parsed = match read_projects_jsonl_for_ws(mfs.ops(), "/agent", "ws-1", "ws-1", "/", false) {
+    Ok(p) => p
+    Err(e) => panic("read_projects_jsonl_for_ws(false) failed: " + e)
+  }
+  // Merge Alpha -> Beta with op_id="op-merge-1"
+  let mres = match station_api::rename_project_info_doc(
+    parsed,
+    "Alpha",
+    "Beta",
+    200L,
+    true,
+    Some("op-merge-1"),
+    Some(["op-merge-1"]),
+  ) {
+    Ok(r) => r
+    Err(e) => panic("rename_project_info_doc failed: " + e)
+  }
+  if !mres.changed || mres.already_applied {
+    panic("expected changed=true, already_applied=false")
+  }
+  // Roundtrip through canonical JSONL serialization & re-parse
+  let serialized = match station_api::serialize_projects_jsonl_with_keep(mres.doc, Some(["op-merge-1"])) {
+    Ok(s) => s
+    Err(e) => panic("serialize failed: " + e)
+  }
+  let reparsed = match station_api::parse_projects_jsonl(serialized, true) {
+    Ok(p) => p
+    Err(e) => panic("reparse failed: " + e)
+  }
+  if reparsed.entries.length() != 1 || reparsed.entries[0].name != "Beta" {
+    panic("expected only Beta after merge")
+  }
+  let beta = reparsed.entries[0]
+  match beta.note {
+    Some(n) => if !n.contains("Beta note") || !n.contains("Alpha note") { panic("merged note missing content: " + n) }
+    None => panic("merged note missing")
+  }
+  if beta.refs.length() != 2 {
+    panic("expected 2 merged refs, got " + beta.refs.length().to_string())
+  }
+  // Replay with same op_id MUST short-circuit as already_applied=true!
+  let replay = match station_api::rename_project_info_doc(
+    reparsed,
+    "Alpha",
+    "Beta",
+    250L,
+    true,
+    Some("op-merge-1"),
+    Some(["op-merge-1"]),
+  ) {
+    Ok(r) => r
+    Err(e) => panic("replay failed: " + e)
+  }
+  if replay.changed || !replay.already_applied {
+    panic("expected replay already_applied=true, changed=false")
+  }
+  // Prune op-merge-1 once confirmed
+  let (pruned_doc, pruned_changed) = station_api::prune_applied_op_ids_doc(reparsed, ["op-merge-1"], Some([]))
+  if !pruned_changed || pruned_doc.entries[0].applied_op_ids.length() != 0 {
+    panic("expected op-merge-1 to be pruned")
+  }
+  // Ensure new project registration
+  let (reg_doc, reg_changed) = match station_api::ensure_project_registered_doc(pruned_doc, "Gamma", 300L, None) {
+    Ok(v) => v
+    Err(e) => panic("ensure_project_registered_doc failed: " + e)
+  }
+  if !reg_changed || reg_doc.entries.length() != 2 {
+    panic("expected Gamma to be registered")
+  }
+}
+
+test "wave17e4b: partial failure outcomes MUST NOT be cached in AdminApi permanent success cache" {
+  if !is_partial_rename_result(Some("disk full"), None, ["ok"]) {
+    panic("infoError must be treated as partial failure (noCache)")
+  }
+  if !is_partial_rename_result(None, Some("roster timeout"), []) {
+    panic("rosterError must be treated as partial failure (noCache)")
+  }
+  if !is_partial_rename_result(None, None, ["ok", "offline"]) {
+    panic("offline peer must be treated as partial failure (noCache)")
+  }
+  if !is_partial_rename_result(None, None, ["ok", "error"]) {
+    panic("error peer must be treated as partial failure (noCache)")
+  }
+  if is_partial_rename_result(None, None, ["ok", "rig"]) {
+    panic("ok + rig peers should NOT be treated as partial failure")
+  }
+  if is_partial_rename_result(None, None, []) {
+    panic("empty peers with no errors should NOT be treated as partial failure")
+  }
+}
+
+test "wave17e4b: tools.access.get and tools.access.put enforce manages_station, read_only_handover, and read_ops parity" {
+  let (_, _, api, _, _, _) = make_mem_whole_api_fixture()
+  let owner_v = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let member_v = make_test_viewer("member@example.com", "u-member", "ws-main", true, "member")
+  let owner = PeerIdentity::AuthenticatedMember(owner_v, "ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+  let member = PeerIdentity::AuthenticatedMember(member_v, "ed25519:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  let empty_status = fn(_v : station_api::Viewer) { ([], []) }
+
+  // 1. read_only_handover=true blocks PUT /tools/access with 403
+  api.read_only_handover = true
+  match api.handle_authenticated_api_with_status(owner, "PUT", "/tools/access", [], "{\"access\":\"read\"}".to_bytes(), 1000L, empty_status) {
+    station_http::HandlerAction::Respond(r) => if r.status != 403 { panic("expected 403 during read_only_handover, got " + r.status.to_string()) }
+    _ => panic("expected Respond")
+  }
+  api.read_only_handover = false
+
+  // 2. GET /tools/access returns default "off" + levels + read_ops + about
+  match api.handle_authenticated_api_with_status(member, "GET", "/tools/access", [], Bytes::new(0), 1001L, empty_status) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("\"access\":\"off\"") || !s.contains("\"read_ops\"") || !s.contains("\"fs.read\"") {
+        panic("unexpected GET /tools/access response: " + s)
+      }
+    }
+    _ => panic("expected Respond")
+  }
+
+  // 3. Non-manager member gets 403 on PUT /tools/access
+  match api.handle_authenticated_api_with_status(member, "PUT", "/tools/access", [], "{\"access\":\"read\"}".to_bytes(), 1002L, empty_status) {
+    station_http::HandlerAction::Respond(r) => if r.status != 403 { panic("expected 403 for non-manager, got " + r.status.to_string()) }
+    _ => panic("expected Respond")
+  }
+
+  // 4. Invalid access value gets 400
+  match api.handle_authenticated_api_with_status(owner, "PUT", "/tools/access", [], "{\"access\":\"admin\"}".to_bytes(), 1003L, empty_status) {
+    station_http::HandlerAction::Respond(r) => if r.status != 400 { panic("expected 400 for invalid access, got " + r.status.to_string()) }
+    _ => panic("expected Respond")
+  }
+
+  // 5. Manager PUT /tools/access {"access":"read"} persists to config.json and roundtrips via GET
+  match api.handle_authenticated_api_with_status(owner, "PUT", "/tools/access", [], "{\"access\":\"read\"}".to_bytes(), 1004L, empty_status) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("\"access\":\"read\"") || !s.contains("\"read_ops\"") {
+        panic("unexpected PUT /tools/access response: " + s)
+      }
+    }
+    _ => panic("expected Respond")
+  }
+  match api.handle_authenticated_api_with_status(member, "GET", "/tools/access", [], Bytes::new(0), 1005L, empty_status) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || !r.body.to_string().contains("\"access\":\"read\"") {
+        panic("GET /tools/access did not reflect persisted read: " + r.body.to_string())
+      }
+    }
+    _ => panic("expected Respond")
+  }
+}
