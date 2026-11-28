@@ -25,11 +25,11 @@ extern "C" fn pion_core_accounts_tx_data(tx_id : Int64) -> Ptr
 extern "C" fn pion_core_accounts_tx_len(tx_id : Int64) -> Int64
 extern "C" fn pion_core_accounts_tx_commit(tx_id : Int64, bytes : Ptr, len : Int64) -> Int
 extern "C" fn pion_core_accounts_tx_end(tx_id : Int64) -> Unit
-extern "C" fn pion_core_sidecar_read(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64) -> Int
-extern "C" fn pion_core_sidecar_data() -> Ptr
-extern "C" fn pion_core_sidecar_len() -> Int64
-extern "C" fn pion_core_sidecar_write_atomic(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64, bytes : Ptr, len : Int64) -> Int
-extern "C" fn pion_core_sidecar_remove(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64) -> Int
+extern "C" fn pion_core_rejected_slot_ensure(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64) -> Int
+extern "C" fn pion_core_rejected_slot_read(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64) -> Int
+extern "C" fn pion_core_rejected_slot_data() -> Ptr
+extern "C" fn pion_core_rejected_slot_len() -> Int64
+extern "C" fn pion_core_rejected_slot_write_inplace(dir : Ptr, dir_len : Int64, name : Ptr, name_len : Int64, slot_index : Int, bytes : Ptr, len : Int64) -> Int
 
 struct AccountInfo {
   sub : String
@@ -495,51 +495,101 @@ fn runtime_attach_mesh_station(
   sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
 }
 
-fn rejected_sidecar_name(sub : String) -> String {
-  ".rejected_tuples_" + encode_account_db_name(sub) + ".json"
+fn bytes_range_to_str(b : Bytes, start : Int, end : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
 }
 
-fn read_rejected_sidecar_raw(dir : String, sub : String) -> Result[Option[String], String] {
-  let name = rejected_sidecar_name(sub)
+fn rejected_slot_name(sub : String) -> String {
+  ".rejected_slot_" + encode_account_db_name(sub) + ".json"
+}
+
+fn ensure_rejected_slot_file(dir : String, sub : String) -> Result[Unit, String] {
+  if sub.length() == 0 {
+    return Err("empty_sub")
+  }
+  let name = rejected_slot_name(sub)
   let dbs = dir.to_bytes()
   let nbs = name.to_bytes()
-  let st = pion_core_sidecar_read(bytes_data_ptr(dbs), dbs.length().to_int64(), bytes_data_ptr(nbs), nbs.length().to_int64())
+  let rc = pion_core_rejected_slot_ensure(
+    bytes_data_ptr(dbs),
+    dbs.length().to_int64(),
+    bytes_data_ptr(nbs),
+    nbs.length().to_int64(),
+  )
+  let _ = dbs.length()
+  let _ = nbs.length()
+  if rc == 0 {
+    Ok(())
+  } else {
+    Err("rejected_slot_ensure_error")
+  }
+}
+
+fn read_rejected_slot_state(dir : String, sub : String) -> Result[Option[sync::RejectedSlotState], String] {
+  let name = rejected_slot_name(sub)
+  let dbs = dir.to_bytes()
+  let nbs = name.to_bytes()
+  let st = pion_core_rejected_slot_read(
+    bytes_data_ptr(dbs),
+    dbs.length().to_int64(),
+    bytes_data_ptr(nbs),
+    nbs.length().to_int64(),
+  )
   let _ = dbs.length()
   let _ = nbs.length()
   if st == 0 {
     Ok(None)
   } else if st == 1 {
-    Ok(Some(ptr_to_string(pion_core_sidecar_data(), pion_core_sidecar_len())))
+    let raw_len = pion_core_rejected_slot_len()
+    let raw_ptr = pion_core_rejected_slot_data()
+    if raw_len != 8192L || ptr_is_null(raw_ptr) {
+      return Err("rejected_slot_wrong_size")
+    }
+    let all = bytes_from_ptr(raw_ptr, 8192)
+    let slot0 = bytes_range_to_str(all, 0, 4096)
+    let slot1 = bytes_range_to_str(all, 4096, 8192)
+    match sync::parse_rejected_ab_slot_pair(slot0, slot1) {
+      Ok(parsed) => Ok(Some(parsed))
+      Err(e) => Err(e)
+    }
   } else {
-    Err("rejected_sidecar_read_error")
+    Err("rejected_slot_read_error")
   }
 }
 
-fn check_rejected_sidecar(dir : String, sub : String, sid : String, rtok : String) -> sync::RejectedTupleCheck {
-  match read_rejected_sidecar_raw(dir, sub) {
+fn check_rejected_slot(dir : String, sub : String, sid : String, rtok : String) -> sync::RejectedTupleCheck {
+  match read_rejected_slot_state(dir, sub) {
     Err(e) => sync::RejectedTupleCheck::Unreadable(e)
-    Ok(raw_opt) => sync::check_rejected_tuples_raw(raw_opt, sid, rtok)
+    Ok(None) => sync::RejectedTupleCheck::Allowed
+    Ok(Some(slot)) => sync::check_tuples_list_rejected(slot.tuples, sid, rtok)
   }
 }
 
-fn write_rejected_sidecar(dir : String, sub : String, tuples : Array[(String, String)]) -> Result[Unit, String] {
-  let raw_opt = match read_rejected_sidecar_raw(dir, sub) {
-    Ok(opt) => opt
-    Err(e) => return Err(e)
-  }
-  let encoded = match sync::merge_rejected_tuples_raw(raw_opt, tuples) {
+fn write_rejected_slot_state_inplace(
+  dir : String,
+  sub : String,
+  next_slot_idx : Int,
+  next_seq : Int64,
+  tuples : Array[(String, String)],
+) -> Result[Unit, String] {
+  let encoded = match sync::format_rejected_slot_payload(next_seq, tuples) {
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  let name = rejected_sidecar_name(sub)
+  let name = rejected_slot_name(sub)
   let dbs = dir.to_bytes()
   let nbs = name.to_bytes()
   let bbs = encoded.to_bytes()
-  let rc = pion_core_sidecar_write_atomic(
+  let rc = pion_core_rejected_slot_write_inplace(
     bytes_data_ptr(dbs),
     dbs.length().to_int64(),
     bytes_data_ptr(nbs),
     nbs.length().to_int64(),
+    next_slot_idx,
     bytes_data_ptr(bbs),
     bbs.length().to_int64(),
   )
@@ -549,23 +599,78 @@ fn write_rejected_sidecar(dir : String, sub : String, tuples : Array[(String, St
   if rc == 0 {
     Ok(())
   } else {
-    Err("rejected_sidecar_write_error")
+    Err("rejected_slot_write_inplace_error")
   }
 }
 
-fn remove_rejected_sidecar(dir : String, sub : String) -> Unit {
+fn append_rejected_slot_inplace(
+  dir : String,
+  sub : String,
+  tuples : Array[(String, String)],
+) -> Result[Unit, String] {
+  let cur_opt = match read_rejected_slot_state(dir, sub) {
+    Ok(opt) => opt
+    Err(e) => return Err(e)
+  }
+  let (cur_slot, cur_seq, cur_tuples) = match cur_opt {
+    Some(s) => (s.active_slot, s.seq, s.tuples)
+    None => {
+      match ensure_rejected_slot_file(dir, sub) {
+        Ok(_) => (0, 1L, [])
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let merged = sync::merge_rejected_tuples_list(cur_tuples, tuples)
+  let next_slot = if cur_slot == 0 { 1 } else { 0 }
+  write_rejected_slot_state_inplace(dir, sub, next_slot, cur_seq + 1L, merged)
+}
+
+/// Tuple-level precise cleanup on the 8 KB A/B slot after activation: removes ONLY tuples
+/// `!= (keep_sid, keep_ref)`, preserving any concurrently written rejection for `(keep_sid, keep_ref)`!
+fn prune_rejected_slot_except(
+  dir : String,
+  sub : String,
+  keep_sid : String,
+  keep_ref : String,
+) -> Unit {
   if sub.length() == 0 {
     return
   }
-  let name = rejected_sidecar_name(sub)
-  let dbs = dir.to_bytes()
-  let nbs = name.to_bytes()
-  let _ = pion_core_sidecar_remove(bytes_data_ptr(dbs), dbs.length().to_int64(), bytes_data_ptr(nbs), nbs.length().to_int64())
-  let _ = dbs.length()
-  let _ = nbs.length()
+  match read_rejected_slot_state(dir, sub) {
+    Ok(Some(s)) => {
+      let kept = sync::prune_rejected_tuples_except(s.tuples, keep_sid, keep_ref)
+      if kept.length() != s.tuples.length() {
+        let next_slot = if s.active_slot == 0 { 1 } else { 0 }
+        let _ = write_rejected_slot_state_inplace(dir, sub, next_slot, s.seq + 1L, kept)
+      }
+    }
+    _ => ()
+  }
 }
 
-/// Fail-closed combined check of SQLite `meta("membership:rejected_tuples")` AND atomic sidecar backup:
+/// Tuple-level precise removal on the 8 KB A/B slot after `Remove401` confirms CAS deletion from disk.
+fn remove_rejected_slot_tuples(
+  dir : String,
+  sub : String,
+  targets : Array[(String, String)],
+) -> Unit {
+  if sub.length() == 0 || targets.length() == 0 {
+    return
+  }
+  match read_rejected_slot_state(dir, sub) {
+    Ok(Some(s)) => {
+      let kept = sync::remove_rejected_tuples_matching(s.tuples, targets)
+      if kept.length() != s.tuples.length() {
+        let next_slot = if s.active_slot == 0 { 1 } else { 0 }
+        let _ = write_rejected_slot_state_inplace(dir, sub, next_slot, s.seq + 1L, kept)
+      }
+    }
+    _ => ()
+  }
+}
+
+/// Fail-closed combined check of SQLite `meta("membership:rejected_tuples")` AND 8 KB A/B slot:
 /// - Either `Rejected` -> `Rejected`
 /// - Either `Unreadable` -> `Unreadable` (NEVER falls open!)
 /// - Only BOTH `Allowed` -> `Allowed`
@@ -577,7 +682,7 @@ fn check_tuple_rejected_combined(
   rtok : String,
 ) -> sync::RejectedTupleCheck {
   let db_chk = sync::check_tuple_rejected_in_db(db, sid, rtok)
-  let sc_chk = check_rejected_sidecar(dir, sub, sid, rtok)
+  let sc_chk = check_rejected_slot(dir, sub, sid, rtok)
   match (db_chk, sc_chk) {
     (sync::RejectedTupleCheck::Rejected, _) | (_, sync::RejectedTupleCheck::Rejected) => sync::RejectedTupleCheck::Rejected
     (sync::RejectedTupleCheck::Unreadable(e), _) => sync::RejectedTupleCheck::Unreadable(e)
@@ -591,7 +696,7 @@ fn flush_pending_rejected_backups(sess : RuntimeSession) -> Unit {
   for i in 0..<keys.length() {
     let sub = keys[i]
     match sess.pending_rejected_backup.get(sub) {
-      Some(tuples) => match write_rejected_sidecar(sess.dir, sub, tuples) {
+      Some(tuples) => match append_rejected_slot_inplace(sess.dir, sub, tuples) {
         Ok(_) => sess.pending_rejected_backup.remove(sub)
         Err(_) => ()
       }
@@ -600,17 +705,86 @@ fn flush_pending_rejected_backups(sess : RuntimeSession) -> Unit {
   }
 }
 
+/// Best-effort synchronous 0ms CAS removal on shutdown if BOTH SQLite and 8 KB A/B slot failed
+/// (e.g. read-only filesystem `EROFS`).
+fn try_remove_rejected_from_disk_now(
+  dir : String,
+  sub : String,
+  tuples : Array[(String, String)],
+) -> Bool {
+  if sub.length() == 0 || tuples.length() == 0 {
+    return false
+  }
+  let bs = dir.to_bytes()
+  let tx_id = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs), bs.length().to_int64())
+  let _ = bs.length()
+  if tx_id <= 0L {
+    return false
+  }
+  let rd = accounts_tx_read_state(tx_id)
+  let mut removed = false
+  match rd {
+    sync::HostStorageRead::Found(doc) => {
+      let disk_sessions = sync::parse_stored_account_sessions(doc)
+      match sync::parse_stored_accounts_strict(doc) {
+        Some(disk_list) => {
+          let mut hit_idx = -1
+          for i in 0..<disk_list.length() {
+            if disk_list[i].sub == sub {
+              hit_idx = i
+              break
+            }
+          }
+          if hit_idx >= 0 {
+            let cur = disk_list[hit_idx]
+            let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+            let mut matched = false
+            for j in 0..<tuples.length() {
+              let (tsid, tref) = tuples[j]
+              if disk_sid == tsid && cur.refresh == tref {
+                matched = true
+                break
+              }
+            }
+            if matched {
+              let next_list : Array[views::StoredAccount] = []
+              for i in 0..<disk_list.length() {
+                if i != hit_idx {
+                  next_list.push(disk_list[i])
+                }
+              }
+              disk_sessions.remove(sub)
+              let encoded = sync::serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+              match accounts_tx_commit_json(tx_id, encoded) {
+                Ok(_) => { removed = true }
+                Err(_) => ()
+              }
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    _ => ()
+  }
+  pion_core_accounts_tx_end(tx_id)
+  removed
+}
+
 struct PendingPostLockActivation {
   old_db : Option[sql::Sql]
+  old_mesh_ctrls : Array[sync::MeshStationTransport]
+  prepared : Option[sync::PreparedAccountState]
   active : views::StoredAccount
   active_session : String
   req_origin : String
   interrupt_lifecycle : Bool
 }
 
-/// Phase 1 of unified two-phase activation (executed STRICTLY UNDER the `.accounts.lock` tx!):
-/// Performs ONLY pure synchronous DB/read-gate/lifecycle state switching with ZERO yields,
-/// ZERO `old_db.close()`, ZERO CloudSync/WS/mesh/start calls, and ZERO host wire emissions!
+/// Phase 1 of unified 3-way activation (executed STRICTLY UNDER the `.accounts.lock` tx!):
+/// ZERO SQLite calls, ZERO `CloudSync` calls, ZERO `old_db.close()`, ZERO host callbacks, ZERO yields!
+/// When `recheck_slot_under_lock` is true (cold startup & async recovery), re-verifies the 8 KB A/B
+/// rejected slot under lock (single 8 KB read, 0 SQLite) before switching in-memory handles!
 fn runtime_activate_under_lock(
   sess : RuntimeSession,
   active : views::StoredAccount,
@@ -622,17 +796,23 @@ fn runtime_activate_under_lock(
   bump_login_gen : Bool,
   interrupt_lifecycle : Bool,
   return_to : Option[String] = None,
+  recheck_slot_under_lock : Bool = false,
 ) -> Result[PendingPostLockActivation, String] {
+  if recheck_slot_under_lock {
+    match check_rejected_slot(sess.dir, active.sub, active_session, active.refresh) {
+      sync::RejectedTupleCheck::Rejected => return Err("rejected_tuple_under_lock")
+      sync::RejectedTupleCheck::Unreadable(reason) => return Err("unreadable_rejected_under_lock: " + reason)
+      sync::RejectedTupleCheck::Allowed => ()
+    }
+  }
   let prev_quarantined = sess.quarantined_sub
-  let prev_quarantined_ws = if prev_quarantined == active.sub { sess.quarantined_workspace } else { "" }
-  let old_db_opt = match runtime_install_staged_db_under_lock(
+  let (old_db_opt, old_mesh_ctrls, prepared_opt, verified_role) = match runtime_install_staged_db_under_lock(
     sess,
     active.sub,
     staged_opt,
-    preferred_ws=prev_quarantined_ws,
   ) {
     Err(msg) => return Err(msg)
-    Ok(odb) => odb
+    Ok(res) => res
   }
   sess.accounts_init_pending = false
   sess.startup_activate_sibling = false
@@ -652,13 +832,16 @@ fn runtime_activate_under_lock(
   sess.core.membership.clear_session_invalidated()
   sess.core.membership.set_unauthenticated(false)
   sync_mem_accounts_from_list(sess, all_accts, all_sessions)
-  sess.core.set_viewer(active.email, sub=active.sub, role="owner")
+  // Verified role from offline hydration (defaults strictly to `"member"`, NEVER hardcoded `"owner"`!).
+  sess.core.set_viewer(active.email, sub=active.sub, role=verified_role)
   match return_to {
     Some(rt_path) => sess.core.login_flow.mark_completed(active.sub, rt_path)
     None => ()
   }
   Ok(PendingPostLockActivation::{
     old_db: old_db_opt,
+    old_mesh_ctrls: old_mesh_ctrls,
+    prepared: prepared_opt,
     active: active,
     active_session: active_session,
     req_origin: req_origin,
@@ -666,17 +849,26 @@ fn runtime_activate_under_lock(
   })
 }
 
-/// Phase 2 of unified two-phase activation (executed STRICTLY AFTER `pion_core_accounts_tx_end`!):
-/// Shared 1:1 by BOTH disk recovery (`runtime_reconcile_from_disk_k`) AND verified login
-/// (`finish_verified_auth_complete_k`): closes `old_db`, clears persisted rejected markers,
+/// Phase 2 of unified 3-way activation (executed STRICTLY AFTER `pion_core_accounts_tx_end`!):
+/// Shared 1:1 by cold startup, disk recovery (`runtime_reconcile_from_disk_k`), AND verified login
+/// (`finish_verified_auth_complete_k`): closes `old_db` + old mesh transports, dispatches deferred
+/// host purge callbacks, performs tuple-level precise cleanup of stale rejected tuples (`!= active`),
 /// rebinds `CloudSync` + `/v1/events` WS, restores loopback/mesh transports + `live_sync_enabled`,
-/// and emits `auth.bump_all()` + topic refreshes.
+/// and (when `emit_wire_events=true`) emits `auth.bump_all()` + topic refreshes.
 fn runtime_activate_post_lock(
   sess : RuntimeSession,
   act : PendingPostLockActivation,
+  emit_wire_events : Bool = true,
 ) -> Unit {
+  for i in 0..<act.old_mesh_ctrls.length() {
+    act.old_mesh_ctrls[i].close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+  }
   match act.old_db {
     Some(old_db) => old_db.close()
+    None => ()
+  }
+  match act.prepared {
+    Some(prep) => sess.core.finish_prepared_account_post_lock(prep)
     None => ()
   }
   if act.interrupt_lifecycle {
@@ -689,9 +881,21 @@ fn runtime_activate_post_lock(
       None => ()
     }
   }
-  let _ = sync::clear_rejected_tuples_in_db(sess.db)
-  remove_rejected_sidecar(sess.dir, act.active.sub)
-  sess.pending_rejected_backup.remove(act.active.sub)
+  // Tuple-level precise cleanup: remove ONLY stale rejected tuples `!= (active_session, active.refresh)`
+  // so a concurrently written rejection of the newly active tuple is NEVER blindly wiped!
+  let _ = sync::prune_rejected_tuples_except_in_db(sess.db, act.active_session, act.active.refresh)
+  prune_rejected_slot_except(sess.dir, act.active.sub, act.active_session, act.active.refresh)
+  match sess.pending_rejected_backup.get(act.active.sub) {
+    Some(prev) => {
+      let kept = sync::prune_rejected_tuples_except(prev, act.active_session, act.active.refresh)
+      if kept.length() == 0 {
+        sess.pending_rejected_backup.remove(act.active.sub)
+      } else {
+        sess.pending_rejected_backup.set(act.active.sub, kept)
+      }
+    }
+    None => ()
+  }
   let _ = store::put_account_doc(
     sess.db,
     "accounts",
@@ -721,7 +925,19 @@ fn runtime_activate_post_lock(
       }
     }
     if cs.origin().length() > 0 {
-      cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      if emit_wire_events {
+        cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      } else {
+        cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      }
+    }
+  } else {
+    match sess.cloud {
+      Some(existing) => {
+        existing.switch_db(sess.db)
+        let _ = existing.bind_account_context(act.active.sub, session=act.active_session)
+      }
+      None => ()
     }
   }
   // Restore loopback HTTP & desired mesh station transports + frame delivery!
@@ -746,14 +962,16 @@ fn runtime_activate_post_lock(
     sess.live_sync_enabled = true
     sess.core.start()
   }
-  let _ = sess.core.auth.bump_all()
-  emit_topic_refresh(sess, "accounts")
-  emit_topic_refresh(sess, "workspaces")
-  emit_topic_refresh(sess, "workspace")
-  emit_topic_refresh(sess, "stations")
-  emit_topic_refresh(sess, "chats")
-  emit_topic_refresh(sess, "notify")
-  emit_topic_refresh(sess, "lock")
+  if emit_wire_events {
+    let _ = sess.core.auth.bump_all()
+    emit_topic_refresh(sess, "accounts")
+    emit_topic_refresh(sess, "workspaces")
+    emit_topic_refresh(sess, "workspace")
+    emit_topic_refresh(sess, "stations")
+    emit_topic_refresh(sess, "chats")
+    emit_topic_refresh(sess, "notify")
+    emit_topic_refresh(sess, "lock")
+  }
 }
 
 /// Schedule the unified `AccountLifecycle` disk-to-active reconciliation pipeline.
@@ -926,13 +1144,35 @@ fn runtime_reconcile_from_disk_k(
                     sess.origin,
                     false,
                     false,
+                    recheck_slot_under_lock=true,
                   )
                   pion_core_accounts_tx_end(tx2)
                   match act_res {
-                    Ok(post_act) => runtime_activate_post_lock(sess, post_act)
-                    Err(_) => close_staged_db(staged_opt)
+                    Ok(post_act) => {
+                      runtime_activate_post_lock(sess, post_act)
+                      done_k(effect::Exit::Succeeded(()))
+                    }
+                    Err(err_msg) => {
+                      close_staged_db(staged_opt)
+                      if err_msg == "rejected_tuple_under_lock" {
+                        if !sess.stopped && sess.active_account_gen == captured_active_gen {
+                          sess.startup_activate_sibling = true
+                          let host = runtime_make_refresh_host(sess, cur_active.sub, sess.session_gen, false, sess.origin)
+                          sess.refresh_coord.enqueue_rejected_removal(host, cur_active.sub, cur_sid, cur_active.refresh)
+                        }
+                        done_k(effect::Exit::Succeeded(()))
+                      } else if err_msg.starts_with("unreadable_rejected_under_lock") {
+                        log_runtime_warn("rejected slot unreadable under lock (" + err_msg + "); staying fail-closed and retrying")
+                        if !sess.stopped && sess.active_account_gen == captured_active_gen {
+                          schedule_retry(attempt)
+                        } else {
+                          done_k(effect::Exit::Succeeded(()))
+                        }
+                      } else {
+                        done_k(effect::Exit::Succeeded(()))
+                      }
+                    }
                   }
-                  done_k(effect::Exit::Succeeded(()))
                 }
               }
             }
@@ -1547,25 +1787,24 @@ fn sync_mem_accounts_from_list(
 }
 
 struct StagedAccountDb {
-  new_db : sql::Sql
-  host_purges_read : sync::HostStorageRead
-  host_purges_shared : Bool
-  person_lock_opt : Option[base_codec::Json]
-  default_ws_fallback : String
+  prepared : sync::PreparedAccountState
 }
 
 fn close_staged_db(staged_opt : Option[StagedAccountDb]) -> Unit {
   match staged_opt {
-    Some(st) => st.new_db.close()
+    Some(st) => st.prepared.db.close()
     None => ()
   }
 }
 
-fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
+/// Pure in-memory runtime cache clear: detaches & returns old mesh transports WITHOUT closing them
+/// so `close_k` runs strictly AFTER `.accounts.lock` is released!
+fn take_and_clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Array[sync::MeshStationTransport] {
+  let old_ctrls : Array[sync::MeshStationTransport] = []
   let mkeys = sess.mesh_transports.keys()
   for i in 0..<mkeys.length() {
     match sess.mesh_transports.get(mkeys[i]) {
-      Some(ctrl) => ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+      Some(ctrl) => old_ctrls.push(ctrl)
       None => ()
     }
   }
@@ -1583,6 +1822,14 @@ fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
   for i in 0..<sess.runtime_subs.length() {
     sess.runtime_subs[i].last_val = None
   }
+  old_ctrls
+}
+
+fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
+  let old_ctrls = take_and_clear_runtime_ephemeral_caches(sess)
+  for i in 0..<old_ctrls.length() {
+    old_ctrls[i].close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+  }
 }
 
 enum StageAccountDbResult {
@@ -1592,10 +1839,144 @@ enum StageAccountDbResult {
   Failed(String)
 }
 
-/// Stage candidate `account-<sanitized_sub>.db` (open + migrate), strictly verify both SQLite
-/// `meta("membership:rejected_tuples")` and atomic sidecar backup (fail-closed on unreadable/corrupt!),
-/// pre-read `list_workspaces` fallback, and asynchronously load host `pending_purges` + `person_lock`
-/// BEFORE acquiring the `.accounts.lock` commit lock!
+/// Shared offline SQLite pre-hydration executed 100% OUTSIDE `.accounts.lock`:
+/// - Preallocates the fixed 8 KB A/B rejected slot file (`ENOSPC`-immune on subsequent 401 writes!)
+/// - Writes `conn_seq` + seeds/reads `prefs` (`lang`) on `new_db`
+/// - Runs `sync::prepare_account_state_offline` (binds `MembershipAuthority`, runs pending-purge SQL
+///   transactions without host callbacks, verifies Ed25519 lock & person lock, restores notify, and
+///   resolves `verified_viewer_role` defaulting strictly to `"member"`).
+fn prepare_account_db_offline_common(
+  sess : RuntimeSession,
+  new_db : sql::Sql,
+  subject : String,
+  host_purges_read : sync::HostStorageRead,
+  host_purges_shared : Bool,
+  person_lock_opt : Option[base_codec::Json],
+) -> Result[StagedAccountDb, String] {
+  match ensure_rejected_slot_file(sess.dir, subject) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let _ = store::put_account_doc(new_db, "conn_seq", sess.device_conn_seq.to_string())
+  match store::get_device_prefs(new_db) {
+    sql::SqlResult::Ok(base_codec::Json::Obj(existing_fs)) => {
+      if existing_fs.length() == 0 && sess.prefs.keys().length() > 0 {
+        let seed_pairs : Array[(String, base_codec::Json)] = []
+        let pks = sess.prefs.keys()
+        for i in 0..<pks.length() {
+          match sess.prefs.get(pks[i]) {
+            Some(v) => seed_pairs.push((pks[i], v))
+            None => ()
+          }
+        }
+        let _ = store::put_account_doc(new_db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
+      }
+    }
+    _ => ()
+  }
+  let mut lang = sess.core.lang
+  match store::get_device_prefs(new_db) {
+    sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
+      Some(base_codec::Json::Str(s)) => { lang = if s == "en" { "en" } else { "zh" } }
+      _ => ()
+    }
+    _ => ()
+  }
+  let mut preferred_ws = match sess.prefs.get("workspace") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
+    _ => ""
+  }
+  if preferred_ws.length() == 0 && sess.quarantined_sub == subject && sess.quarantined_workspace.length() > 0 {
+    preferred_ws = sess.quarantined_workspace
+  }
+  let now_secs = pion_core_wall_now_ms().to_double() / 1000.0
+  match sync::prepare_account_state_offline(
+    new_db,
+    subject,
+    now_secs,
+    preferred_ws=preferred_ws,
+    lang=lang,
+    host_purges_shared=host_purges_shared,
+    host_purges_read=Some(host_purges_read),
+    person_lock_opt=person_lock_opt,
+  ) {
+    Ok(prep) => Ok(StagedAccountDb::{ prepared: prep })
+    Err(e) => Err(e)
+  }
+}
+
+/// Synchronous offline staging helper used by cold startup (`pion_core_runtime_start`) so cold boot
+/// runs the EXACT SAME offline pre-hydration + lock-held publication check + zero-SQLite switch as
+/// async disk recovery and verified login!
+fn runtime_stage_account_db_sync(
+  sess : RuntimeSession,
+  subject : String,
+  check_rejected : Option[(String, String)] = None,
+) -> StageAccountDbResult {
+  if subject.length() == 0 {
+    return StageAccountDbResult::Failed("account_sub_mismatch: empty subject")
+  }
+  match sess.core.db_account_sub {
+    Some(existing) => {
+      if existing != subject {
+        return StageAccountDbResult::Failed("account_sub_mismatch: expected " + existing + ", got " + subject)
+      }
+      return StageAccountDbResult::Staged(None)
+    }
+    None => ()
+  }
+  let db_name = encode_account_db_name(subject)
+  let new_db = match open_and_migrate_account_db(sess.sh, db_name) {
+    Ok(d) => d
+    Err(e) => return StageAccountDbResult::Failed(e)
+  }
+  match check_rejected {
+    Some((cand_sid, cand_ref)) => match check_tuple_rejected_combined(sess.dir, new_db, subject, cand_sid, cand_ref) {
+      sync::RejectedTupleCheck::Rejected => {
+        new_db.close()
+        return StageAccountDbResult::RejectedTuple
+      }
+      sync::RejectedTupleCheck::Unreadable(reason) => {
+        new_db.close()
+        return StageAccountDbResult::UnreadableRejected(reason)
+      }
+      sync::RejectedTupleCheck::Allowed => ()
+    }
+    None => ()
+  }
+  let sub_host_key = sync::host_pending_purges_key_for_sub(subject)
+  let (host_purges_read, host_purges_shared) : (sync::HostStorageRead, Bool) = match read_storage_json_state(sess.sh, sub_host_key) {
+    StorageRead::Found(j) => (sync::HostStorageRead::Found(j), false)
+    StorageRead::Absent => match read_storage_json_state(sess.sh, sync::HOST_PENDING_PURGES_KEY) {
+      StorageRead::Found(sj) => (sync::HostStorageRead::Found(sj), true)
+      StorageRead::Absent => (sync::HostStorageRead::Absent, false)
+      StorageRead::ReadError(reason) => {
+        log_runtime_warn("shared pending purges unreadable (" + reason + "); falling back to SQLite meta")
+        (sync::HostStorageRead::ReadError(reason), true)
+      }
+    }
+    StorageRead::ReadError(reason) => {
+      log_runtime_warn("per-account pending purges unreadable (" + reason + "); falling back to SQLite meta")
+      (sync::HostStorageRead::ReadError(reason), false)
+    }
+  }
+  let person_lock_opt = read_storage_json(sess.sh, sync::person_lock_storage_key(subject))
+  match prepare_account_db_offline_common(sess, new_db, subject, host_purges_read, host_purges_shared, person_lock_opt) {
+    Ok(st) => StageAccountDbResult::Staged(Some(st))
+    Err(e) => {
+      new_db.close()
+      if e == "rejected_slot_ensure_error" {
+        StageAccountDbResult::UnreadableRejected(e)
+      } else {
+        StageAccountDbResult::Failed(e)
+      }
+    }
+  }
+}
+
+/// Async offline staging for disk recovery & verified login: opens/migrates `account-<sub_db>`,
+/// strictly checks SQLite `meta` + 8 KB A/B slot (fail-closed!), loads host `pending_purges` +
+/// `person_lock`, and executes ALL SQLite pre-hydration BEFORE acquiring `.accounts.lock`!
 fn runtime_stage_account_db_k(
   sess : RuntimeSession,
   subject : String,
@@ -1643,10 +2024,6 @@ fn runtime_stage_account_db_k(
     }
     None => ()
   }
-  let default_ws_fallback = match store::list_workspaces(new_db) {
-    sql::SqlResult::Ok(ws_rows) => if ws_rows.length() > 0 { ws_rows[0].id } else { "" }
-    sql::SqlResult::Err(_) => ""
-  }
   let sub_host_key = sync::host_pending_purges_key_for_sub(subject)
   let finish_with_purges = fn(host_purges_read : sync::HostStorageRead, is_shared : Bool) -> Unit {
     read_storage_json_state_k(sess.sh, sync::person_lock_storage_key(subject), fn(prd : sync::HostStorageRead) -> Unit {
@@ -1654,13 +2031,17 @@ fn runtime_stage_account_db_k(
         sync::HostStorageRead::Found(pj) => Some(pj)
         _ => None
       }
-      k(StageAccountDbResult::Staged(Some(StagedAccountDb::{
-        new_db: new_db,
-        host_purges_read: host_purges_read,
-        host_purges_shared: is_shared,
-        person_lock_opt: person_lock_opt,
-        default_ws_fallback: default_ws_fallback,
-      })))
+      match prepare_account_db_offline_common(sess, new_db, subject, host_purges_read, is_shared, person_lock_opt) {
+        Ok(st) => k(StageAccountDbResult::Staged(Some(st)))
+        Err(e) => {
+          new_db.close()
+          if e == "rejected_slot_ensure_error" {
+            k(StageAccountDbResult::UnreadableRejected(e))
+          } else {
+            k(StageAccountDbResult::Failed(e))
+          }
+        }
+      }
     })
   }
   read_storage_json_state_k(sess.sh, sub_host_key, fn(rd : sync::HostStorageRead) -> Unit {
@@ -1686,15 +2067,13 @@ fn runtime_stage_account_db_k(
   })
 }
 
-/// Pure synchronous DB & lock-root swap executed UNDER the `.accounts.lock` tx:
-/// Returns `Ok(Some(old_db))` so the caller closes `old_db` and clears rejected markers AFTER
-/// releasing `.accounts.lock`!
+/// Pure synchronous in-memory DB & pre-hydrated state swap executed UNDER `.accounts.lock`:
+/// ZERO SQLite calls, ZERO `CloudSync` calls, ZERO `old_db.close()`, ZERO host callbacks!
 fn runtime_install_staged_db_under_lock(
   sess : RuntimeSession,
   subject : String,
   staged_opt : Option[StagedAccountDb],
-  preferred_ws : String = "",
-) -> Result[Option[sql::Sql], String] {
+) -> Result[(Option[sql::Sql], Array[sync::MeshStationTransport], Option[sync::PreparedAccountState], String), String] {
   match staged_opt {
     None => {
       match sess.core.db_account_sub {
@@ -1705,74 +2084,22 @@ fn runtime_install_staged_db_under_lock(
       }
       sess.core.membership.set_unauthenticated(false)
       sess.core.membership.clear_session_invalidated()
-      Ok(None)
+      let verified_role = match sess.core.membership.role_of(sess.core.workspace) {
+        Some(r) => if sync::is_valid_workspace_role(r) { r } else { "member" }
+        None => "member"
+      }
+      Ok((None, [], None, verified_role))
     }
     Some(st) => {
-      let new_db = st.new_db
-      let _ = store::put_account_doc(new_db, "conn_seq", sess.device_conn_seq.to_string())
-      match store::get_device_prefs(new_db) {
-        sql::SqlResult::Ok(base_codec::Json::Obj(existing_fs)) => {
-          if existing_fs.length() == 0 && sess.prefs.keys().length() > 0 {
-            let seed_pairs : Array[(String, base_codec::Json)] = []
-            let pks = sess.prefs.keys()
-            for i in 0..<pks.length() {
-              match sess.prefs.get(pks[i]) {
-                Some(v) => seed_pairs.push((pks[i], v))
-                None => ()
-              }
-            }
-            let _ = store::put_account_doc(new_db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
-          }
-        }
-        _ => ()
-      }
-      match store::get_device_prefs(new_db) {
-        sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
-          Some(base_codec::Json::Str(s)) => { sess.core.lang = if s == "en" { "en" } else { "zh" } }
-          _ => ()
-        }
-        _ => ()
-      }
-      clear_runtime_ephemeral_caches(sess)
+      let prep = st.prepared
+      let old_mesh_ctrls = take_and_clear_runtime_ephemeral_caches(sess)
       let old_db = sess.db
-      match sess.core.switch_account_db(
-        new_db,
-        subject,
-        host_purges_shared=st.host_purges_shared,
-        host_purges_read=Some(st.host_purges_read),
-        emit_auth_boundary=false,
-      ) {
-        Err(e) => {
-          new_db.close()
-          return Err(e)
-        }
+      match sess.core.install_prepared_account_in_memory(prep) {
+        Err(e) => return Err(e)
         Ok(_) => ()
       }
-      sess.db = new_db
-      match sess.cloud {
-        Some(cs) => cs.switch_db(new_db)
-        None => ()
-      }
-      match st.person_lock_opt {
-        Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, subject) }
-        None => ()
-      }
-      if sess.core.workspace == "ws-default" {
-        let mut target_ws = match sess.prefs.get("workspace") {
-          Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
-          _ => ""
-        }
-        if target_ws.length() == 0 && preferred_ws.length() > 0 && preferred_ws != "ws-default" {
-          target_ws = preferred_ws
-        }
-        if target_ws.length() == 0 {
-          target_ws = st.default_ws_fallback
-        }
-        if target_ws.length() > 0 {
-          sess.core.switch_workspace(target_ws)
-        }
-      }
-      Ok(Some(old_db))
+      sess.db = prep.db
+      Ok((Some(old_db), old_mesh_ctrls, Some(prep), prep.verified_viewer_role))
     }
   }
 }
@@ -2099,8 +2426,22 @@ fn runtime_make_refresh_host(
             expected_refresh=Some(inv_ref),
             persist_accounts=false,
           )
-          remove_rejected_sidecar(sess.dir, inv_sub)
-          sess.pending_rejected_backup.remove(inv_sub)
+          // Tuple-level precise cleanup AFTER CAS disk removal of `(inv_sid, inv_ref)`.
+          remove_rejected_slot_tuples(sess.dir, inv_sub, [(inv_sid, inv_ref)])
+          if was_active_sub {
+            let _ = sync::remove_rejected_tuples_in_db(sess.db, [(inv_sid, inv_ref)])
+          }
+          match sess.pending_rejected_backup.get(inv_sub) {
+            Some(prev) => {
+              let kept = sync::remove_rejected_tuples_matching(prev, [(inv_sid, inv_ref)])
+              if kept.length() == 0 {
+                sess.pending_rejected_backup.remove(inv_sub)
+              } else {
+                sess.pending_rejected_backup.set(inv_sub, kept)
+              }
+            }
+            None => ()
+          }
           sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
           if invalidated && (was_active_sub || remaining_accts.length() == 0) {
             runtime_switch_to_unauth_memory_db(sess, clear_desired_stations=true)
@@ -2135,9 +2476,19 @@ fn runtime_make_refresh_host(
             sess.desired_mesh_stations.clear()
             sess.desired_live_sync = false
           }
-          // Disk entry has now been removed by CAS: clean up any sidecar backup for `inv_sub`.
-          remove_rejected_sidecar(sess.dir, inv_sub)
-          sess.pending_rejected_backup.remove(inv_sub)
+          // Disk entry `(inv_sid, inv_ref)` has now been CAS-removed: remove ONLY that exact tuple!
+          remove_rejected_slot_tuples(sess.dir, inv_sub, [(inv_sid, inv_ref)])
+          match sess.pending_rejected_backup.get(inv_sub) {
+            Some(prev) => {
+              let kept = sync::remove_rejected_tuples_matching(prev, [(inv_sid, inv_ref)])
+              if kept.length() == 0 {
+                sess.pending_rejected_backup.remove(inv_sub)
+              } else {
+                sess.pending_rejected_backup.set(inv_sub, kept)
+              }
+            }
+            None => ()
+          }
           if should_activate_sibling {
             // Do NOT publish sibling into the `accounts` topic while still on unauth `:memory:` DB;
             // `runtime_reconcile_from_disk_k` will mount the sibling DB under lock and publish
@@ -2530,90 +2881,20 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
-  // Account-owned DB lifecycle (Invariant 1 + Persistent Rejected-Tuple Check):
-  // - When signed out (`accounts` empty), NEVER open or touch `default.db`: open an isolated
-  //   ephemeral `:memory:` DB (`AccountLifecycleState::UnauthMemory`).
-  // - When signed in, open `account-<sanitized_sub>.db` and check `meta("membership:rejected_tuples")`
-  //   BEFORE hydrating: if the disk tuple was already Cloud-401 rejected before a stop/restart,
-  //   immediately close `<sub_db>`, stay in `UnauthMemory`, and enqueue background CAS removal!
-  let mut startup_rejected_tuple : Option[(String, String, String)] = None
-  let mut startup_activate_sibling = false
-  let mut is_unauth = accounts.length() == 0
-  let mut db_res : Result[sql::Sql, String] = if is_unauth {
-    open_and_migrate_account_db(sh, ":memory:")
-  } else {
-    open_and_migrate_account_db(sh, encode_account_db_name(accounts[0].sub))
-  }
-  if !is_unauth {
-    match db_res {
-      Ok(cand_db) => {
-        let a0 = accounts[0]
-        match check_tuple_rejected_combined(dir, cand_db, a0.sub, a0.session, a0.refresh) {
-          sync::RejectedTupleCheck::Rejected => {
-            log_runtime_warn("startup account tuple already rejected (401); keeping unauth gate and scheduling disk cleanup")
-            cand_db.close()
-            startup_rejected_tuple = Some((a0.sub, a0.session, a0.refresh))
-            startup_activate_sibling = true
-            is_unauth = true
-            accounts.clear()
-            db_res = open_and_migrate_account_db(sh, ":memory:")
-          }
-          sync::RejectedTupleCheck::Unreadable(reason) => {
-            log_runtime_warn("startup rejected tuple metadata unreadable (" + reason + "); failing closed in UnauthMemory")
-            cand_db.close()
-            accounts_init_pending = true
-            is_unauth = true
-            accounts.clear()
-            db_res = open_and_migrate_account_db(sh, ":memory:")
-          }
-          sync::RejectedTupleCheck::Allowed => ()
-        }
-      }
-      Err(_) => ()
-    }
-  }
-  let db = match db_res {
+  // Account-owned DB lifecycle (Unified 3-Way Pipeline):
+  // Cold startup ALWAYS initializes `ClientCore` cleanly on an isolated ephemeral `:memory:` DB
+  // (`AccountLifecycleState::UnauthMemory`), then activates any candidate `accounts[0]` through
+  // the EXACT SAME offline pre-hydration -> `.accounts.lock` publication-boundary verification +
+  // 8 KB A/B slot re-check + zero-SQLite in-memory swap -> post-lock finish pipeline!
+  let db = match open_and_migrate_account_db(sh, ":memory:") {
     Ok(d) => d
     Err(msg) => {
       emit_fatal(msg)
       return 0
     }
   }
-  let mut default_ws = match prefs_map.get("workspace") {
-    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
-    _ => ""
-  }
-  if default_ws.length() == 0 {
-    match store::list_workspaces(db) {
-      sql::SqlResult::Ok(ws_rows) => {
-        if ws_rows.length() > 0 {
-          default_ws = ws_rows[0].id
-        }
-      }
-      sql::SqlResult::Err(_) => ()
-    }
-  }
-  if default_ws.length() == 0 {
-    default_ws = "ws-default"
-  }
-  let mut default_st = "st-local"
-  let cloud_default_sts = sync::list_workspace_stations(db, default_ws)
-  if cloud_default_sts.length() > 0 {
-    default_st = default_ws + "/" + cloud_default_sts[0].id
-  } else {
-    match store::list_stations(db, kind="overview") {
-      sql::SqlResult::Ok(st_rows) => {
-        let prefix = default_ws + "/"
-        for i in 0..<st_rows.length() {
-          if st_rows[i].address.starts_with(prefix) {
-            default_st = st_rows[i].address
-            break
-          }
-        }
-      }
-      sql::SqlResult::Err(_) => ()
-    }
-  }
+  let default_ws = "ws-default"
+  let default_st = "st-local"
   // Only loopback test HTTP station URLs (`http://127.0.0.1:...`) use `shell_http_transport`.
   // Production `cloud_origin` (e.g. `https://app.still.fail`) is NEVER used as a station HTTP URL;
   // production stations connect over `MeshStationTransport` (`shell_mesh_transport` + `attach_station_transport`).
@@ -2622,17 +2903,14 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     offline_transport()
   }
-  let active_access = if accounts.length() > 0 { accounts[0].access } else { "" }
-  let active_sub = if accounts.length() > 0 { accounts[0].sub } else { "" }
-  let active_session = if accounts.length() > 0 { accounts[0].session } else { "" }
   let cloud_opt : Option[sync::CloudSync] = if origin.length() > 0 {
     Some(sync::CloudSync::new(
       sh,
       db,
       origin,
-      token=active_access,
-      bound_sub=active_sub,
-      bound_session=active_session,
+      token="",
+      bound_sub="",
+      bound_session="",
     ))
   } else {
     None
@@ -2821,59 +3099,10 @@ pub extern "C" fn pion_core_runtime_start(
   if origin.length() > 0 {
     core.set_cloud_origin(origin)
   }
-  if is_unauth {
-    core.membership.set_unauthenticated(true)
-  } else {
-    let a0 = accounts[0]
-    let sub_host_key = sync::host_pending_purges_key_for_sub(a0.sub)
-    let (host_purges_read, host_purges_shared) : (sync::HostStorageRead, Bool) = match read_storage_json_state(sh, sub_host_key) {
-      StorageRead::Found(j) => (sync::HostStorageRead::Found(j), false)
-      StorageRead::Absent => match read_storage_json_state(sh, sync::HOST_PENDING_PURGES_KEY) {
-        StorageRead::Found(sj) => (sync::HostStorageRead::Found(sj), true)
-        StorageRead::Absent => (sync::HostStorageRead::Absent, false)
-        StorageRead::ReadError(reason) => {
-          log_runtime_warn("shared pending purges unreadable (" + reason + "); falling back to SQLite meta")
-          (sync::HostStorageRead::ReadError(reason), true)
-        }
-      }
-      StorageRead::ReadError(reason) => {
-        log_runtime_warn("per-account pending purges unreadable (" + reason + "); falling back to SQLite meta")
-        (sync::HostStorageRead::ReadError(reason), false)
-      }
-    }
-    let _ = core.set_db_account_sub(
-      a0.sub,
-      host_purges_shared=host_purges_shared,
-      host_purges_read=Some(host_purges_read),
-    )
-    // Clear stale rejected tuples ONLY after cold-boot account DB activation is committed!
-    let _ = sync::clear_rejected_tuples_in_db(db)
-    remove_rejected_sidecar(dir, a0.sub)
-    core.set_viewer(a0.email, sub=a0.sub, role="owner")
-    match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
-      Some(pjson) => {
-        let _ = core.load_person_lock_json(pjson, a0.sub)
-      }
-      None => ()
-    }
-    for i in 0..<accounts.length() {
-      let ai = accounts[i]
-      if ai.session.length() > 0 {
-        core.account_sessions.set(ai.sub, ai.session)
-      }
-      core.auth_store.register_account(views::StoredAccount::{
-        sub: ai.sub,
-        email: ai.email,
-        name: ai.name,
-        picture: ai.picture,
-        access: ai.access,
-        refresh: ai.refresh,
-        access_expires: ai.access_expires,
-      })
-    }
-    // Retry any persisted `(account_sub, ws)` pending purges on startup before serving views.
-    let _ = core.retry_pending_purges()
-  }
+  // Always start fail-closed in `UnauthMemory`; cold-boot activation runs below via the
+  // unified 3-way `runtime_stage_account_db_sync` -> `tx2` verify -> `runtime_activate_under_lock`
+  // -> `tx_end` -> `runtime_activate_post_lock` pipeline!
+  core.membership.set_unauthenticated(true)
   // Per-session `AccountRefreshCoordinator` backed by synchronous atomic C transactions
   // (`pion_core_accounts_tx_*`): NEVER shares cross-session `effect::Semaphore`, NEVER holds
   // a mutex or OS file lock across async yields, and uses 0ms `try_acquire_now` for 401/reconcile!
@@ -2911,11 +3140,6 @@ pub extern "C" fn pion_core_runtime_start(
       }
     }),
   )
-  let init_lifecycle = if is_unauth {
-    AccountLifecycleState::UnauthMemory
-  } else {
-    AccountLifecycleState::Active(accounts[0].sub, accounts[0].session, accounts[0].refresh)
-  }
   let sess = RuntimeSession::{
     dir: dir,
     sh: sh,
@@ -2923,7 +3147,7 @@ pub extern "C" fn pion_core_runtime_start(
     core: core,
     refresh_coord: refresh_coord,
     accounts_tx_id: accounts_tx_id,
-    accounts: accounts,
+    accounts: [],
     prefs: prefs_map,
     station_online: Map::new(),
     runtime_subs: [],
@@ -2935,13 +3159,13 @@ pub extern "C" fn pion_core_runtime_start(
     desired_mesh_stations: Map::new(),
     cloud: cloud_opt,
     origin: origin,
-    lifecycle: init_lifecycle,
+    lifecycle: AccountLifecycleState::UnauthMemory,
     active_account_gen: 1L,
     session_gen: 1L,
     login_gen: 1L,
     bearer_gen: 1L,
     accounts_init_pending: accounts_init_pending,
-    startup_activate_sibling: startup_activate_sibling,
+    startup_activate_sibling: false,
     quarantined_sub: "",
     quarantined_workspace: "",
     pending_rejected_backup: Map::new(),
@@ -3098,19 +3322,16 @@ pub extern "C" fn pion_core_runtime_start(
       None => ()
     }
   })
-  // Wire production CloudSync commit hooks, monotonic seq provider, cred_epoch guard, and
-  // dynamic-token `/v1/events` WebSocket consumption when signed in with an access token.
+  // Wire production CloudSync commit hooks, monotonic seq provider, and cred_epoch guard.
   match sess.cloud {
     Some(cs) => {
-      wire_live_cloud_sync(sess, cs, active_sub, active_session)
-      if !is_unauth && active_access.length() > 0 {
-        cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
-      }
+      wire_live_cloud_sync(sess, cs, "", "")
     }
     None => ()
   }
   // Immediate 0ms 401 quarantine on lock contention:
-  // 1. Synchronously persist rejected tuple(s) into `<sub_db>` `meta("membership:rejected_tuples")` (0ms, no `.accounts.lock`!).
+  // 1. Synchronously dual-write rejected tuple(s) to BOTH `<sub_db>` SQLite `meta` AND the
+  //    preallocated fixed 8 KB A/B in-place rejected slot (`ENOSPC`-immune, 0 new inodes/blocks!).
   // 2. Immediately transition the runtime to `AccountLifecycleState::UnauthMemory` (unmounting `<sub_db>`!).
   // Any subsequent recovery (e.g. peer session rotation) goes through the unified full-hydration pipeline!
   refresh_coord.set_on_401_quarantine(fn(
@@ -3132,20 +3353,28 @@ pub extern "C" fn pion_core_runtime_start(
             Some((asid, aref)) => tuples.push((asid, aref))
             None => ()
           }
-          // Single atomic SQLite `meta` write; on ANY error fall back immediately to an atomic
-          // sidecar file (independent of `.accounts.lock` and SQLite) AND keep retrying backup!
-          match sync::record_rejected_tuples_in_db(sess.db, tuples) {
-            Ok(_) => ()
+          // Dual-write BOTH SQLite `meta` AND the preallocated 8 KB A/B in-place rejected slot
+          // on EVERY 401 quarantine so `ENOSPC` / `SQLITE_READONLY` NEVER loses durability!
+          let db_ok = match sync::record_rejected_tuples_in_db(sess.db, tuples) {
+            Ok(_) => true
             Err(db_err) => {
-              log_runtime_warn("sqlite rejected_tuples persist failed (" + db_err + "); writing atomic sidecar backup")
-              match write_rejected_sidecar(sess.dir, inv_sub, tuples) {
-                Ok(_) => ()
-                Err(sc_err) => {
-                  log_runtime_warn("sidecar rejected_tuples backup failed (" + sc_err + "); queuing retry")
-                  sess.pending_rejected_backup.set(inv_sub, tuples)
-                }
-              }
+              log_runtime_warn("sqlite rejected_tuples persist failed (" + db_err + "); relying on 8KB A/B in-place slot")
+              false
             }
+          }
+          let slot_ok = match append_rejected_slot_inplace(sess.dir, inv_sub, tuples) {
+            Ok(_) => true
+            Err(sc_err) => {
+              log_runtime_warn("8KB A/B rejected slot in-place write failed (" + sc_err + "); queuing retry")
+              false
+            }
+          }
+          if !db_ok && !slot_ok {
+            let merged_pending = match sess.pending_rejected_backup.get(inv_sub) {
+              Some(prev) => sync::merge_rejected_tuples_list(prev, tuples)
+              None => tuples
+            }
+            sess.pending_rejected_backup.set(inv_sub, merged_pending)
           }
           sess.quarantined_sub = inv_sub
           sess.quarantined_workspace = if sess.core.workspace != "ws-default" { sess.core.workspace } else { "" }
@@ -3224,6 +3453,81 @@ pub extern "C" fn pion_core_runtime_start(
     }
   })
   g_session[0] = Some(sess)
+  // Cold-boot unified 3-way activation (EXACT SAME offline pre-hydration -> `.accounts.lock`
+  // publication-boundary re-verification + 8 KB A/B slot re-check + zero-SQLite in-memory swap ->
+  // post-lock finish pipeline as async recovery and verified login!).
+  let mut startup_rejected_tuple : Option[(String, String, String)] = None
+  if accounts.length() > 0 {
+    let a0 = accounts[0]
+    match runtime_stage_account_db_sync(sess, a0.sub, check_rejected=Some((a0.session, a0.refresh))) {
+      StageAccountDbResult::RejectedTuple => {
+        log_runtime_warn("startup account tuple already rejected (401); keeping unauth gate and scheduling disk cleanup")
+        startup_rejected_tuple = Some((a0.sub, a0.session, a0.refresh))
+        sess.startup_activate_sibling = true
+      }
+      StageAccountDbResult::UnreadableRejected(reason) => {
+        log_runtime_warn("startup rejected tuple metadata unreadable (" + reason + "); failing closed in UnauthMemory")
+        sess.accounts_init_pending = true
+      }
+      StageAccountDbResult::Failed(reason) => {
+        log_runtime_warn("startup account DB staging failed (" + reason + "); staying in UnauthMemory and retrying")
+        sess.accounts_init_pending = true
+      }
+      StageAccountDbResult::Staged(staged_opt) => {
+        let bs2 = sess.dir.to_bytes()
+        let tx2 = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs2), bs2.length().to_int64())
+        let _ = bs2.length()
+        if tx2 <= 0L {
+          close_staged_db(staged_opt)
+          sess.accounts_init_pending = true
+        } else {
+          let rd2 = accounts_tx_read_state(tx2)
+          match sync::verify_publication_candidate(rd2, a0.sub, a0.session, a0.refresh) {
+            sync::PublicationCheckResult::EmptyDisk => {
+              pion_core_accounts_tx_end(tx2)
+              close_staged_db(staged_opt)
+            }
+            sync::PublicationCheckResult::RetryLater(_) | sync::PublicationCheckResult::Superseded(_, _) => {
+              pion_core_accounts_tx_end(tx2)
+              close_staged_db(staged_opt)
+              sess.accounts_init_pending = true
+            }
+            sync::PublicationCheckResult::Publish(cur_active, cur_sid, latest_list, latest_sids) => {
+              let act_res = runtime_activate_under_lock(
+                sess,
+                cur_active,
+                cur_sid,
+                latest_list,
+                latest_sids,
+                staged_opt,
+                sess.origin,
+                false,
+                false,
+                recheck_slot_under_lock=true,
+              )
+              pion_core_accounts_tx_end(tx2)
+              match act_res {
+                Ok(post_act) => {
+                  runtime_activate_post_lock(sess, post_act, emit_wire_events=false)
+                }
+                Err(err_msg) => {
+                  close_staged_db(staged_opt)
+                  if err_msg == "rejected_tuple_under_lock" {
+                    log_runtime_warn("startup account tuple rejected under lock (401); keeping unauth gate and scheduling disk cleanup")
+                    startup_rejected_tuple = Some((cur_active.sub, cur_sid, cur_active.refresh))
+                    sess.startup_activate_sibling = true
+                  } else {
+                    log_runtime_warn("startup lock-held activation aborted (" + err_msg + "); staying in UnauthMemory and retrying")
+                    sess.accounts_init_pending = true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
   match startup_rejected_tuple {
@@ -4481,6 +4785,23 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
       sess.stopped = true
       sess.accounts_init_pending = false
       sess.startup_activate_sibling = false
+      // Last-chance synchronous flush of any unpersisted rejected tuples before teardown
+      // (only reached if BOTH SQLite AND 8 KB A/B in-place slot failed, e.g. read-only FS).
+      if sess.pending_rejected_backup.keys().length() > 0 {
+        flush_pending_rejected_backups(sess)
+        let rem_keys = sess.pending_rejected_backup.keys()
+        for i in 0..<rem_keys.length() {
+          let rsub = rem_keys[i]
+          match sess.pending_rejected_backup.get(rsub) {
+            Some(rtuples) => {
+              if !try_remove_rejected_from_disk_now(sess.dir, rsub, rtuples) {
+                log_runtime_warn("ERROR: failed to persist or CAS-remove rejected tuples on stop for " + rsub + " (read-only/full storage)")
+              }
+            }
+            None => ()
+          }
+        }
+      }
       sess.quarantined_sub = ""
       sess.quarantined_workspace = ""
       sess.pending_rejected_backup.clear()

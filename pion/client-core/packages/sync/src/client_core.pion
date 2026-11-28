@@ -1462,6 +1462,10 @@ pub fn ClientCore::switch_workspace(self : ClientCore, ws : String) -> Unit {
     })
   }
   self.workspace = ws
+  match self.membership.role_of(ws) {
+    Some(r) => { self.viewer_role = r }
+    None => if self.db_account_sub.is_some() { self.viewer_role = "member" }
+  }
   match self.extra_locks.get(ws) {
     Some(slot) => {
       self.extra_locks.remove(ws)
@@ -1577,6 +1581,497 @@ pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit
   self.md_store.clear()
   self.router.invalidate_kept_where(fn(_ : protocol::Topic) -> Bool { true })
   self.router.invalidate_sub_cache_where(fn(_ : protocol::Topic) -> Bool { true })
+}
+
+pub fn ClientCore::viewer_role(self : ClientCore) -> String {
+  self.viewer_role
+}
+
+pub struct PreparedNotifyState {
+  pub on : Bool
+  pub asked : Bool
+  pub push : Bool
+  pub preview : Bool
+  pub muted : Array[String]
+  pub kinds : views::NotifyKindsInput
+}
+
+pub struct PreparedAccountState {
+  pub db : sql::Sql
+  pub sub : String
+  pub target_ws : String
+  pub lang : String
+  pub verified_viewer_role : String
+  pub membership : MembershipAuthority
+  pub lock_slot : Option[WorkspaceLockSlot]
+  pub lock_digests : Option[(String, String)]
+  pub lock_corrupt_msg : Option[String]
+  pub person_lock_entries : Array[base_codec::Json]
+  pub notify : PreparedNotifyState
+  pub deferred_dropped : Array[(String, Array[String])]
+  pub needs_host_purge_sync : Bool
+}
+
+fn load_notify_state_from_db(db : sql::Sql) -> PreparedNotifyState {
+  let mut notify_on = true
+  let mut notify_asked = false
+  let mut notify_push = true
+  let mut notify_preview = true
+  let notify_muted : Array[String] = []
+  let mut notify_kinds = default_notify_kinds()
+  match store::get_account_doc(db, "notify") {
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "on") {
+          Some(base_codec::Json::Bool(b)) => {
+            notify_on = b
+            notify_push = b
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "asked") {
+          Some(base_codec::Json::Bool(b)) => { notify_asked = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "preview") {
+          Some(base_codec::Json::Bool(b)) => { notify_preview = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "muted") {
+          Some(base_codec::Json::Arr(xs)) => {
+            for i in 0..<xs.length() {
+              match xs[i] {
+                base_codec::Json::Str(s) => if s.length() > 0 { notify_muted.push(s) }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "kinds") {
+          Some(kj) => match kj {
+            base_codec::Json::Obj(_) => {
+              let cur = notify_kinds
+              let next_done = match proto_str(kj, "done") {
+                Some(s) => if s == "off" || s == "away" || s == "always" { s } else { cur.done }
+                None => cur.done
+              }
+              notify_kinds = views::NotifyKindsInput::{
+                wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
+                failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
+                done: next_done,
+                message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
+                billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+              }
+            }
+            _ => ()
+          }
+          None => ()
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+  PreparedNotifyState::{
+    on: notify_on,
+    asked: notify_asked,
+    push: notify_push,
+    preview: notify_preview,
+    muted: notify_muted,
+    kinds: notify_kinds,
+  }
+}
+
+fn load_lock_slot_from_db_direct(
+  db : sql::Sql,
+  target_ws : String,
+  now_secs : Double,
+) -> Result[(WorkspaceLockSlot, Option[(String, String)], Option[String]), String] {
+  let slot = empty_lock_slot()
+  let mut corrupt_msg : Option[String] = None
+  let mark_corrupt = fn(detail : String) -> Unit {
+    slot.lock_corrupt = true
+    corrupt_msg = Some("corrupt persisted lock state; refusing TOFU reset (" + detail + ")")
+  }
+  let raw = match store::get_workspace_pref(db, target_ws, "lock") {
+    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else { return Ok((slot, None, None)) }
+    sql::SqlResult::Ok(None) => return Ok((slot, None, None))
+    sql::SqlResult::Err(e) => return Err("failed to read persisted lock state: " + e.to_string())
+  }
+  let doc = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => {
+      mark_corrupt("invalid json: " + e)
+      return Ok((slot, None, corrupt_msg))
+    }
+  }
+  let root : String = match base_codec::json_get(doc, "head") {
+    Some(base_codec::Json::Null) => {
+      match base_codec::json_get(doc, "entries") {
+        None => {
+          slot.lock_seen = base_codec::json_get(doc, "seen")
+          return Ok((slot, None, None))
+        }
+        Some(base_codec::Json::Arr(xs)) => {
+          if xs.length() == 0 {
+            slot.lock_seen = base_codec::json_get(doc, "seen")
+            return Ok((slot, None, None))
+          }
+          mark_corrupt("head is null with non-empty entries")
+          return Ok((slot, None, corrupt_msg))
+        }
+        _ => {
+          mark_corrupt("head is null with non-array entries")
+          return Ok((slot, None, corrupt_msg))
+        }
+      }
+    }
+    Some(head_j) => match proto_str(head_j, "genesis") {
+      Some(g) => if g.length() > 0 { g } else {
+        mark_corrupt("empty head.genesis")
+        return Ok((slot, None, corrupt_msg))
+      }
+      None => {
+        mark_corrupt("missing head.genesis")
+        return Ok((slot, None, corrupt_msg))
+      }
+    }
+    None => {
+      mark_corrupt("missing head")
+      return Ok((slot, None, corrupt_msg))
+    }
+  }
+  let kept_entries : Array[form::Json] = []
+  match base_codec::json_get(doc, "entries") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        kept_entries.push(codec_to_form(xs[i]))
+      }
+    }
+    None => ()
+    _ => {
+      mark_corrupt("entries is not an array")
+      return Ok((slot, None, corrupt_msg))
+    }
+  }
+  let kept_aside : Array[form::Json] = []
+  match base_codec::json_get(doc, "aside") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        kept_aside.push(codec_to_form(xs[i]))
+      }
+    }
+    None => ()
+    _ => {
+      mark_corrupt("aside is not an array")
+      return Ok((slot, None, corrupt_msg))
+    }
+  }
+  slot.lock_seen = base_codec::json_get(doc, "seen")
+  if kept_entries.length() == 0 {
+    slot.lock_root = Some(root)
+    return Ok((slot, None, None))
+  }
+  let all : Array[form::Json] = []
+  for i in 0..<kept_entries.length() {
+    all.push(kept_entries[i])
+  }
+  for i in 0..<kept_aside.length() {
+    all.push(kept_aside[i])
+  }
+  match verify_workspace_lock(all, root, votes=lock::Votes::Roles, now=None) {
+    Ok(v) => {
+      if v.state.ws != target_ws || v.state.genesis != root {
+        mark_corrupt("persisted chain workspace/genesis mismatch")
+        return Ok((slot, None, corrupt_msg))
+      }
+      slot.lock_root = Some(root)
+      slot.lock_state = Some(v.state)
+      slot.lock_kept_entries = v.chain.entries
+      slot.lock_kept_aside = kept_aside
+      let (full_dig, sec_dig) = canonical_lock_digest(v.state)
+      match views::effective_state(target_ws, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
+        Ok(eff) => {
+          slot.lock_effective = Some(eff)
+        }
+        Err(_) => ()
+      }
+      Ok((slot, Some((full_dig, sec_dig)), None))
+    }
+    Err(why) => {
+      mark_corrupt("persisted chain verification failed: " + why)
+      Ok((slot, None, corrupt_msg))
+    }
+  }
+}
+
+fn validate_person_lock_offline(raw_opt : Option[base_codec::Json], sub : String) -> Array[base_codec::Json] {
+  if sub.length() == 0 {
+    return []
+  }
+  match raw_opt {
+    Some(base_codec::Json::Arr(xs)) => {
+      if xs.length() == 0 {
+        return []
+      }
+      let form_entries : Array[form::Json] = []
+      for i in 0..<xs.length() {
+        form_entries.push(codec_to_form(xs[i]))
+      }
+      match lock::fold_person(form_entries, sub, native_lock_crypto()) {
+        Ok(_) => xs
+        Err(_) => []
+      }
+    }
+    _ => []
+  }
+}
+
+fn collect_stations_to_purge_offline(db : sql::Sql, membership : MembershipAuthority, ws : String) -> Array[String] {
+  membership.stations_to_purge(ws, db=Some(db))
+}
+
+/// Offline pre-hydration for unified 3-way account activation (cold startup, async recovery, verified login):
+/// Runs 100% OUTSIDE `.accounts.lock` on `new_db` — performs ALL SQLite reads/writes, pending-purge
+/// SQL execution (`Burst::in_tx`), Ed25519 lock verification, person-lock verification, notify restore,
+/// and verified viewer role lookup (defaulting strictly to `"member"`, NEVER hardcoded `"owner"`!).
+pub fn prepare_account_state_offline(
+  new_db : sql::Sql,
+  sub : String,
+  now_secs : Double,
+  preferred_ws : String = "",
+  lang : String = "zh",
+  host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
+  host_purges_read : Option[HostStorageRead] = None,
+  person_lock_opt : Option[base_codec::Json] = None,
+) -> Result[PreparedAccountState, String] {
+  if sub.length() == 0 {
+    return Err("account_sub_mismatch: empty account sub")
+  }
+  let prep_membership = MembershipAuthority::new()
+  match prep_membership.bind_account_sub(
+    sub,
+    db=Some(new_db),
+    host_purges_doc=host_purges_doc,
+    host_purges_shared=host_purges_shared,
+    host_purges_read=host_purges_read,
+  ) {
+    Err(msg) => return Err(msg)
+    Ok(_) => ()
+  }
+  // Execute any persisted pending purges offline on `new_db` without firing host callbacks!
+  let pending = prep_membership.pending_purge_workspaces()
+  let deferred_dropped : Array[(String, Array[String])] = []
+  let mut needs_host_purge_sync = pending.length() > 0
+  for i in 0..<pending.length() {
+    let ws = pending[i]
+    let stations = collect_stations_to_purge_offline(new_db, prep_membership, ws)
+    let snap = prep_membership.snapshot_for_tx()
+    let op_gen = prep_membership.latch_purge(ws, stations)
+    let _ = prep_membership.bump_workspace_purge_gen(ws)
+    let _ = prep_membership.bump_cred_epoch(ws)
+    prep_membership.clear_role(ws)
+    match detect_existing_optional_tables(new_db) {
+      sql::SqlResult::Err(_) => {
+        let _ = prep_membership.persist_pending_purges_sqlite(new_db)
+        deferred_dropped.push((ws, stations))
+      }
+      sql::SqlResult::Ok(opt_tables) => {
+        let plan = drop_workspace_sql_plan(ws, stations, optional_tables=opt_tables)
+        prep_membership.unbind_workspace_stations(ws)
+        let _ = prep_membership.complete_purge(ws, op_gen)
+        let burst = sql::Burst::new(new_db)
+        let tx_res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          match run_drop_plan_in_burst(b, plan) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => ()
+          }
+          prep_membership.persist_meta_state_in_burst(b, include_bindings=true)
+        })
+        match tx_res {
+          sql::SqlResult::Ok(_) => {
+            deferred_dropped.push((ws, stations))
+            needs_host_purge_sync = true
+          }
+          sql::SqlResult::Err(_) => {
+            prep_membership.restore_from_snapshot(snap)
+            prep_membership.restore_pending_purge(ws, op_gen, stations)
+            let _ = prep_membership.persist_pending_purges_sqlite(new_db)
+            deferred_dropped.push((ws, stations))
+          }
+        }
+      }
+    }
+  }
+  // Resolve target workspace from readable workspaces in `new_db`.
+  let mut target_ws = if preferred_ws.length() > 0 && preferred_ws != "ws-default" && prep_membership.is_workspace_readable(preferred_ws) {
+    preferred_ws
+  } else {
+    ""
+  }
+  if target_ws.length() == 0 {
+    match store::list_workspaces(new_db) {
+      sql::SqlResult::Ok(ws_rows) => {
+        for i in 0..<ws_rows.length() {
+          if prep_membership.is_workspace_readable(ws_rows[i].id) {
+            target_ws = ws_rows[i].id
+            break
+          }
+        }
+      }
+      sql::SqlResult::Err(_) => ()
+    }
+  }
+  if target_ws.length() == 0 {
+    target_ws = "ws-default"
+  }
+  // Verified viewer role: NEVER hardcode `"owner"`; use hydrated workspace role or default `"member"`.
+  let verified_viewer_role = match prep_membership.role_of(target_ws) {
+    Some(r) => if is_valid_workspace_role(r) { r } else { "member" }
+    None => "member"
+  }
+  let (lock_slot, lock_digests, lock_corrupt_msg) = match load_lock_slot_from_db_direct(new_db, target_ws, now_secs) {
+    Ok((sl, digs, cmsg)) => (Some(sl), digs, cmsg)
+    Err(_) => (None, None, None)
+  }
+  let person_lock_entries = validate_person_lock_offline(person_lock_opt, sub)
+  let notify = load_notify_state_from_db(new_db)
+  Ok(PreparedAccountState::{
+    db: new_db,
+    sub: sub,
+    target_ws: target_ws,
+    lang: lang,
+    verified_viewer_role: verified_viewer_role,
+    membership: prep_membership,
+    lock_slot: lock_slot,
+    lock_digests: lock_digests,
+    lock_corrupt_msg: lock_corrupt_msg,
+    person_lock_entries: person_lock_entries,
+    notify: notify,
+    deferred_dropped: deferred_dropped,
+    needs_host_purge_sync: needs_host_purge_sync,
+  })
+}
+
+/// Pure synchronous in-memory installation of a `PreparedAccountState` under `.accounts.lock`:
+/// ZERO SQLite calls, ZERO host callbacks, ZERO `CloudSync` calls, ZERO `old_db.close()`!
+pub fn ClientCore::install_prepared_account_in_memory(
+  self : ClientCore,
+  prepared : PreparedAccountState,
+) -> Result[Unit, String] {
+  if prepared.sub.length() == 0 {
+    return Err("account_sub_mismatch: empty account sub")
+  }
+  match self.db_account_sub {
+    Some(existing) => if existing != prepared.sub {
+      return Err("account_sub_mismatch: expected " + existing + ", got " + prepared.sub)
+    }
+    None => ()
+  }
+  // Stop all active station streams and clear extra stations BEFORE swapping DB handles.
+  self.events.stop()
+  self.events.reset_state()
+  let off = core_offline_transport()
+  self.events.set_transport(off)
+  self.sync.bump_epoch()
+  self.sync.set_transport(off)
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    match self.extra_events.get(eks[i]) {
+      Some(ev) => {
+        ev.stop()
+        ev.reset_state()
+      }
+      None => ()
+    }
+    match self.extra_sync.get(eks[i]) {
+      Some(sy) => {
+        sy.bump_epoch()
+        sy.set_transport(core_offline_transport())
+      }
+      None => ()
+    }
+  }
+  self.extra_events.clear()
+  self.extra_sync.clear()
+
+  // Atomically switch every DB holder reference to `prepared.db` (pure pointer swap, 0 SQLite!).
+  self.db = prepared.db
+  self.md_store.switch_db(prepared.db)
+  self.router.switch_db(prepared.db)
+  self.events.switch_db(prepared.db)
+  self.local_outbox.switch_db(prepared.db)
+  self.composers.switch_db(prepared.db)
+
+  // Clear ALL outbound queues and every account-scoped in-memory registry.
+  self.clear_account_scoped_runtime_state()
+
+  // Install pre-hydrated membership, workspace, lock slot, person lock, notify, and lang purely in memory!
+  self.membership.install_prepared(prepared.membership)
+  self.db_account_sub = Some(prepared.sub)
+  self.lang = prepared.lang
+  self.workspace = prepared.target_ws
+  self.auth.ensure_workspace(prepared.target_ws)
+  match prepared.lock_slot {
+    Some(slot) => {
+      self.lock_state = slot.lock_state
+      self.lock_root = slot.lock_root
+      self.lock_kept_entries = slot.lock_kept_entries
+      self.lock_kept_aside = slot.lock_kept_aside
+      self.lock_seen = slot.lock_seen
+      self.lock_corrupt = slot.lock_corrupt
+      self.lock_read_pending = false
+      self.lock_effective = slot.lock_effective
+      match prepared.lock_digests {
+        Some((full_dig, sec_dig)) => {
+          self.lock_digest_by_ws.set(prepared.target_ws, full_dig)
+          self.lock_sec_digest_by_ws.set(prepared.target_ws, sec_dig)
+        }
+        None => ()
+      }
+    }
+    None => {
+      self.lock_read_pending = true
+    }
+  }
+  self.person_lock_entries = prepared.person_lock_entries
+  self.notify_on = prepared.notify.on
+  self.notify_asked = prepared.notify.asked
+  self.notify_push = prepared.notify.push
+  self.notify_preview = prepared.notify.preview
+  self.notify_muted.clear()
+  for i in 0..<prepared.notify.muted.length() {
+    self.notify_muted.push(prepared.notify.muted[i])
+  }
+  self.notify_kinds = prepared.notify.kinds
+  self.viewer_role = prepared.verified_viewer_role
+  Ok(())
+}
+
+/// Dispatch post-lock side effects deferred from `prepare_account_state_offline` (strictly AFTER `tx_end`!):
+/// emits any lock corruption notice, fires `on_workspace_dropped`, and enqueues async host purge mirror.
+pub fn ClientCore::finish_prepared_account_post_lock(
+  self : ClientCore,
+  prepared : PreparedAccountState,
+) -> Unit {
+  match prepared.lock_corrupt_msg {
+    Some(msg) => self.outbox.tell(CoreEvent::LockRejected(prepared.target_ws, msg))
+    None => ()
+  }
+  if prepared.needs_host_purge_sync {
+    self.membership.enqueue_host_pending_purges_sync()
+  }
+  match self.on_workspace_dropped {
+    Some(cb) => {
+      for i in 0..<prepared.deferred_dropped.length() {
+        let (ws, stations) = prepared.deferred_dropped[i]
+        cb(ws, stations)
+      }
+    }
+    None => ()
+  }
 }
 
 /// Atomically switch ALL DB holders (`self.db`, `md_store`, `router`, `events`, `local_outbox`,
@@ -2602,6 +3097,10 @@ pub fn ClientCore::commit_cloud_me(
   for i in 0..<existing_ws.length() {
     self.membership.advance_workspace_seq(existing_ws[i], req_seq)
   }
+  match self.membership.role_of(self.workspace) {
+    Some(r) => { self.viewer_role = r }
+    None => ()
+  }
 
   self.membership.leave_commit_guard()
 
@@ -2762,6 +3261,9 @@ pub fn ClientCore::commit_cloud_workspace(
         }
       }
       None => self.membership.set_role(ws.id, new_role)
+    }
+    if ws.id == self.workspace {
+      self.viewer_role = new_role
     }
   }
   self.membership.leave_commit_guard()

@@ -23,6 +23,18 @@ extern const uint8_t *pion_core_accounts_tx_data(int64_t tx_id);
 extern int64_t pion_core_accounts_tx_len(int64_t tx_id);
 extern int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_t len);
 extern void pion_core_accounts_tx_end(int64_t tx_id);
+extern int32_t pion_core_rejected_slot_ensure(const char *dir, int64_t dir_len, const char *name, int64_t name_len);
+extern int32_t pion_core_rejected_slot_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len);
+extern const uint8_t *pion_core_rejected_slot_data(void);
+extern int64_t pion_core_rejected_slot_len(void);
+extern int32_t pion_core_rejected_slot_write_inplace(
+    const char *dir,
+    int64_t dir_len,
+    const char *name,
+    int64_t name_len,
+    int32_t slot_index,
+    const uint8_t *bytes,
+    int64_t len);
 extern int mb_core_deliver_media(
     uint64_t call,
     int kind,
@@ -831,6 +843,116 @@ int main(int argc, char **argv) {
         assert(found_theme == 1);
         mb_core_stop();
         printf("[core_runtime_e2e] startup lock-busy dual-pipe barrier + auth.begin/cancel survival + auto-install OK\n");
+    }
+
+    // 7d. R10 C unit test: Preallocated fixed 8192-byte (2 x 4096B A/B) in-place rejected slot:
+    //     - `ensure` creates exact 8192 bytes, preserves existing file without clobbering.
+    //     - Alternating `write_inplace` to slot 1 and slot 0 keeps EXACT SAME `st_ino` (0 new inodes/blocks -> ENOSPC-immune!).
+    //     - Max 4095-byte payload succeeds; 4096-byte payload rejected (-1); wrong-size file fails closed (`read == -1`).
+    {
+        const char *slot_name = ".rejected_slot_unit_test.json";
+        char slot_path[512];
+        snprintf(slot_path, sizeof(slot_path), "%s/%s", data_dir, slot_name);
+        (void)unlink(slot_path);
+
+        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
+        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
+        struct stat st0;
+        assert(stat(slot_path, &st0) == 0 && st0.st_size == 8192);
+
+        const char *p2 = "{\"seq\":2,\"tuples\":[{\"session\":\"s-a\",\"refresh\":\"r-a\"}]}";
+        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 1, (const uint8_t *)p2, (int64_t)strlen(p2)) == 0);
+        // Second `ensure` MUST NOT clobber our written slot 1!
+        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 0);
+        struct stat st1;
+        assert(stat(slot_path, &st1) == 0 && st1.st_size == 8192 && st1.st_ino == st0.st_ino);
+
+        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 1);
+        assert(pion_core_rejected_slot_len() == 8192);
+        const char *buf = (const char *)pion_core_rejected_slot_data();
+        assert(memcmp(buf + 4096, p2, strlen(p2)) == 0 && buf[8191] == '\n');
+
+        // Exact 4095-byte boundary payload succeeds; 4096-byte payload rejected!
+        char max_payload[4096];
+        memset(max_payload, ' ', sizeof(max_payload));
+        const char *p3 = "{\"seq\":3,\"tuples\":[]}";
+        memcpy(max_payload, p3, strlen(p3));
+        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 0, (const uint8_t *)max_payload, 4095) == 0);
+        assert(pion_core_rejected_slot_write_inplace(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name), 0, (const uint8_t *)max_payload, 4096) == -1);
+        struct stat st2;
+        assert(stat(slot_path, &st2) == 0 && st2.st_size == 8192 && st2.st_ino == st0.st_ino);
+        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == 1);
+        assert(pion_core_rejected_slot_len() == 8192);
+
+        // Wrong-size file fails closed!
+        FILE *cf = fopen(slot_path, "wb");
+        assert(cf != NULL);
+        fputs("{\"seq\":1,\"tuples\":[]}", cf);
+        fclose(cf);
+        assert(pion_core_rejected_slot_read(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == -1);
+        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), slot_name, (int64_t)strlen(slot_name)) == -1);
+        (void)unlink(slot_path);
+        printf("[core_runtime_e2e] 8KB A/B in-place rejected slot (inode-preserving, 4095/4096 boundary, fail-closed) OK\n");
+    }
+
+    // 7e. R10 E2E: SQLite unwritable (`chmod 0444 account-u-e2e.db`, 0 rejected rows in SQLite `meta`) +
+    //     8 KB A/B in-place slot persists rejected Alice tuple -> cold restart MUST refuse Alice's DB
+    //     (0 `"light"` leak!), CAS-remove Alice from disk `accounts`, and stay cleanly isolated!
+    {
+        char e2e_db_path[512];
+        snprintf(e2e_db_path, sizeof(e2e_db_path), "%s/databases/account-u-e2e.db", data_dir);
+        assert(chmod(e2e_db_path, 0444) == 0);
+        // Write Alice's exact `(session, refresh)` tuple ONLY into the 8 KB A/B in-place slot!
+        const char *alice_slot = ".rejected_slot_account-u-e2e.json";
+        assert(pion_core_rejected_slot_ensure(data_dir, (int64_t)strlen(data_dir), alice_slot, (int64_t)strlen(alice_slot)) == 0);
+        const char *rej_json = "{\"seq\":5,\"tuples\":[{\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"refresh\":\"ref-e2e\"}]}";
+        assert(pion_core_rejected_slot_write_inplace(
+            data_dir, (int64_t)strlen(data_dir), alice_slot, (int64_t)strlen(alice_slot),
+            1, (const uint8_t *)rej_json, (int64_t)strlen(rej_json)) == 0);
+        // Restore DB mode so cold restart CAN open SQLite (proving SQLite `meta` has ZERO rejected tuples,
+        // so ONLY the 8 KB A/B in-place slot blocks Alice at cold boot!).
+        assert(chmod(e2e_db_path, 0600) == 0);
+
+        atomic_store(&g_ctx.stopped, 0);
+        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+
+        // Private `theme=light` from `account-u-e2e.db` MUST NOT leak!
+        send_json("{\"id\":640,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+        int saw_640 = 0;
+        for (int tries = 0; tries < 20; tries++) {
+            m = wait_for_msg_index(&g_ctx, next_idx++);
+            if (strstr(m->json, "\"id\":640") != NULL) {
+                assert(strstr(m->json, "\"value\":\"light\"") == NULL);
+                saw_640 = 1;
+                break;
+            }
+        }
+        assert(saw_640 == 1);
+
+        // Wait briefly for background CAS removal to wipe `u-e2e` from disk `accounts`!
+        char e2e_accts_path[512];
+        snprintf(e2e_accts_path, sizeof(e2e_accts_path), "%s/accounts", data_dir);
+        int disk_cleaned = 0;
+        for (int tries = 0; tries < 40; tries++) {
+            FILE *af = fopen(e2e_accts_path, "r");
+            if (af != NULL) {
+                char abuf[1024];
+                size_t an = fread(abuf, 1, sizeof(abuf) - 1, af);
+                fclose(af);
+                abuf[an] = '\0';
+                if (strstr(abuf, "u-e2e") == NULL) {
+                    disk_cleaned = 1;
+                    break;
+                }
+            }
+            struct timespec ts = { 0, 50 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
+        }
+        assert(disk_cleaned == 1);
+        mb_core_stop();
+        printf("[core_runtime_e2e] 8KB A/B slot cold-boot rejection (0 SQLite rejected rows) + CAS cleanup OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),

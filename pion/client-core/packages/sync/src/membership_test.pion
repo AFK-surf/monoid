@@ -2892,3 +2892,277 @@ test "Slice 2B-1 R9: fail-closed RejectedTupleCheck, atomic multi-tuple record, 
   }
   debug_assert(saw_ws2_frame, "station transport & frame delivery restored on ULID_WS2 after same-sub re-login")
 }
+
+test "16. R10: Commit200 immutable durable predecessor (R1->R2->R3 free & busy), 8KB A/B slot strict parsing, tuple-level cleanup, and offline hydration default member role" {
+  let rt = effect::Runtime::new()
+
+  // 1. Codex P1-1 Branch A: `R1 -> R2` hits busy lock (`Commit200(R1, R2)` queued), then 2nd `refresh_k(R2)`
+  //    gets `200 (R3)` while lock is FREE -> MUST write `R3` directly to disk (NEVER revert to `R1`!)
+  //    and cancel pending `Commit200`!
+  let coord_a = AccountRefreshCoordinator::new(rt=Some(rt))
+  let lock_busy_a : Array[Bool] = [true]
+  coord_a.set_external_file_lock(
+    fn(lk : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_a[0] { lk(Err("accounts lock busy")) } else { lk(Ok(1L)) }
+    },
+    fn(_tid : Int64) -> Unit {},
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      if lock_busy_a[0] { Err("accounts lock busy") } else { Ok(1L) }
+    }),
+  )
+  let init_sids_a : Map[String, String] = Map::new()
+  init_sids_a.set("u-r10a", "sid-r10a")
+  let disk_a : Array[base_codec::Json] = [
+    serialize_stored_accounts(
+      [views::StoredAccount::{
+        sub: "u-r10a", email: "a@still.fail", name: "A", picture: "", access: "acc1", refresh: "R1", access_expires: 1900000000L,
+      }],
+      sessions=Some(init_sids_a),
+    ),
+  ]
+  let mem_ref_a : Array[String] = ["R1"]
+  let http_step_a : Array[Int] = [0]
+  let sent_refs_a : Array[String] = []
+  coord_a.set_on_pending_200_update(fn(_sub : String, _sid : String, _old : String, toks : RefreshedTokens) -> Unit {
+    mem_ref_a[0] = toks.refresh
+  })
+  let host_a = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_a[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_a[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      sent_refs_a.push(rtok)
+      http_step_a[0] = http_step_a[0] + 1
+      if http_step_a[0] == 1 {
+        // Make lock busy right before Phase 3A writes `R2`!
+        lock_busy_a[0] = true
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "acc2", refresh: "R2", access_expires: 1900003600L, name: Some("A"),
+        })))
+      } else {
+        // Lock is FREE when `R3` arrives in Phase 3A!
+        lock_busy_a[0] = false
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "acc3", refresh: "R3", access_expires: 1900007200L, name: Some("A"),
+        })))
+      }
+    },
+    get_mem_tuple: fn(_s : String) -> Option[(String, String)] { Some(("sid-r10a", mem_ref_a[0])) },
+    on_adopt_or_update: fn(upd : views::StoredAccount, _sid : String, _all : Array[views::StoredAccount], _sids : Map[String, String]) -> Unit {
+      mem_ref_a[0] = upd.refresh
+    },
+    on_invalidated: fn(_s : String, _sid : String, _r : String, _rem : Array[views::StoredAccount], _sids : Map[String, String]) -> Unit {},
+    now_ms: fn() -> Int64 { 1700000000000L },
+  }
+  // Step 1: Phase 1 succeeds (lock free), Phase 2 returns `R2` with lock busy -> queues `Commit200(R1, R2)`!
+  lock_busy_a[0] = false
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_a.refresh_k(host_a, "u-r10a", "sid-r10a", "R1", fn(_o : AccountRefreshOutcome) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(mem_ref_a[0] == "R2" && coord_a.has_pending_reconcile("u-r10a"), "Branch A step 1: R2 in memory, Commit200(R1, R2) queued")
+  // Step 2: 2nd `refresh_k(R2)` runs while disk STILL has `R1`; Phase 1 skips reverting to `R1`, sends `R2`,
+  //         receives `R3` with lock FREE -> MUST write `R3` directly to disk (NOT revert to `R1`!) & cancel reconcile!
+  lock_busy_a[0] = false
+  let r3_adopted_flag : Array[Bool] = [true]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_a.refresh_k(host_a, "u-r10a", "sid-r10a", "R2", fn(out : AccountRefreshOutcome) -> Unit {
+      match out {
+        AccountRefreshOutcome::Ok(acc, adopted) => {
+          debug_assert(acc == "acc3", "Branch A step 2 must return acc3 (not acc1!)")
+          r3_adopted_flag[0] = adopted
+        }
+        _ => panic("Branch A step 2 expected Ok(acc3, false)")
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(!r3_adopted_flag[0], "Branch A: R3 written directly (adopted=false)")
+  debug_assert(sent_refs_a.length() == 2 && sent_refs_a[0] == "R1" && sent_refs_a[1] == "R2", "Branch A sent R1 then R2")
+  debug_assert(!coord_a.has_pending_reconcile("u-r10a"), "Branch A cancelled Commit200 after committing R3")
+  debug_assert(mem_ref_a[0] == "R3", "Branch A memory holds R3")
+  let disk_a_after = match parse_stored_accounts_strict(disk_a[0]) {
+    Some(xs) => xs
+    None => panic("disk_a valid")
+  }
+  debug_assert(disk_a_after.length() == 1 && disk_a_after[0].refresh == "R3", "Branch A disk updated directly from R1 to R3!")
+  coord_a.stop()
+
+  // 2. Codex P1-1 Branch B: `R1 -> R2 (busy) -> R3 (STILL BUSY)` -> `Commit200` MUST retain immutable
+  //    `durable_ref = R1` while advancing `latest = R3`; once lock releases, background CAS writes `R3`!
+  let coord_b = AccountRefreshCoordinator::new(rt=Some(rt))
+  let lock_busy_b : Array[Bool] = [false]
+  coord_b.set_external_file_lock(
+    fn(lk : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_b[0] { lk(Err("accounts lock busy")) } else { lk(Ok(2L)) }
+    },
+    fn(_tid : Int64) -> Unit {},
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      if lock_busy_b[0] { Err("accounts lock busy") } else { Ok(2L) }
+    }),
+  )
+  let init_sids_b : Map[String, String] = Map::new()
+  init_sids_b.set("u-r10b", "sid-r10b")
+  let disk_b : Array[base_codec::Json] = [
+    serialize_stored_accounts(
+      [views::StoredAccount::{
+        sub: "u-r10b", email: "b@still.fail", name: "B", picture: "", access: "bacc1", refresh: "R1", access_expires: 1900000000L,
+      }],
+      sessions=Some(init_sids_b),
+    ),
+  ]
+  let mem_ref_b : Array[String] = ["R1"]
+  let http_step_b : Array[Int] = [0]
+  coord_b.set_on_pending_200_update(fn(_sub : String, _sid : String, _old : String, toks : RefreshedTokens) -> Unit {
+    mem_ref_b[0] = toks.refresh
+  })
+  let host_b = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_b[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_b[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      http_step_b[0] = http_step_b[0] + 1
+      lock_busy_b[0] = true
+      if http_step_b[0] == 1 {
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "bacc2", refresh: "R2", access_expires: 1900003600L, name: Some("B"),
+        })))
+      } else {
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "bacc3", refresh: "R3", access_expires: 1900007200L, name: Some("B"),
+        })))
+      }
+    },
+    get_mem_tuple: fn(_s : String) -> Option[(String, String)] { Some(("sid-r10b", mem_ref_b[0])) },
+    on_adopt_or_update: fn(upd : views::StoredAccount, _sid : String, _all : Array[views::StoredAccount], _sids : Map[String, String]) -> Unit {
+      mem_ref_b[0] = upd.refresh
+    },
+    on_invalidated: fn(_s : String, _sid : String, _r : String, _rem : Array[views::StoredAccount], _sids : Map[String, String]) -> Unit {},
+    now_ms: fn() -> Int64 { 1700000000000L },
+  }
+  // 1st refresh: `R1 -> R2` hits busy lock
+  lock_busy_b[0] = false
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_b.refresh_k(host_b, "u-r10b", "sid-r10b", "R1", fn(_o : AccountRefreshOutcome) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(mem_ref_b[0] == "R2" && coord_b.has_pending_reconcile("u-r10b"), "Branch B step 1: Commit200(R1, R2)")
+  // 2nd refresh: Phase 1 reads disk `R1`, skips revert, sends `R2`, Phase 3A STILL busy -> merges `Commit200(R1, R3)`!
+  lock_busy_b[0] = false
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_b.refresh_k(host_b, "u-r10b", "sid-r10b", "R2", fn(_o : AccountRefreshOutcome) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(mem_ref_b[0] == "R3" && coord_b.has_pending_reconcile("u-r10b"), "Branch B step 2: R3 in memory, Commit200(R1, R3) still queued")
+  match coord_b.pending_commit200_alt_tuple("u-r10b", "sid-r10b", "R3") {
+    Some((dsid, dref)) => debug_assert(dsid == "sid-r10b" && dref == "R1", "Branch B preserved immutable durable_ref == R1!")
+    None => panic("Branch B lost durable_ref == R1!")
+  }
+  // Release lock and advance clock -> background CAS matches disk `R1` and writes `R3`!
+  lock_busy_b[0] = false
+  let _ = rt.advance(250)
+  debug_assert(!coord_b.has_pending_reconcile("u-r10b"), "Branch B background CAS completed")
+  debug_assert(mem_ref_b[0] == "R3", "Branch B memory stayed on R3 (never reverted to R1!)")
+  let disk_b_after = match parse_stored_accounts_strict(disk_b[0]) {
+    Some(xs) => xs
+    None => panic("disk_b valid")
+  }
+  debug_assert(disk_b_after.length() == 1 && disk_b_after[0].refresh == "R3", "Branch B background CAS updated disk directly from R1 to R3!")
+  coord_b.stop()
+
+  // 3. Codex P1-2 + P2-1: 8 KB (2 x 4096B) A/B slot strict parsing, higher-seq selection, fail-closed corruption!
+  let pad_page = fn(json_str : String) -> String {
+    let sb = StringBuilder::new()
+    sb.write_string(json_str)
+    let rem = REJECTED_SLOT_PAGE_BYTES - json_str.to_bytes().length() - 1
+    for _ in 0..<rem {
+      sb.write_string(" ")
+    }
+    sb.write_string("\n")
+    sb.to_string()
+  }
+  let p0 = match format_rejected_slot_payload(1L, []) { Ok(s) => pad_page(s); Err(e) => panic(e) }
+  let p1 = match format_rejected_slot_payload(2L, [("sid-x", "ref-x")]) { Ok(s) => pad_page(s); Err(e) => panic(e) }
+  match parse_rejected_ab_slot_pair(p0, p1) {
+    Ok(st) => {
+      debug_assert(st.seq == 2L && st.active_slot == 1 && st.tuples.length() == 1, "selects higher seq slot 1")
+      match check_tuples_list_rejected(st.tuples, "sid-x", "ref-x") {
+        RejectedTupleCheck::Rejected => ()
+        _ => panic("slot 1 rejected tuple must match")
+      }
+    }
+    Err(e) => panic("valid A/B pair failed: " + e)
+  }
+  let p0_newer = match format_rejected_slot_payload(3L, [("sid-y", "ref-y")]) { Ok(s) => pad_page(s); Err(e) => panic(e) }
+  match parse_rejected_ab_slot_pair(p0_newer, p1) {
+    Ok(st) => debug_assert(st.seq == 3L && st.active_slot == 0 && st.tuples.length() == 1, "alternates back to slot 0 on seq=3")
+    Err(e) => panic("valid seq=3 pair failed: " + e)
+  }
+  // Corrupt slot or wrong page size MUST return Err (fail-closed!)
+  debug_assert(parse_rejected_ab_slot_pair(p0, "{corrupt").is_err(), "short/corrupt slot1 rejected fail-closed")
+  debug_assert(parse_rejected_ab_slot_pair(pad_page("{\"seq\":-1,\"tuples\":[]}"), p1).is_err(), "negative seq rejected fail-closed")
+  debug_assert(parse_rejected_ab_slot_pair(pad_page("{\"seq\":1,\"tuples\":[42]}"), p1).is_err(), "corrupt tuple item rejected fail-closed")
+
+  // 4. Codex P1-3: Tuple-level precise cleanup (`prune_rejected_tuples_except_in_db` & `remove_rejected_tuples_in_db`)
+  //    MUST preserve concurrently persisted active tuple `(cur_sid, cur_ref)` while pruning older tuples!
+  let (_, db_prune) = make_sim_db(rt)
+  match record_rejected_tuples_in_db(db_prune, [("sid-old", "ref-old"), ("sid-cur", "ref-cur")]) {
+    Ok(_) => ()
+    Err(e) => panic("record_rejected_tuples_in_db failed: " + e)
+  }
+  match prune_rejected_tuples_except_in_db(db_prune, "sid-cur", "ref-cur") {
+    Ok(_) => ()
+    Err(e) => panic("prune_rejected_tuples_except_in_db failed: " + e)
+  }
+  match check_tuple_rejected_in_db(db_prune, "sid-old", "ref-old") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("old tuple must be pruned")
+  }
+  match check_tuple_rejected_in_db(db_prune, "sid-cur", "ref-cur") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("concurrently rejected active tuple MUST be preserved by tuple-level prune!")
+  }
+  match remove_rejected_tuples_in_db(db_prune, [("sid-cur", "ref-cur")]) {
+    Ok(_) => ()
+    Err(e) => panic("remove_rejected_tuples_in_db failed: " + e)
+  }
+  match check_tuple_rejected_in_db(db_prune, "sid-cur", "ref-cur") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("exact target tuple removed after CAS disk removal")
+  }
+
+  // 5. Codex P1-4 + P2-2: Offline pre-hydration + zero-SQLite in-memory install + default `"member"` role (NEVER `"owner"`!)
+  let (_, mem_base) = make_sim_db(rt)
+  let (_, fresh_oauth_db) = make_sim_db(rt)
+  let (_, verified_admin_db) = make_sim_db(rt)
+  mt_put_workspace(verified_admin_db, ULID_WS1, "{\"id\":\"" + ULID_WS1 + "\",\"name\":\"Admin WS\",\"role\":\"admin\"}")
+  let r10_core = ClientCore::new("ws-default", "st-local", rt, mem_base, core_offline_transport(), fn() -> Unit {})
+  r10_core.membership.set_unauthenticated(true)
+  let prep_fresh = match prepare_account_state_offline(fresh_oauth_db, "u-fresh", 1700000000.0) {
+    Ok(p) => p
+    Err(e) => panic("prepare_account_state_offline fresh failed: " + e)
+  }
+  debug_assert(prep_fresh.verified_viewer_role == "member", "fresh OAuth login MUST default to viewer_role=member (NEVER owner!)")
+  match r10_core.install_prepared_account_in_memory(prep_fresh) {
+    Ok(_) => ()
+    Err(e) => panic("install_prepared_account_in_memory fresh failed: " + e)
+  }
+  debug_assert(r10_core.viewer_role() == "member", "installed fresh OAuth viewer_role is member")
+  // Verified admin workspace hydrates `"admin"` role offline!
+  let prep_admin = match prepare_account_state_offline(verified_admin_db, "u-admin", 1700000000.0) {
+    Ok(p) => p
+    Err(e) => panic("prepare_account_state_offline admin failed: " + e)
+  }
+  debug_assert(prep_admin.verified_viewer_role == "admin" && prep_admin.target_ws == ULID_WS1, "verified DB hydrates admin role & ULID_WS1")
+}

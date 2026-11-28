@@ -1090,8 +1090,24 @@ int main(int argc, char **argv) {
         g_srv.slow_refresh_hold = 0;
         pthread_mutex_unlock(&g_srv.mu);
 
-        // Cold restart: rejected Alice tuple in `account-u-live.db` `meta` MUST prevent opening Alice,
-        // CAS-remove Alice from disk `accounts`, and automatically activate sibling Bob (`bob@still.fail`)!
+        // Verify preallocated fixed 8192-byte A/B in-place rejected slot was dual-written on 401 quarantine!
+        {
+            char slot_path[512];
+            snprintf(slot_path, sizeof(slot_path), "%s/.rejected_slot_account-u-live.json", data_dir);
+            struct stat sst;
+            assert(stat(slot_path, &sst) == 0 && sst.st_size == 8192);
+            FILE *sf = fopen(slot_path, "rb");
+            assert(sf != NULL);
+            char sbuf[8193];
+            size_t sn = fread(sbuf, 1, 8192, sf);
+            fclose(sf);
+            assert(sn == 8192);
+            sbuf[8192] = '\0';
+            assert(strstr(sbuf, "\"refresh\":\"") != NULL);
+        }
+
+        // Cold restart: rejected Alice tuple in `account-u-live.db` `meta` + 8 KB A/B slot MUST prevent
+        // opening Alice, CAS-remove Alice from disk `accounts`, and automatically activate sibling Bob!
         reset_host_ctx(&g_host);
         mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
         wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);

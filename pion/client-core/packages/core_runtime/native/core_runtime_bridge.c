@@ -501,10 +501,13 @@ void pion_core_log_warn(const char *msg, int64_t len) {
     }
 }
 
-// ── Atomic per-account sidecar file I/O (zero dependency on `.accounts.lock` or SQLite) ──
-// Used as durable fallback backup for Cloud-401 rejected tuples whenever SQLite `meta` write fails.
-static uint8_t *g_sidecar_buf = NULL;
-static size_t g_sidecar_len = 0;
+// ── Preallocated fixed 8192-byte (2 x 4096B A/B) in-place rejected-tuple slot ──
+// Zero dependency on `.accounts.lock` or SQLite, and 0 new inodes/blocks on write (`ENOSPC`-immune!).
+#define REJECTED_SLOT_SIZE 4096
+#define REJECTED_FILE_SIZE 8192
+
+static uint8_t g_rejected_slot_buf[REJECTED_FILE_SIZE];
+static size_t g_rejected_slot_len = 0;
 
 static int is_safe_sidecar_name(const char *name, size_t len) {
     if (name == NULL || len == 0 || len > 160) {
@@ -524,143 +527,16 @@ static int is_safe_sidecar_name(const char *name, size_t len) {
     return 1;
 }
 
-// Returns: 1 = found (use data/len accessors), 0 = absent (ENOENT), -1 = I/O or invalid path error.
-int32_t pion_core_sidecar_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
-    if (g_sidecar_buf != NULL) {
-        free(g_sidecar_buf);
-        g_sidecar_buf = NULL;
-    }
-    g_sidecar_len = 0;
+static void format_padded_slot_page(uint8_t out[REJECTED_SLOT_SIZE], const uint8_t *json, size_t json_len) {
+    memset(out, ' ', REJECTED_SLOT_SIZE);
+    memcpy(out, json, json_len);
+    out[REJECTED_SLOT_SIZE - 1] = '\n';
+}
+
+// Preallocate `<dir>/<name>` to exact 8192 bytes (Slot 0: seq=1, Slot 1: seq=0) if absent.
+// Never overwrites an existing valid 8192-byte file; returns -1 on I/O error or corrupt wrong size.
+int32_t pion_core_rejected_slot_ensure(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
     if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
-        return -1;
-    }
-    char name_copy[192];
-    memcpy(name_copy, name, (size_t)name_len);
-    name_copy[name_len] = '\0';
-    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
-        return -1;
-    }
-    char path[4096];
-    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
-    if (path[0] == '\0') {
-        return -1;
-    }
-#ifdef _WIN32
-    wchar_t wpath[4096];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
-        return -1;
-    }
-    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
-    }
-    size_t cap = 1024;
-    uint8_t *buf = (uint8_t *)malloc(cap);
-    if (buf == NULL) {
-        CloseHandle(h);
-        return -1;
-    }
-    size_t total = 0;
-    for (;;) {
-        if (total == cap) {
-            if (cap >= 65536) {
-                free(buf);
-                CloseHandle(h);
-                return -1;
-            }
-            cap *= 2;
-            uint8_t *nb = (uint8_t *)realloc(buf, cap);
-            if (nb == NULL) {
-                free(buf);
-                CloseHandle(h);
-                return -1;
-            }
-            buf = nb;
-        }
-        DWORD got = 0;
-        if (!ReadFile(h, buf + total, (DWORD)(cap - total), &got, NULL)) {
-            free(buf);
-            CloseHandle(h);
-            return -1;
-        }
-        if (got == 0) {
-            break;
-        }
-        total += (size_t)got;
-    }
-    CloseHandle(h);
-    g_sidecar_buf = buf;
-    g_sidecar_len = total;
-    return 1;
-#else
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return (errno == ENOENT) ? 0 : -1;
-    }
-    size_t cap = 1024;
-    uint8_t *buf = (uint8_t *)malloc(cap);
-    if (buf == NULL) {
-        close(fd);
-        return -1;
-    }
-    size_t total = 0;
-    for (;;) {
-        if (total == cap) {
-            if (cap >= 65536) {
-                free(buf);
-                close(fd);
-                return -1;
-            }
-            cap *= 2;
-            uint8_t *nb = (uint8_t *)realloc(buf, cap);
-            if (nb == NULL) {
-                free(buf);
-                close(fd);
-                return -1;
-            }
-            buf = nb;
-        }
-        ssize_t n = read(fd, buf + total, cap - total);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            free(buf);
-            close(fd);
-            return -1;
-        }
-        if (n == 0) {
-            break;
-        }
-        total += (size_t)n;
-    }
-    close(fd);
-    g_sidecar_buf = buf;
-    g_sidecar_len = total;
-    return 1;
-#endif
-}
-
-const uint8_t *pion_core_sidecar_data(void) {
-    return g_sidecar_buf;
-}
-
-int64_t pion_core_sidecar_len(void) {
-    return (int64_t)g_sidecar_len;
-}
-
-// Atomically write `<dir>/<name>` via temp + fsync + rename (returns 0 on ok, -1 on error).
-int32_t pion_core_sidecar_write_atomic(
-    const char *dir,
-    int64_t dir_len,
-    const char *name,
-    int64_t name_len,
-    const uint8_t *bytes,
-    int64_t len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160 ||
-        len < 0 || len > 65536 || (len > 0 && bytes == NULL)) {
         return -1;
     }
     char name_copy[192];
@@ -672,20 +548,26 @@ int32_t pion_core_sidecar_write_atomic(
     char dir_copy[3840];
     memcpy(dir_copy, dir, (size_t)dir_len);
     dir_copy[dir_len] = '\0';
-
     char final_path[4096];
     join_dir_file(final_path, sizeof(final_path), dir_copy, (size_t)dir_len, name_copy);
     if (final_path[0] == '\0') {
         return -1;
     }
-    static _Atomic uint64_t s_sidecar_seq = 0;
-    uint64_t seq = atomic_fetch_add_explicit(&s_sidecar_seq, 1, memory_order_relaxed) + 1;
+
+    uint8_t init_buf[REJECTED_FILE_SIZE];
+    const char *s0 = "{\"seq\":1,\"tuples\":[]}";
+    const char *s1 = "{\"seq\":0,\"tuples\":[]}";
+    format_padded_slot_page(init_buf, (const uint8_t *)s0, strlen(s0));
+    format_padded_slot_page(init_buf + REJECTED_SLOT_SIZE, (const uint8_t *)s1, strlen(s1));
+
+    static _Atomic uint64_t s_slot_init_seq = 0;
+    uint64_t seq = atomic_fetch_add_explicit(&s_slot_init_seq, 1, memory_order_relaxed) + 1;
     char tmp_name[256];
 #ifdef _WIN32
-    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp.%lu.%llu",
+    snprintf(tmp_name, sizeof(tmp_name), "%s.init.%lu.%llu",
              name_copy, (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
 #else
-    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp.%lld.%llu",
+    snprintf(tmp_name, sizeof(tmp_name), "%s.init.%lld.%llu",
              name_copy, (long long)getpid(), (unsigned long long)seq);
 #endif
     char tmp_path[4096];
@@ -693,6 +575,7 @@ int32_t pion_core_sidecar_write_atomic(
     if (tmp_path[0] == '\0') {
         return -1;
     }
+
 #ifdef _WIN32
     wchar_t wdir[4096];
     wchar_t wtmp[4096];
@@ -702,6 +585,13 @@ int32_t pion_core_sidecar_write_atomic(
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, final_path, -1, wdst, 4096) <= 0) {
         return -1;
     }
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (GetFileAttributesExW(wdst, GetFileExInfoStandard, &fad)) {
+        if ((fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            return -1;
+        }
+        return (fad.nFileSizeHigh == 0 && fad.nFileSizeLow == REJECTED_FILE_SIZE) ? 0 : -1;
+    }
     (void)CreateDirectoryW(wdir, NULL);
     (void)DeleteFileW(wtmp);
     HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -709,9 +599,9 @@ int32_t pion_core_sidecar_write_atomic(
         return -1;
     }
     size_t off = 0;
-    while (off < (size_t)len) {
+    while (off < REJECTED_FILE_SIZE) {
         DWORD wrote = 0;
-        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
+        if (!WriteFile(h, init_buf + off, (DWORD)(REJECTED_FILE_SIZE - off), &wrote, NULL) || wrote == 0) {
             CloseHandle(h);
             (void)DeleteFileW(wtmp);
             return -1;
@@ -724,20 +614,36 @@ int32_t pion_core_sidecar_write_atomic(
         return -1;
     }
     CloseHandle(h);
-    if (!MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    // Non-clobbering publish (NO `MOVEFILE_REPLACE_EXISTING`) so a peer's concurrent slot is preserved.
+    if (!MoveFileExW(wtmp, wdst, MOVEFILE_WRITE_THROUGH)) {
+        DWORD err = GetLastError();
         (void)DeleteFileW(wtmp);
+        if (err == ERROR_ALREADY_EXISTS || err == ERROR_FILE_EXISTS) {
+            if (GetFileAttributesExW(wdst, GetFileExInfoStandard, &fad) &&
+                (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+                fad.nFileSizeHigh == 0 && fad.nFileSizeLow == REJECTED_FILE_SIZE) {
+                return 0;
+            }
+        }
         return -1;
     }
     return 0;
 #else
+    struct stat st;
+    if (stat(final_path, &st) == 0) {
+        return (S_ISREG(st.st_mode) && st.st_size == REJECTED_FILE_SIZE) ? 0 : -1;
+    }
+    if (errno != ENOENT) {
+        return -1;
+    }
     (void)mkdir(dir_copy, 0700);
-    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0) {
         return -1;
     }
     size_t off = 0;
-    while (off < (size_t)len) {
-        ssize_t n = write(fd, bytes + off, (size_t)len - off);
+    while (off < REJECTED_FILE_SIZE) {
+        ssize_t n = write(fd, init_buf + off, REJECTED_FILE_SIZE - off);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -754,10 +660,18 @@ int32_t pion_core_sidecar_write_atomic(
         return -1;
     }
     close(fd);
-    if (rename(tmp_path, final_path) != 0) {
+    // Atomic non-clobbering publish via `link()` + `unlink(tmp)`: NEVER overwrites a peer's slot!
+    if (link(tmp_path, final_path) != 0) {
+        int lerr = errno;
         (void)unlink(tmp_path);
+        if (lerr == EEXIST) {
+            if (stat(final_path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == REJECTED_FILE_SIZE) {
+                return 0;
+            }
+        }
         return -1;
     }
+    (void)unlink(tmp_path);
     int dfd = open(dir_copy, O_RDONLY | O_CLOEXEC);
     if (dfd >= 0) {
         (void)fsync(dfd);
@@ -767,7 +681,10 @@ int32_t pion_core_sidecar_write_atomic(
 #endif
 }
 
-int32_t pion_core_sidecar_remove(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
+// Read exact 8192-byte A/B rejected slot file:
+// Returns 1 = found (exact 8192 bytes in `g_rejected_slot_buf`), 0 = absent (ENOENT), -1 = I/O or wrong size.
+int32_t pion_core_rejected_slot_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
+    g_rejected_slot_len = 0;
     if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
         return -1;
     }
@@ -782,21 +699,186 @@ int32_t pion_core_sidecar_remove(const char *dir, int64_t dir_len, const char *n
     if (path[0] == '\0') {
         return -1;
     }
+    uint8_t tmp[REJECTED_FILE_SIZE + 1];
+    size_t total = 0;
 #ifdef _WIN32
     wchar_t wpath[4096];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
         return -1;
     }
-    if (DeleteFileW(wpath)) {
-        return 0;
+    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
     }
-    DWORD err = GetLastError();
-    return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+    while (total <= REJECTED_FILE_SIZE) {
+        DWORD got = 0;
+        if (!ReadFile(h, tmp + total, (DWORD)(sizeof(tmp) - total), &got, NULL)) {
+            CloseHandle(h);
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += (size_t)got;
+    }
+    CloseHandle(h);
 #else
-    if (unlink(path) == 0 || errno == ENOENT) {
-        return 0;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return (errno == ENOENT) ? 0 : -1;
     }
-    return -1;
+    while (total <= REJECTED_FILE_SIZE) {
+        ssize_t n = read(fd, tmp + total, sizeof(tmp) - total);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+#endif
+    if (total != REJECTED_FILE_SIZE) {
+        return -1;
+    }
+    memcpy(g_rejected_slot_buf, tmp, REJECTED_FILE_SIZE);
+    g_rejected_slot_len = REJECTED_FILE_SIZE;
+    return 1;
+}
+
+const uint8_t *pion_core_rejected_slot_data(void) {
+    return g_rejected_slot_buf;
+}
+
+int64_t pion_core_rejected_slot_len(void) {
+    return (int64_t)g_rejected_slot_len;
+}
+
+// In-place 4096-byte write to slot 0 or slot 1 (`O_RDWR`, NO `O_TRUNC`, NO temp file, 0 new inodes/blocks!).
+// Survives `ENOSPC` (0 bytes free) once preallocated by `pion_core_rejected_slot_ensure`.
+int32_t pion_core_rejected_slot_write_inplace(
+    const char *dir,
+    int64_t dir_len,
+    const char *name,
+    int64_t name_len,
+    int32_t slot_index,
+    const uint8_t *bytes,
+    int64_t len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160 ||
+        (slot_index != 0 && slot_index != 1) || bytes == NULL || len <= 0 || len > REJECTED_SLOT_SIZE - 1) {
+        return -1;
+    }
+    char name_copy[192];
+    memcpy(name_copy, name, (size_t)name_len);
+    name_copy[name_len] = '\0';
+    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
+        return -1;
+    }
+    char path[4096];
+    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
+    if (path[0] == '\0') {
+        return -1;
+    }
+    uint8_t page[REJECTED_SLOT_SIZE];
+    format_padded_slot_page(page, bytes, (size_t)len);
+    int64_t file_off = (int64_t)slot_index * (int64_t)REJECTED_SLOT_SIZE;
+
+#ifdef _WIN32
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+            if (pion_core_rejected_slot_ensure(dir, dir_len, name, name_len) != 0) {
+                return -1;
+            }
+            h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        }
+        if (h == INVALID_HANDLE_VALUE) {
+            return -1;
+        }
+    }
+    LARGE_INTEGER fsz;
+    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart != REJECTED_FILE_SIZE) {
+        CloseHandle(h);
+        return -1;
+    }
+    LARGE_INTEGER pos;
+    pos.QuadPart = file_off;
+    if (!SetFilePointerEx(h, pos, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < REJECTED_SLOT_SIZE) {
+        DWORD wrote = 0;
+        if (!WriteFile(h, page + off, (DWORD)(REJECTED_SLOT_SIZE - off), &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            return -1;
+        }
+        off += (size_t)wrote;
+    }
+    if (!FlushFileBuffers(h)) {
+        CloseHandle(h);
+        return -1;
+    }
+    CloseHandle(h);
+    return 0;
+#else
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0 && errno == ENOENT) {
+        if (pion_core_rejected_slot_ensure(dir, dir_len, name, name_len) != 0) {
+            return -1;
+        }
+        fd = open(path, O_RDWR | O_CLOEXEC);
+    }
+    if (fd < 0) {
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != REJECTED_FILE_SIZE) {
+        close(fd);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < REJECTED_SLOT_SIZE) {
+        ssize_t n = pwrite(fd, page + off, REJECTED_SLOT_SIZE - off, (off_t)(file_off + (int64_t)off));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+#ifdef __APPLE__
+    if (fsync(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+#else
+    if (fdatasync(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+#endif
+    close(fd);
+    return 0;
 #endif
 }
 

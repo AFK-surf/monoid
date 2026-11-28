@@ -408,13 +408,10 @@ pub enum RejectedTupleCheck {
   Unreadable(String)
 }
 
-/// Strictly parse persisted rejected tuples JSON: MUST be a JSON array where EVERY element is an
-/// object containing string `"session"` AND string `"refresh"`. Any parse or structural error
-/// returns `Err(...)` (NEVER silently degrades to empty!).
-pub fn parse_rejected_tuples_strict(raw : String) -> Result[Array[(String, String)], String] {
-  match base_codec::json_parse(raw) {
-    base_codec::JsonParseResult::Err(e) => Err("corrupt_rejected_tuples_meta: " + e)
-    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+/// Strictly parse a JSON array value of rejected `(session, refresh)` tuples.
+fn parse_rejected_tuples_json_strict(j : base_codec::Json) -> Result[Array[(String, String)], String] {
+  match j {
+    base_codec::Json::Arr(xs) => {
       let out : Array[(String, String)] = []
       for i in 0..<xs.length() {
         let item = xs[i]
@@ -434,8 +431,199 @@ pub fn parse_rejected_tuples_strict(raw : String) -> Result[Array[(String, Strin
       }
       Ok(out)
     }
-    base_codec::JsonParseResult::Ok(_) => Err("corrupt_rejected_tuples_meta: expected array")
+    _ => Err("corrupt_rejected_tuples_meta: expected array")
   }
+}
+
+/// Strictly parse persisted rejected tuples JSON: MUST be a JSON array where EVERY element is an
+/// object containing string `"session"` AND string `"refresh"`. Any parse or structural error
+/// returns `Err(...)` (NEVER silently degrades to empty!).
+pub fn parse_rejected_tuples_strict(raw : String) -> Result[Array[(String, String)], String] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Err(e) => Err("corrupt_rejected_tuples_meta: " + e)
+    base_codec::JsonParseResult::Ok(j) => parse_rejected_tuples_json_strict(j)
+  }
+}
+
+pub let REJECTED_SLOT_PAGE_BYTES : Int = 4096
+pub let REJECTED_SLOT_MAX_JSON_BYTES : Int = 4095
+
+pub struct RejectedSlotState {
+  pub seq : Int64
+  pub active_slot : Int
+  pub tuples : Array[(String, String)]
+}
+
+fn parse_single_rejected_slot_page(page_raw : String) -> Result[(Int64, Array[(String, String)]), String] {
+  if page_raw.to_bytes().length() != REJECTED_SLOT_PAGE_BYTES {
+    return Err("corrupt_rejected_slot: wrong page size")
+  }
+  let doc = match base_codec::json_parse(page_raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => return Err("corrupt_rejected_slot_json: " + e)
+  }
+  match doc {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("corrupt_rejected_slot: expected object")
+  }
+  let seq : Int64 = match base_codec::json_get(doc, "seq") {
+    Some(base_codec::Json::Num(n)) => {
+      let i = n.to_int64()
+      if i < 0L || i.to_double() != n {
+        return Err("corrupt_rejected_slot: invalid seq")
+      }
+      i
+    }
+    _ => return Err("corrupt_rejected_slot: missing seq")
+  }
+  let tuples = match base_codec::json_get(doc, "tuples") {
+    Some(tj) => match parse_rejected_tuples_json_strict(tj) {
+      Ok(xs) => xs
+      Err(e) => return Err(e)
+    }
+    None => return Err("corrupt_rejected_slot: missing tuples")
+  }
+  Ok((seq, tuples))
+}
+
+/// Strictly parse BOTH 4096-byte A/B pages of the preallocated 8192-byte rejected slot file:
+/// - Both pages MUST be exact 4096 bytes and valid `{"seq":N,"tuples":[...]}` JSON (fail-closed!).
+/// - Selects the active page with higher `seq` (slot 0 on tie).
+pub fn parse_rejected_ab_slot_pair(
+  slot0_raw : String,
+  slot1_raw : String,
+) -> Result[RejectedSlotState, String] {
+  let (seq0, tuples0) = match parse_single_rejected_slot_page(slot0_raw) {
+    Ok(v) => v
+    Err(e) => return Err("slot0: " + e)
+  }
+  let (seq1, tuples1) = match parse_single_rejected_slot_page(slot1_raw) {
+    Ok(v) => v
+    Err(e) => return Err("slot1: " + e)
+  }
+  if seq1 > seq0 {
+    Ok(RejectedSlotState::{ seq: seq1, active_slot: 1, tuples: tuples1 })
+  } else {
+    Ok(RejectedSlotState::{ seq: seq0, active_slot: 0, tuples: tuples0 })
+  }
+}
+
+pub fn check_tuples_list_rejected(
+  tuples : Array[(String, String)],
+  session : String,
+  refresh : String,
+) -> RejectedTupleCheck {
+  if session.length() == 0 && refresh.length() == 0 {
+    return RejectedTupleCheck::Allowed
+  }
+  for i in 0..<tuples.length() {
+    let (sid, rtok) = tuples[i]
+    if sid == session && rtok == refresh {
+      return RejectedTupleCheck::Rejected
+    }
+  }
+  RejectedTupleCheck::Allowed
+}
+
+pub fn merge_rejected_tuples_list(
+  existing : Array[(String, String)],
+  add : Array[(String, String)],
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<existing.length() {
+    out.push(existing[i])
+  }
+  for t_idx in 0..<add.length() {
+    let (session, refresh) = add[t_idx]
+    if session.length() == 0 && refresh.length() == 0 {
+      continue
+    }
+    let mut dup = false
+    for i in 0..<out.length() {
+      let (sid, rtok) = out[i]
+      if sid == session && rtok == refresh {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      out.push((session, refresh))
+    }
+  }
+  out
+}
+
+/// Tuple-level precise cleanup for activation: deletes ONLY stale tuples `!= (keep_sid, keep_ref)`,
+/// NEVER wiping a concurrently written rejection for the active tuple `(keep_sid, keep_ref)`!
+pub fn prune_rejected_tuples_except(
+  existing : Array[(String, String)],
+  keep_sid : String,
+  keep_ref : String,
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<existing.length() {
+    let (sid, rtok) = existing[i]
+    if sid == keep_sid && rtok == keep_ref {
+      out.push((sid, rtok))
+    }
+  }
+  out
+}
+
+/// Tuple-level precise removal after `Remove401` confirms CAS deletion from disk `accounts`:
+/// removes ONLY exact matches in `targets`, preserving any other tuple!
+pub fn remove_rejected_tuples_matching(
+  existing : Array[(String, String)],
+  targets : Array[(String, String)],
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<existing.length() {
+    let (sid, rtok) = existing[i]
+    let mut hit = false
+    for j in 0..<targets.length() {
+      let (tsid, tref) = targets[j]
+      if sid == tsid && rtok == tref {
+        hit = true
+        break
+      }
+    }
+    if !hit {
+      out.push((sid, rtok))
+    }
+  }
+  out
+}
+
+/// Format a fixed-slot JSON payload `{"seq":N,"tuples":[...]}` guaranteed to fit in `<= 4095` bytes
+/// (trimming oldest tuples first if needed while preserving newest entries).
+pub fn format_rejected_slot_payload(
+  next_seq : Int64,
+  tuples : Array[(String, String)],
+) -> Result[String, String] {
+  let mut start = if tuples.length() > MAX_REJECTED_TUPLES {
+    tuples.length() - MAX_REJECTED_TUPLES
+  } else {
+    0
+  }
+  while start <= tuples.length() {
+    let arr : Array[base_codec::Json] = []
+    for i in start..<tuples.length() {
+      let (sid, rtok) = tuples[i]
+      arr.push(base_codec::json_obj([
+        ("session", base_codec::json_str(sid)),
+        ("refresh", base_codec::json_str(rtok)),
+      ]))
+    }
+    let encoded = base_codec::json_stringify(base_codec::json_obj([
+      ("seq", base_codec::json_int64(next_seq)),
+      ("tuples", base_codec::json_arr(arr)),
+    ]))
+    if encoded.to_bytes().length() <= REJECTED_SLOT_MAX_JSON_BYTES {
+      return Ok(encoded)
+    }
+    start += 1
+  }
+  Err("rejected_slot_payload_too_large")
 }
 
 pub fn serialize_rejected_tuples(tuples : Array[(String, String)]) -> String {
@@ -554,6 +742,68 @@ pub fn clear_rejected_tuples_in_db(db : sql::Sql) -> Result[Unit, String] {
   match store::delete_meta(db, META_REJECTED_TUPLES_KEY) {
     sql::SqlResult::Ok(_) => Ok(())
     sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Tuple-level precise SQLite cleanup after activation: removes ONLY tuples `!= (keep_sid, keep_ref)`
+/// so a concurrently persisted rejection of the active tuple `(keep_sid, keep_ref)` is NEVER wiped!
+pub fn prune_rejected_tuples_except_in_db(
+  db : sql::Sql,
+  keep_sid : String,
+  keep_ref : String,
+) -> Result[Unit, String] {
+  let raw_opt = match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(opt) => opt
+    sql::SqlResult::Err(e) => return Err(e.to_string())
+  }
+  match raw_opt {
+    None => Ok(())
+    Some(raw) => match parse_rejected_tuples_strict(raw) {
+      Err(e) => Err(e)
+      Ok(existing) => {
+        let kept = prune_rejected_tuples_except(existing, keep_sid, keep_ref)
+        if kept.length() == existing.length() {
+          Ok(())
+        } else if kept.length() == 0 {
+          clear_rejected_tuples_in_db(db)
+        } else {
+          match store::put_meta(db, META_REJECTED_TUPLES_KEY, serialize_rejected_tuples(kept)) {
+            sql::SqlResult::Ok(_) => Ok(())
+            sql::SqlResult::Err(e) => Err(e.to_string())
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Tuple-level precise SQLite removal after `Remove401` confirms CAS disk removal of `targets`.
+pub fn remove_rejected_tuples_in_db(
+  db : sql::Sql,
+  targets : Array[(String, String)],
+) -> Result[Unit, String] {
+  let raw_opt = match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(opt) => opt
+    sql::SqlResult::Err(e) => return Err(e.to_string())
+  }
+  match raw_opt {
+    None => Ok(())
+    Some(raw) => match parse_rejected_tuples_strict(raw) {
+      Err(e) => Err(e)
+      Ok(existing) => {
+        let kept = remove_rejected_tuples_matching(existing, targets)
+        if kept.length() == existing.length() {
+          Ok(())
+        } else if kept.length() == 0 {
+          clear_rejected_tuples_in_db(db)
+        } else {
+          match store::put_meta(db, META_REJECTED_TUPLES_KEY, serialize_rejected_tuples(kept)) {
+            sql::SqlResult::Ok(_) => Ok(())
+            sql::SqlResult::Err(e) => Err(e.to_string())
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1080,8 +1330,21 @@ fn AccountRefreshCoordinator::schedule_reconcile(
   if self.stopped || sub.length() == 0 {
     return
   }
-  // Protect pending `Commit200` against being overwritten by a stale `Remove401` for the old token!
+  // Protect pending `Commit200`'s immutable durable predecessor `(durable_sid, durable_ref)`
+  // across consecutive rotations (`R1 -> R2 -> R3 -> ...`) AND against stale `Remove401`!
   let effective_task = match (self.pending_reconcile.get(sub), task) {
+    (
+      Some(PendingAccountReconcile::Commit200(_, durable_sid, durable_ref, c_toks)),
+      PendingAccountReconcile::Commit200(nsub, nsid, nref, ntoks),
+    ) => {
+      if nsid == durable_sid && (nref == c_toks.refresh || nref == durable_ref) {
+        // Keep the original un-flushed disk predecessor `(durable_sid, durable_ref)` immutable
+        // and advance ONLY `latest_tokens` (`R2 -> R3`), so background CAS still matches disk `R1`!
+        PendingAccountReconcile::Commit200(nsub, durable_sid, durable_ref, ntoks)
+      } else {
+        PendingAccountReconcile::Commit200(nsub, nsid, nref, ntoks)
+      }
+    }
     (
       Some(PendingAccountReconcile::Commit200(_, c_sid, c_ref, c_toks)),
       PendingAccountReconcile::Remove401(rsub, rsid, rref, alt_opt, st, msg),
@@ -1511,6 +1774,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
                     finish_all(AccountRefreshOutcome::Transient(msg))
                   }
                   effect::Exit::Succeeded(Ok(tokens)) => {
+                    // Capture any pending `Commit200` immutable durable predecessor `(durable_sid, durable_ref)`
+                    // so Phase 3A recognizes un-flushed disk `R1` and writes `R3` instead of reverting to `R1`!
+                    let commit_pred_opt = self.pending_commit200_alt_tuple(sub, expected_session, eff_refresh)
                     // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) with 0ms non-blocking
                     // `immediate_only = true`; if contended, advances active memory immediately and
                     // persists via coalesced background `Commit200` CAS reconcile!
@@ -1555,7 +1821,10 @@ pub fn AccountRefreshCoordinator::refresh_k(
                                     clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_session"), RefreshPostLockAction::None)))
                                     return
                                   }
-                                  if cur.refresh != eff_refresh {
+                                  let disk_matches_pred = cur.refresh == eff_refresh ||
+                                  tuple_matches_alt(self.pending_commit200_alt_tuple(sub, expected_session, eff_refresh), disk_sid, cur.refresh) ||
+                                  tuple_matches_alt(commit_pred_opt, disk_sid, cur.refresh)
+                                  if !disk_matches_pred {
                                     let act = RefreshPostLockAction::Adopt(cur, disk_sid, disk_list, disk_sessions)
                                     clk(effect::Exit::Succeeded((AccountRefreshOutcome::Ok(cur.access, true), act)))
                                     return
@@ -1582,9 +1851,14 @@ pub fn AccountRefreshCoordinator::refresh_k(
                                     }
                                   }
                                   let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
-                                  write_disk(encoded, fn(_wres : Result[Unit, String]) -> Unit {
-                                    let act = RefreshPostLockAction::Adopt(updated, disk_sid, next_list, disk_sessions)
-                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Ok(updated.access, false), act)))
+                                  write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
+                                    match wres {
+                                      Err(we) => clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient(we), RefreshPostLockAction::None)))
+                                      Ok(_) => {
+                                        let act = RefreshPostLockAction::Adopt(updated, disk_sid, next_list, disk_sessions)
+                                        clk(effect::Exit::Succeeded((AccountRefreshOutcome::Ok(updated.access, false), act)))
+                                      }
+                                    }
                                   })
                                 }
                               }
@@ -2711,6 +2985,72 @@ pub fn MembershipAuthority::reset_for_db_switch(self : MembershipAuthority) -> U
   self.mirror_session_gen += 1L
   self.mirror_pending_dirty = false
   self.last_host_persist_warn = None
+}
+
+/// Pure in-memory installation of an offline-prepared `MembershipAuthority` under `.accounts.lock`
+/// (ZERO SQLite calls, ZERO host callbacks!): copies all hydrated maps/flags while preserving
+/// this authority's existing async host-writer hook and advancing `mirror_session_gen`.
+pub fn MembershipAuthority::install_prepared(
+  self : MembershipAuthority,
+  prepared : MembershipAuthority,
+) -> Unit {
+  self.reset_for_db_switch()
+  self.account_sub = prepared.account_sub
+  self.unauthenticated = prepared.unauthenticated
+  self.session_invalidated = prepared.session_invalidated
+  self.last_host_persist_warn = prepared.last_host_persist_warn
+  let rks = prepared.revoked.keys()
+  for i in 0..<rks.length() {
+    match prepared.revoked.get(rks[i]) { Some(v) => self.revoked.set(rks[i], v); None => () }
+  }
+  let pks = prepared.pending_purges.keys()
+  for i in 0..<pks.length() {
+    match prepared.pending_purges.get(pks[i]) { Some(v) => self.pending_purges.set(pks[i], v); None => () }
+  }
+  let cks = prepared.completed_purge_gen.keys()
+  for i in 0..<cks.length() {
+    match prepared.completed_purge_gen.get(cks[i]) { Some(v) => self.completed_purge_gen.set(cks[i], v); None => () }
+  }
+  let wpks = prepared.workspace_purge_gen.keys()
+  for i in 0..<wpks.length() {
+    match prepared.workspace_purge_gen.get(wpks[i]) { Some(v) => self.workspace_purge_gen.set(wpks[i], v); None => () }
+  }
+  let sks = prepared.station_ws.keys()
+  for i in 0..<sks.length() {
+    match prepared.station_ws.get(sks[i]) { Some(v) => self.station_ws.set(sks[i], v); None => () }
+  }
+  let wsks = prepared.ws_stations.keys()
+  for i in 0..<wsks.length() {
+    match prepared.ws_stations.get(wsks[i]) { Some(v) => self.ws_stations.set(wsks[i], v); None => () }
+  }
+  let wbks = prepared.ws_bare_stations.keys()
+  for i in 0..<wbks.length() {
+    match prepared.ws_bare_stations.get(wbks[i]) { Some(v) => self.ws_bare_stations.set(wbks[i], v); None => () }
+  }
+  let boks = prepared.bare_station_owners.keys()
+  for i in 0..<boks.length() {
+    match prepared.bare_station_owners.get(boks[i]) { Some(v) => self.bare_station_owners.set(boks[i], v); None => () }
+  }
+  let qbks = prepared.quarantined_bare_stations.keys()
+  for i in 0..<qbks.length() {
+    match prepared.quarantined_bare_stations.get(qbks[i]) { Some(v) => self.quarantined_bare_stations.set(qbks[i], v); None => () }
+  }
+  let ceks = prepared.cred_epoch.keys()
+  for i in 0..<ceks.length() {
+    match prepared.cred_epoch.get(ceks[i]) { Some(v) => self.cred_epoch.set(ceks[i], v); None => () }
+  }
+  let wrks = prepared.ws_roles.keys()
+  for i in 0..<wrks.length() {
+    match prepared.ws_roles.get(wrks[i]) { Some(v) => self.ws_roles.set(wrks[i], v); None => () }
+  }
+  if prepared.next_seq > self.next_seq {
+    self.next_seq = prepared.next_seq
+  }
+  self.cloud_commit_seq = prepared.cloud_commit_seq
+  let wcks = prepared.ws_commit_seq.keys()
+  for i in 0..<wcks.length() {
+    match prepared.ws_commit_seq.get(wcks[i]) { Some(v) => self.ws_commit_seq.set(wcks[i], v); None => () }
+  }
 }
 
 /// Non-reentrant commit guard: every membership mutation (`commit_cloud_me`, `commit_cloud_workspace`,
