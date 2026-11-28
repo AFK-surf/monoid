@@ -51,7 +51,14 @@ pub fn vector_faces(data : Bytes) -> Array[Bytes] {
 fn vector_cjk_had(src : Source, prefs : Json?) -> Unit {
   guard vector_cjk.get() is CjkWanted else { return }
   let list = items(field(prefs, "faces"), "list")
-  guard list.search_by(fn(f) { text(Some(f), "id") == vector_cjk_face }) is Some(i) else {
+  let mut found : Int? = None
+  for idx, f in list {
+    if text(Some(f), "id") == vector_cjk_face {
+      found = Some(idx)
+      break
+    }
+  }
+  guard found is Some(i) else {
     vector_cjk.set(CjkNotHad)
     return
   }

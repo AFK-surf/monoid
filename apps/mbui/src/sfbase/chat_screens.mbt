@@ -73,11 +73,16 @@ pub fn open_remote_browser(src : Source, station : String, listed_ids : Array[St
 ///|
 /// Whether `sr` is confirmed+known by the station and lists `id` as a real (non-optimistic) screen.
 pub fn live_screen_confirmed(sr : TopicState, id : String) -> Bool {
-  sr.is_confirmed_known() &&
-  items(sr.value, "screens").iter().any(fn(sc) {
+  if !sr.is_confirmed_known() {
+    return false
+  }
+  for sc in items(sr.value, "screens") {
     let sv = Some(sc)
-    text(sv, "id") == id && !flag(sv, "opening")
-  })
+    if text(sv, "id") == id && !flag(sv, "opening") {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -356,7 +361,17 @@ fn chat_remote_menu_show(
           Some(sig) => {
             let st = sig.untracked()
             release_once()
-            if !st.is_confirmed_known() || !items(st.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+            if !st.is_confirmed_known() {
+              return
+            }
+            let mut alive = false
+            for x in items(st.value, "terminals") {
+              if text(Some(x), "id") == tid && !flag(Some(x), "ended") {
+                alive = true
+                break
+              }
+            }
+            if !alive {
               return
             }
             live_watch = !flag(st.value, "open")
