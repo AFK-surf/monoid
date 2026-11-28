@@ -31,10 +31,21 @@ fn FImage::into_cs(self : FImage, cs : ColorInterp) -> FImage {
 fn multiply_alpha(d : FixedArray[Byte]) -> Unit {
   let n = d.length() / 4
   for i in 0..<n {
-    let a = fi(d[i * 4 + 3].to_int()) / 255.0
-    for k in 0..<3 {
-      d[i * 4 + k] = f2u8(fi(d[i * 4 + k].to_int()) * a + 0.5).to_byte()
+    let o = i * 4
+    let ai = d[o + 3].to_int()
+    if ai == 255 {
+      continue
     }
+    if ai == 0 {
+      d[o] = b'\x00'
+      d[o + 1] = b'\x00'
+      d[o + 2] = b'\x00'
+      continue
+    }
+    let a = fi(ai) / 255.0
+    d[o] = f2u8(fi(d[o].to_int()) * a + 0.5).to_byte()
+    d[o + 1] = f2u8(fi(d[o + 1].to_int()) * a + 0.5).to_byte()
+    d[o + 2] = f2u8(fi(d[o + 2].to_int()) * a + 0.5).to_byte()
   }
 }
 
@@ -42,10 +53,27 @@ fn multiply_alpha(d : FixedArray[Byte]) -> Unit {
 fn demultiply_alpha(d : FixedArray[Byte]) -> Unit {
   let n = d.length() / 4
   for i in 0..<n {
-    let a = fi(d[i * 4 + 3].to_int()) / 255.0
-    for k in 0..<3 {
-      d[i * 4 + k] = f2u8(fi(d[i * 4 + k].to_int()) / a + 0.5).to_byte()
+    let o = i * 4
+    let ai = d[o + 3].to_int()
+    if ai == 255 {
+      continue
     }
+    if ai == 0 {
+      if d[o] != b'\x00' {
+        d[o] = b'\xFF'
+      }
+      if d[o + 1] != b'\x00' {
+        d[o + 1] = b'\xFF'
+      }
+      if d[o + 2] != b'\x00' {
+        d[o + 2] = b'\xFF'
+      }
+      continue
+    }
+    let a = fi(ai) / 255.0
+    d[o] = f2u8(fi(d[o].to_int()) / a + 0.5).to_byte()
+    d[o + 1] = f2u8(fi(d[o + 1].to_int()) / a + 0.5).to_byte()
+    d[o + 2] = f2u8(fi(d[o + 2].to_int()) / a + 0.5).to_byte()
   }
 }
 
@@ -79,27 +107,39 @@ let linear_to_srgb : FixedArray[Byte] = [
 ]
 
 ///|
-fn map_rgb(d : FixedArray[Byte], table : FixedArray[Byte]) -> Unit {
+fn remap_premul_rgb(d : FixedArray[Byte], table : FixedArray[Byte]) -> Unit {
   let n = d.length() / 4
   for i in 0..<n {
-    for k in 0..<3 {
-      d[i * 4 + k] = table[d[i * 4 + k].to_int()]
+    let o = i * 4
+    let ai = d[o + 3].to_int()
+    if ai == 0 {
+      d[o] = b'\x00'
+      d[o + 1] = b'\x00'
+      d[o + 2] = b'\x00'
+    } else if ai == 255 {
+      d[o] = table[d[o].to_int()]
+      d[o + 1] = table[d[o + 1].to_int()]
+      d[o + 2] = table[d[o + 2].to_int()]
+    } else {
+      let a = fi(ai) / 255.0
+      let r = table[f2u8(fi(d[o].to_int()) / a + 0.5)].to_int()
+      let g = table[f2u8(fi(d[o + 1].to_int()) / a + 0.5)].to_int()
+      let b = table[f2u8(fi(d[o + 2].to_int()) / a + 0.5)].to_int()
+      d[o] = f2u8(fi(r) * a + 0.5).to_byte()
+      d[o + 1] = f2u8(fi(g) * a + 0.5).to_byte()
+      d[o + 2] = f2u8(fi(b) * a + 0.5).to_byte()
     }
   }
 }
 
 ///|
 fn into_srgb(d : FixedArray[Byte]) -> Unit {
-  demultiply_alpha(d)
-  map_rgb(d, linear_to_srgb)
-  multiply_alpha(d)
+  remap_premul_rgb(d, linear_to_srgb)
 }
 
 ///|
 fn into_linear(d : FixedArray[Byte]) -> Unit {
-  demultiply_alpha(d)
-  map_rgb(d, srgb_to_linear)
-  multiply_alpha(d)
+  remap_premul_rgb(d, srgb_to_linear)
 }
 
 ///|
@@ -391,14 +431,25 @@ fn apply_fe_drop_shadow(
     None => ()
   }
   let c = @skia.Color::from_rgba8(color.r, color.g, color.b, opacity_u8(opacity))
+  let lut = FixedArray::make(256 * 4, b'\x00')
+  for a_i in 0..<256 {
+    let a = fi(a_i) / 255.0
+    let p = c.with_opacity(a).premultiply().to_color_u8()
+    let lo = a_i * 4
+    lut[lo] = p.r.to_byte()
+    lut[lo + 1] = p.g.to_byte()
+    lut[lo + 2] = p.b.to_byte()
+    lut[lo + 3] = p.a.to_byte()
+  }
+  let sdata = shadow.data
   let n = shadow.width * shadow.height
   for i in 0..<n {
-    let a = fi(shadow.data[i * 4 + 3].to_int()) / 255.0
-    let p = c.with_opacity(a).premultiply().to_color_u8()
-    shadow.data[i * 4] = p.r.to_byte()
-    shadow.data[i * 4 + 1] = p.g.to_byte()
-    shadow.data[i * 4 + 2] = p.b.to_byte()
-    shadow.data[i * 4 + 3] = p.a.to_byte()
+    let o = i * 4
+    let lo = sdata[o + 3].to_int() * 4
+    sdata[o] = lut[lo]
+    sdata[o + 1] = lut[lo + 1]
+    sdata[o + 2] = lut[lo + 2]
+    sdata[o + 3] = lut[lo + 3]
   }
   match cs {
     SRGB => into_srgb(shadow.data)
@@ -545,96 +596,152 @@ fn bround(x : Float) -> Float {
 }
 
 ///|
-fn box_store(dst : FixedArray[Byte], ti : Int, r : Int, g : Int, b : Int, a : Int, iarr : Float) -> Unit {
-  dst[ti * 4] = f2u8(bround(fi(r) * iarr)).to_byte()
-  dst[ti * 4 + 1] = f2u8(bround(fi(g) * iarr)).to_byte()
-  dst[ti * 4 + 2] = f2u8(bround(fi(b) * iarr)).to_byte()
-  dst[ti * 4 + 3] = f2u8(bround(fi(a) * iarr)).to_byte()
-}
-
-///|
-/// One pass of the box blur along a line: `step` apart, `count` long, starting at `start` (pixel indices).
-fn box_blur_line(radius : Int, src : FixedArray[Byte], dst : FixedArray[Byte], start : Int, step : Int, count : Int) -> Unit {
+/// One pass of horizontal box blur along a row of `count` pixels starting at pixel index `start`.
+fn box_blur_row(radius : Int, src : FixedArray[Byte], dst : FixedArray[Byte], start : Int, count : Int) -> Unit {
   let iarr : Float = 1.0 / fi(radius + radius + 1)
-  let line_end = start + step * (count - 1)
+  let line_end = start + count - 1
   let mut ti = start
   let mut li = ti
-  let mut ri = ti + radius * step
+  let mut ri = ti + radius
   let mut vr = 0
   let mut vg = 0
   let mut vb = 0
   let mut va = 0
-  let px = fn(i : Int, k : Int) { src[i * 4 + k].to_int() }
   let lim = if radius < count { radius } else { count }
   for j in 0..<lim {
-    let i = ti + j * step
-    vr += px(i, 0)
-    vg += px(i, 1)
-    vb += px(i, 2)
-    va += px(i, 3)
+    let o = (ti + j) * 4
+    vr += src[o].to_int()
+    vg += src[o + 1].to_int()
+    vb += src[o + 2].to_int()
+    va += src[o + 3].to_int()
   }
   let n1 = if count < radius + 1 { count } else { radius + 1 }
   for _ in 0..<n1 {
     if ri <= line_end {
-      vr += px(ri, 0)
-      vg += px(ri, 1)
-      vb += px(ri, 2)
-      va += px(ri, 3)
+      let ro = ri * 4
+      vr += src[ro].to_int()
+      vg += src[ro + 1].to_int()
+      vb += src[ro + 2].to_int()
+      va += src[ro + 3].to_int()
     }
-    ri += step
-    box_store(dst, ti, vr, vg, vb, va, iarr)
-    ti += step
+    ri += 1
+    let to = ti * 4
+    dst[to] = f2u8(bround(fi(vr) * iarr)).to_byte()
+    dst[to + 1] = f2u8(bround(fi(vg) * iarr)).to_byte()
+    dst[to + 2] = f2u8(bround(fi(vb) * iarr)).to_byte()
+    dst[to + 3] = f2u8(bround(fi(va) * iarr)).to_byte()
+    ti += 1
   }
   if count <= radius {
     return
   }
   for _ in (radius + 1)..<(count - radius) {
-    vr += px(ri, 0) - px(li, 0)
-    vg += px(ri, 1) - px(li, 1)
-    vb += px(ri, 2) - px(li, 2)
-    va += px(ri, 3) - px(li, 3)
-    ri += step
-    li += step
-    box_store(dst, ti, vr, vg, vb, va, iarr)
-    ti += step
+    let ro = ri * 4
+    let lo = li * 4
+    vr += src[ro].to_int() - src[lo].to_int()
+    vg += src[ro + 1].to_int() - src[lo + 1].to_int()
+    vb += src[ro + 2].to_int() - src[lo + 2].to_int()
+    va += src[ro + 3].to_int() - src[lo + 3].to_int()
+    ri += 1
+    li += 1
+    let to = ti * 4
+    dst[to] = f2u8(bround(fi(vr) * iarr)).to_byte()
+    dst[to + 1] = f2u8(bround(fi(vg) * iarr)).to_byte()
+    dst[to + 2] = f2u8(bround(fi(vb) * iarr)).to_byte()
+    dst[to + 3] = f2u8(bround(fi(va) * iarr)).to_byte()
+    ti += 1
   }
   let n3 = if count - radius - 1 < radius { count - radius - 1 } else { radius }
   for _ in 0..<n3 {
     if li >= start {
-      vr -= px(li, 0)
-      vg -= px(li, 1)
-      vb -= px(li, 2)
-      va -= px(li, 3)
+      let lo = li * 4
+      vr -= src[lo].to_int()
+      vg -= src[lo + 1].to_int()
+      vb -= src[lo + 2].to_int()
+      va -= src[lo + 3].to_int()
     }
-    li += step
-    box_store(dst, ti, vr, vg, vb, va, iarr)
-    ti += step
+    li += 1
+    let to = ti * 4
+    dst[to] = f2u8(bround(fi(vr) * iarr)).to_byte()
+    dst[to + 1] = f2u8(bround(fi(vg) * iarr)).to_byte()
+    dst[to + 2] = f2u8(bround(fi(vb) * iarr)).to_byte()
+    dst[to + 3] = f2u8(bround(fi(va) * iarr)).to_byte()
+    ti += 1
   }
 }
 
 ///|
 fn box_blur_vert(radius : Int, src : FixedArray[Byte], dst : FixedArray[Byte], w : Int, h : Int) -> Unit {
   if radius == 0 {
-    for i in 0..<src.length() {
-      dst[i] = src[i]
-    }
+    src.blit_to(dst, len=src.length())
     return
   }
-  for i in 0..<w {
-    box_blur_line(radius, src, dst, i, w, h)
+  let row_bytes = w * 4
+  let iarr : Float = 1.0 / fi(radius + radius + 1)
+  let acc = FixedArray::make(row_bytes, 0)
+  let lim = if radius < h { radius } else { h }
+  for y in 0..<lim {
+    let ro = y * row_bytes
+    for i in 0..<row_bytes {
+      acc[i] += src[ro + i].to_int()
+    }
+  }
+  let mut ty = 0
+  let mut ly = 0
+  let mut ry = radius
+  let n1 = if h < radius + 1 { h } else { radius + 1 }
+  for _ in 0..<n1 {
+    if ry < h {
+      let ro = ry * row_bytes
+      for i in 0..<row_bytes {
+        acc[i] += src[ro + i].to_int()
+      }
+    }
+    ry += 1
+    let to = ty * row_bytes
+    for i in 0..<row_bytes {
+      dst[to + i] = f2u8(bround(fi(acc[i]) * iarr)).to_byte()
+    }
+    ty += 1
+  }
+  if h <= radius {
+    return
+  }
+  for _ in (radius + 1)..<(h - radius) {
+    let ro = ry * row_bytes
+    let lo = ly * row_bytes
+    let to = ty * row_bytes
+    for i in 0..<row_bytes {
+      let v = acc[i] + src[ro + i].to_int() - src[lo + i].to_int()
+      acc[i] = v
+      dst[to + i] = f2u8(bround(fi(v) * iarr)).to_byte()
+    }
+    ry += 1
+    ly += 1
+    ty += 1
+  }
+  let n3 = if h - radius - 1 < radius { h - radius - 1 } else { radius }
+  for _ in 0..<n3 {
+    let lo = ly * row_bytes
+    let to = ty * row_bytes
+    for i in 0..<row_bytes {
+      let v = acc[i] - src[lo + i].to_int()
+      acc[i] = v
+      dst[to + i] = f2u8(bround(fi(v) * iarr)).to_byte()
+    }
+    ly += 1
+    ty += 1
   }
 }
 
 ///|
 fn box_blur_horz(radius : Int, src : FixedArray[Byte], dst : FixedArray[Byte], w : Int, h : Int) -> Unit {
   if radius == 0 {
-    for i in 0..<src.length() {
-      dst[i] = src[i]
-    }
+    src.blit_to(dst, len=src.length())
     return
   }
   for i in 0..<h {
-    box_blur_line(radius, src, dst, i * w, 1, w)
+    box_blur_row(radius, src, dst, i * w, w)
   }
 }
 

@@ -108,6 +108,15 @@ fn render_group(group : Group, ctx : RContext, transform : @skia.Transform, pixm
   guard render_layer(group, { max_bbox, }, inv_rest.pre_concat(transform)) is Some((layer, ibbox)) else {
     return None
   }
+  if rest.is_identity() &&
+    ibbox.x > -4194304 &&
+    ibbox.y > -4194304 &&
+    ibbox.right() < 4194304 &&
+    ibbox.bottom() < 4194304 {
+    let pp : @skia.PixmapPaint = { opacity: group.opacity, blend_mode: group.blend_mode, quality: Nearest }
+    pixmap.draw_pixmap(ibbox.x, ibbox.y, layer, pp, @skia.Transform::identity(), None)
+    return Some(())
+  }
   let paint = @skia.Paint::default()
   paint.shader = @skia.Pattern::new(
     layer,

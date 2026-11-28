@@ -200,3 +200,37 @@ test "SvgDoc::parse and rasterize_premul: premultiplied pixels, portrait sizing,
   assert_true(doc.rasterize_premul(0) is None)
   assert_true(doc.rasterize_premul(-10) is None)
 }
+
+///|
+test "isolated opacity/clip/mask groups and feDropShadow + feGaussianBlur filter rasterize cleanly" {
+  let src = "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='60' viewBox='0 0 100 60'>" +
+    "<defs>" +
+    "<filter id='sh' x='-20%' y='-20%' width='140%' height='140%'>" +
+    "<feDropShadow dx='3' dy='3' stdDeviation='3' flood-color='#000000' flood-opacity='0.5'/>" +
+    "</filter>" +
+    "<clipPath id='cp'><rect x='5' y='5' width='40' height='40' rx='6'/></clipPath>" +
+    "</defs>" +
+    "<rect width='100' height='60' fill='#ffffff'/>" +
+    "<g opacity='0.6' clip-path='url(#cp)'>" +
+    "<rect x='0' y='0' width='50' height='50' fill='#ff0000'/>" +
+    "</g>" +
+    "<rect x='55' y='10' width='30' height='30' fill='#2060e0' filter='url(#sh)'/>" +
+    "</svg>"
+  guard @svg.rasterize_premul(@utf8.encode(src), 100) is Some((w, h, rgba)) else { fail("rasterize failed") }
+  assert_eq((w, h), (100, 60))
+  // Inside clipped opacity group: 0.6 red over white -> R=255, G~102, B~102
+  let (r, g, b, a) = px_rgba(rgba, w, 25, 25)
+  assert_eq(a, 255)
+  assert_eq(r, 255)
+  assert_true(g >= 98 && g <= 108 && b >= 98 && b <= 108, msg="opacity group \{rgba_said((r, g, b, a))}")
+  // Outside clipPath: pure white
+  assert_eq(px_rgba(rgba, w, 2, 2), (255, 255, 255, 255))
+  // Inside blue rect with drop shadow
+  let (br, bg, bb, ba) = px_rgba(rgba, w, 70, 25)
+  assert_eq(ba, 255)
+  assert_true(bb > 200 && br < 50 && bg < 120, msg="blue rect \{rgba_said((br, bg, bb, ba))}")
+  // Shadow pixel just below-right of blue rect (87, 42): darkened from white
+  let (sr, sg, sb, sa) = px_rgba(rgba, w, 87, 42)
+  assert_eq(sa, 255)
+  assert_true(sr < 245 && sg < 245 && sb < 245, msg="drop shadow \{rgba_said((sr, sg, sb, sa))}")
+}
