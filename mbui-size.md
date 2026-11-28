@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7841c1f72](https://github.com/AFK-surf/monoid/commit/7841c1f721767c6012292e73d48c2ead4af27370) test(station): bind mesh port 0 in retire harness  | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 125.47 |
 | [d19a0458c](https://github.com/AFK-surf/monoid/commit/d19a0458c9e4ad9dd7b8bebbc6460e1be3e14591) fix(ci,station): fix macOS readlink fallback in bi | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 125.47 |
 | [2e7445a86](https://github.com/AFK-surf/monoid/commit/2e7445a866ebe508ce29b2e8e4bcc6cd9c1b9e4b) refactor(mbui): use named key structs instead of t | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 125.47 |
 | [23c599a29](https://github.com/AFK-surf/monoid/commit/23c599a293d3ef84bd3c3a34f272d1dbfd2a4606) fix(mesh): filter benchmarking IPs from lookup and | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.03 | 103.88 | 134.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 2.73 | 3.69 | 15.33 | 38.46 | 59.38 | 33.68 | 68.88 | 103.68 | 129.49 |
-| [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 2.73 | 3.69 | 15.31 | 38.44 | 59.31 | 33.68 | 68.88 | 103.68 | 134.43 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7841c1f72](https://github.com/AFK-surf/monoid/commit/7841c1f721767c6012292e73d48c2ead4af27370) test(station): bind mesh port 0 in retire harness  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [d19a0458c](https://github.com/AFK-surf/monoid/commit/d19a0458c9e4ad9dd7b8bebbc6460e1be3e14591) fix(ci,station): fix macOS readlink fallback in bi | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
 | [2e7445a86](https://github.com/AFK-surf/monoid/commit/2e7445a866ebe508ce29b2e8e4bcc6cd9c1b9e4b) refactor(mbui): use named key structs instead of t | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
 | [23c599a29](https://github.com/AFK-surf/monoid/commit/23c599a293d3ef84bd3c3a34f272d1dbfd2a4606) fix(mesh): filter benchmarking IPs from lookup and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.79 |
 | [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
-| [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
