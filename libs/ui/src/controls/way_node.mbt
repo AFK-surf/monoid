@@ -87,7 +87,7 @@ pub fn way_line_node(
           |> ignore
           chevron(p) |> ignore
         }
-        Step(i, _, _) => {
+        WayEntry::Step(i, _, _) => {
           parts[i] = p
           p.owns(fn() { parts.remove(i) }) |> ignore
           let name = fn() {

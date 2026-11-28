@@ -101,7 +101,8 @@ pub fn dialog(
       now = false
     }
   }
-  { value: now, response: { ..@ui.Response::none(), id: c.id(key), changed: now != open } }
+  let response : @ui.Response = { ..@ui.Response::none(), id: c.id(key), changed: now != open }
+  { value: now, response }
 }
 
 ///|

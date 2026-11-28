@@ -1184,10 +1184,12 @@ fn reader_find_node(col : @view.View, r : Reading, paper : () -> ReaderPaper, do
       @view.Scroll::list(),
       fn() {
         let n = r.matches.get().length()
-        Array::makei(if n > desk_hits_most { desk_hits_most } else { n }, fn(i) { (r.searched.get(), i) })
+        Array::makei(if n > desk_hits_most { desk_hits_most } else { n }, fn(i) {
+          ReaderHitKey::{ searched: r.searched.get(), idx: i }
+        })
       },
       fn(row, key) {
-        let i = key.1
+        let i = key.idx
         let m = fn() { r.matches.get().get(i) }
         row.height(Is(Some(desk_hit_h))) |> ignore
         @headless.button(
@@ -1786,3 +1788,11 @@ let beside_both_least : Double = 2.0 * desk_panel_w
 /// A row of a reader's panel (desk_row's, the tint under the hand its look's: reader_row_look).
 // kept across runs: a value (no field of it changes)
 let reader_row_box : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S2_5 align=ACenter radius=Xl")
+
+///|
+/// What a found place's row is kept by: what was searched for and its place among what was found.
+#derive(Eq, Hash)
+priv struct ReaderHitKey {
+  searched : String
+  idx : Int
+}

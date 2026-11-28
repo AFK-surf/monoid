@@ -87,3 +87,26 @@ test "LiveArray::iter, push_iter, any, all, and search_by keep initial length sn
   }), None)
   assert_eq(search_steps, 3)
 }
+
+///|
+test "LiveArray::iter2 and rev_iter walk a snapshot in order" {
+  let e : LiveArray[Int] = LiveArray::new()
+  assert_eq(e.iter2().to_array(), [])
+  assert_eq(e.rev_iter().to_array(), [])
+  let a : LiveArray[Int] = LiveArray::new()
+  a.replace([10, 20, 30])
+  assert_eq(a.iter2().to_array(), [(0, 10), (1, 20), (2, 30)])
+  assert_eq(a.rev_iter().to_array(), [30, 20, 10])
+  let seen = []
+  for i, x in a.iter2() {
+    seen.push((i, x))
+    a.push(x + 1)
+  }
+  assert_eq(seen, [(0, 10), (1, 20), (2, 30)])
+  let back = []
+  for x in a.rev_iter() {
+    back.push(x)
+    a.push(0)
+  }
+  assert_eq(back, [31, 21, 11, 30, 20, 10])
+}

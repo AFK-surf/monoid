@@ -8,7 +8,17 @@ let made : Map[String, Bool] = Map([])
 ///|
 /// Icons' parts drawn, by name, parts, size and ink (`icon_parts_shapes`): what breathes or lights in steps drawn in
 /// each step's ink found again, not cut from the icon's numbers anew each step.
-let parts_made : Map[(String, Array[Int], Double, Int64), Array[@ui.Shape]] = Map([])
+let parts_made : Map[IconPartsKey, Array[@ui.Shape]] = Map([])
+
+///|
+/// What icon shapes made are kept by (parts_made): the icon, its parts, its size and its ink.
+#derive(Eq, Hash)
+priv struct IconPartsKey {
+  name : String
+  parts : Array[Int]
+  size : Double
+  ink : Int64
+}
 
 ///|
 /// Every Tester starts as the app does (mbui's on_reset): the images made here gone with its own, nothing waited on or
@@ -276,7 +286,7 @@ let video_capsule_words : @ui.TextStyle = media_badge_words
 /// Of icon `name`, its parts `parts` `size` across in `ink` (none where there is no such icon): made once for each, the
 /// same shapes after (which no one changes). Past 256 of them all go, to be made again as they are asked for.
 fn icon_parts_shapes(name : String, parts : Array[Int], size : Double, ink : Int64) -> Array[@ui.Shape] {
-  let key = (name, parts, size, ink)
+  let key = IconPartsKey::{ name, parts, size, ink }
   match parts_made.get(key) {
     Some(s) => s
     None => {
@@ -287,7 +297,7 @@ fn icon_parts_shapes(name : String, parts : Array[Int], size : Double, ink : Int
       if parts_made.length() >= 256 {
         parts_made.clear()
       }
-      parts_made[(name, parts.copy(), size, ink)] = s
+      parts_made[IconPartsKey::{ name, parts: parts.copy(), size, ink }] = s
       s
     }
   }

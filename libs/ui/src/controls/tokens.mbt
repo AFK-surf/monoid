@@ -747,7 +747,11 @@ pub fn capsule_end_room(outer : Double, height : Double) -> @ui.Space {
 /// sideways (@hostapi.turned_sideways: a film or a screen over all of the window, a phone's cutout over its edge; else
 /// the shell keeps the page beside them), as a style's room: where what floats over such a page stands.
 pub fn sides_clear(more : Double) -> @ui.Style {
-  let b = if @hostapi.turned_sideways() { @ui.system_bars() } else { { top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 } }
+  let b = if @hostapi.turned_sideways() {
+    @ui.system_bars()
+  } else {
+    @ui.SystemBars::{ top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 }
+  }
   @ui.style(pl=room(more + dmax(0.0, b.left)), pr=room(more + dmax(0.0, b.right)))
 }
 
@@ -1576,7 +1580,7 @@ fn theme_of(dark : Bool, more : Bool) -> Theme {
   let accent = resolved_accent_key(accent_set.untracked())
   let plain = grounds_plain.untracked()
   // (one of each: the same whenever it is asked, what is made of it kept as long as it is)
-  match themes_made.get((dark, touch, accent, more, plain)) {
+  match themes_made.get(ThemeCacheKey::{ dark, touch, accent, more, plain }) {
     Some(t) => return t
     None => ()
   }
@@ -1592,7 +1596,7 @@ fn theme_of(dark : Bool, more : Bool) -> Theme {
     items: if touch { narrow_items } else { wide_items },
     chat_list: if touch { touch_chat_list } else { mouse_chat_list },
   }
-  themes_made[(dark, touch, accent, more, plain)] = t
+  themes_made[ThemeCacheKey::{ dark, touch, accent, more, plain }] = t
   t
 }
 
@@ -1600,7 +1604,18 @@ fn theme_of(dark : Bool, more : Bool) -> Theme {
 /// The themes made (theme_of), by light or dark, the native input, the accent, whether more contrast is asked and
 /// whether the grounds are left untinted.
 // kept across runs: each a value of what it is made of
-let themes_made : Map[(Bool, Bool, String, Bool, Bool), Theme] = Map([])
+let themes_made : Map[ThemeCacheKey, Theme] = Map([])
+
+///|
+/// What a made theme is kept by (themes_made).
+#derive(Eq, Hash)
+priv struct ThemeCacheKey {
+  dark : Bool
+  touch : Bool
+  accent : String
+  more : Bool
+  plain : Bool
+}
 
 ///|
 /// A link's ink: the accent's ink (its darker one on paper, its lighter one in the dark), which reads in words; the
