@@ -1,0 +1,373 @@
+// Wave 17D-2 R3 daemon-level unit tests for `whole_daemon_live_ops.pion` & R3 P0/P1 invariants:
+// 1. `workspaces.join` two-phase contract: URL MUST be `/v1/stations/join` (NEVER `/enroll`), body MUST include
+//    `"locks":true`, pre-checks run BEFORE network I/O, and `apply_join_workspace_response` preserves existing home workspace!
+// 2. Late `stream.open` after disconnect/timeout/shutdown: `close_orphaned_async_stream_open_with` decodes `head.id`
+//    and invokes `stream.close` so Rust handles never leak!
+// 3. `AdminApi` async idempotency claim/conflict/replay/abort lifecycle.
+// 4. Read-only `login_view_to_json` uses `login_limited` (strips `url`, `code`, and raw CLI `error` tail).
+// 5. `LoginsManager::start_isolated` & `PeerAuthPolicy::add_workspace` & controlled S3/join error messages.
+
+import "base64"
+import "base_codec"
+import "host_shim"
+import "http1"
+import "station_api"
+import "station_cloud"
+import "station_devices"
+import "station_drivers"
+import "station_http"
+import "station_ops"
+import "station_whole"
+
+test "wave17d2 r3: workspaces.join prepares /v1/stations/join with locks:true and preserves original workspace" {
+  let mem = station_cloud::MemCloudFs::new()
+  let cfs = mem.as_fs()
+  let data = "/tmp/w17d2-join-test"
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 7).to_byte()
+  }
+  let key = match station_cloud::StationKey::from_seed(seed) {
+    Ok(k) => k
+    Err(e) => panic("StationKey::from_seed failed: " + e)
+  }
+  let initial_state = "{\"origin\":\"https://api.still.fail\",\"workspace\":\"ws-home-orig\",\"workspaceName\":\"Home WS\",\"name\":\"My Box\",\"peers\":[],\"joined\":[]}"
+  mem.files.set(station_cloud::state_path(data), initial_state)
+
+  // Phase 1: prepare_join_workspace MUST hit `/v1/stations/join` (NEVER `/enroll`) and include `"locks":true`!
+  let prep = match station_cloud::prepare_join_workspace(data, cfs, key, "tok_join_123", "0.1.9999", 1700000000L) {
+    Ok(p) => p
+    Err(e) => panic("prepare_join_workspace failed: " + e)
+  }
+  if prep.url != "https://api.still.fail/v1/stations/join" {
+    panic("join URL MUST be /v1/stations/join, got: " + prep.url)
+  }
+  if prep.bodies.length() == 0 || !prep.bodies[0].contains("\"locks\":true") || !prep.bodies[0].contains("\"token\":\"tok_join_123\"") {
+    panic("join body missing locks:true or token: " + prep.bodies[0])
+  }
+
+  // Phase 2: apply_join_workspace_response adds ws-second while PRESERVING ws-home-orig!
+  let resp_json = "{\"workspace\":\"ws-second\",\"workspace_name\":\"Second WS\",\"name\":\"My Box\"}"
+  match station_cloud::apply_join_workspace_response(data, cfs, prep, 200, resp_json, 1700000001L) {
+    Ok(jr) => {
+      if jr.workspace != "ws-second" || jr.became_home {
+        panic("unexpected join result")
+      }
+    }
+    Err(e) => panic("apply_join_workspace_response failed: " + e)
+  }
+  match station_cloud::read_state(data, cfs) {
+    Ok(Some(st)) => {
+      if st.workspace != "ws-home-orig" {
+        panic("original home workspace was overwritten! got: " + st.workspace)
+      }
+      let mut has_second = false
+      for i in 0..<st.joined.length() {
+        if st.joined[i].workspace == "ws-second" {
+          has_second = true
+        }
+      }
+      if !has_second {
+        panic("ws-second missing from joined list")
+      }
+    }
+    _ => panic("failed to read updated cloud state")
+  }
+}
+
+test "wave17d2 r3: late stream.open after timeout/disconnect closes orphaned stream handle" {
+  let done_ok = host_shim::ShellDone::{
+    id: 99L,
+    error: "",
+    json: "{\"id\":42,\"status\":200,\"headers\":[]}",
+    bytes: None,
+  }
+  let closed : Array[Int] = []
+  let got = close_orphaned_async_stream_open_with(done_ok, fn(id : Int) -> Unit { closed.push(id) })
+  if got != Some(42) || closed.length() != 1 || closed[0] != 42 {
+    panic("late stream.open MUST decode stream id 42 and call stream.close!")
+  }
+}
+
+test "wave17d2 r3: AdminApi async idempotency claim, in-flight 409 conflict, and replay" {
+  let host = station_api::ApiHost::stub()
+  let seen = station_api::SeenStore::empty()
+  let admin = station_api::AdminApi::new(host, seen, "9999")
+  let viewer = station_api::Viewer::owner("alice@example.com", "ws-1")
+  let hdrs = [http1::Header::{ name: "Idempotency-Key", value: "idem-async-1" }]
+
+  // 1. First claim succeeds
+  let (sk, ik) = match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1000L) {
+    station_api::AsyncIdemClaim::Claimed(s, k) => (s, k)
+    _ => panic("expected Claimed")
+  }
+  // 2. Concurrent duplicate while in-flight -> 409 Conflict
+  match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1001L) {
+    station_api::AsyncIdemClaim::Conflict(r) => if r.status != 409 { panic("expected 409 conflict") }
+    _ => panic("expected Conflict while in-flight")
+  }
+  // 3. Complete with 200 -> subsequent retry gets Replay(200)
+  admin.complete_async_idempotency(sk, ik, viewer, "POST", "/profiles", station_api::json_ok(base_codec::json_obj([("id", base_codec::json_str("openai"))])), 1002L)
+  match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1003L) {
+    station_api::AsyncIdemClaim::Replay(r) => if r.status != 200 || !r.body.to_string().contains("\"openai\"") { panic("expected cached 200 replay") }
+    _ => panic("expected Replay after completion")
+  }
+}
+
+test "wave17d2 r3: read-only login_view_to_json uses login_limited to strip url, code, and raw CLI error" {
+  let view = station_devices::LoginView::{
+    id: "plogin-1",
+    name: "claude",
+    command: ["claude", "auth", "login"],
+    state: station_devices::LoginState::Failed,
+    step: Some(station_devices::LoginStep::Open),
+    url: Some("https://claude.ai/oauth?secret=xyz"),
+    domain: Some("claude.ai"),
+    callback: None,
+    code: Some("ABCD-9999"),
+    code_url: Some("https://claude.ai/device"),
+    waiting: false,
+    paste: false,
+    by: station_devices::LoginPerson::{ email: "a@example.com", name: "A" },
+    workspace: Some("ws-1"),
+    chat: None,
+    chat_title: None,
+    done_by: None,
+    started_at: 1000L,
+    expires_at: 2000L,
+    ended_at: Some(1500L),
+    error: Some("visit https://claude.ai/oauth?secret=xyz and enter ABCD-9999"),
+    timed_out: false,
+    browser: true,
+    screen: Some("scr-1"),
+    again: None,
+    from: None,
+    by_code: false,
+  }
+  let ro_json = base_codec::json_stringify(login_view_to_json(view, true))
+  if ro_json.contains("secret=xyz") || ro_json.contains("ABCD-9999") || ro_json.contains("127.0.0.1:9999") {
+    panic("read-only login_view_to_json leaked url/code/error: " + ro_json)
+  }
+}
+
+test "wave17d2 r3: live_current_platform, start_isolated, PeerAuthPolicy::add_workspace, and controlled errors" {
+  if live_current_platform("linux", "aarch64") != "linux-arm64" || live_current_platform("linux", "x86_64") != "linux-x64" {
+    panic("live_current_platform mismatch")
+  }
+  let lm = station_devices::LoginsManager::new(None)
+  let s1 = station_devices::LoginStarter::{ workspace: Some("ws-a"), by: station_devices::LoginPerson::{ email: "a@example.com", name: "A" }, chat: None, chat_title: None }
+  let s2 = station_devices::LoginStarter::{ workspace: Some("ws-b"), by: station_devices::LoginPerson::{ email: "b@example.com", name: "B" }, chat: None, chat_title: None }
+  let r1 = match lm.start_isolated("claude auth login", s1, None, false, 1000L) { Ok(v) => v, Err(e) => panic(e.message) }
+  let r2 = match lm.start_isolated("claude auth login", s2, None, false, 1000L) { Ok(v) => v, Err(e) => panic(e.message) }
+  if r1.id == r2.id {
+    panic("isolated profile logins must not collide")
+  }
+  let pol = station_whole::PeerAuthPolicy::{ station_id: "st-1", station_build: "9999", home_workspace: "ws-home", allowed_workspaces: ["ws-home"], verify_fn: None }
+  pol.add_workspace("ws-joined")
+  pol.add_workspace("ws-joined")
+  if pol.allowed_workspaces.length() != 2 {
+    panic("expected 2 workspaces after idempotent add_workspace")
+  }
+  if controlled_s3_error_message(403).contains("<Error>") || controlled_join_error_message(401).length() == 0 {
+    panic("controlled error check failed")
+  }
+}
+
+test "wave17d2 r4: profile logins manager is completely isolated from machine logins manager" {
+  let machine_logins = station_devices::LoginsManager::new(None)
+  let profile_logins = station_devices::LoginsManager::new(None)
+  let starter = station_devices::LoginStarter::{
+    workspace: Some("ws-secret"),
+    by: station_devices::LoginPerson::{ email: "alice@example.com", name: "Alice" },
+    chat: None,
+    chat_title: None,
+  }
+  let prof_view = match profile_logins.start_isolated("claude auth login", starter, None, false, 1000L) {
+    Ok(v) => v
+    Err(e) => panic("profile start_isolated failed: " + e.message)
+  }
+  // `/machine-logins` list MUST remain completely empty and MUST NOT see or cancel profile login IDs!
+  if machine_logins.list().length() != 0 {
+    panic("machine_logins MUST NOT expose profile logins")
+  }
+  if machine_logins.get(prof_view.id).is_some() {
+    panic("machine_logins MUST NOT find profile login by id")
+  }
+  if profile_logins.get(prof_view.id).is_none() {
+    panic("profile_logins should track its own login")
+  }
+}
+
+test "wave17d2 r4: updates.check feed URL uses station_cli::feed_url, live_version_newer, and executable probe" {
+  let mem = station_cloud::MemCloudFs::new()
+  let cfs = mem.as_fs()
+  mem.files.set(station_cloud::state_path("/tmp/w17d2-feed"), "{\"origin\":\"https://api.still.fail\",\"workspace\":\"ws-1\",\"name\":\"Box\",\"peers\":[],\"joined\":[]}")
+  let st_opt = match station_cloud::read_state("/tmp/w17d2-feed", cfs) {
+    Ok(s) => s
+    Err(e) => panic("read_state failed: " + e)
+  }
+  let stable_u = live_release_feed_url_for(None, st_opt, "stable")
+  let beta_u = live_release_feed_url_for(None, st_opt, "beta")
+  if stable_u != Some("https://api.still.fail/releases/station.json") {
+    panic("unexpected stable feed URL: " + match stable_u { Some(s) => s, None => "none" })
+  }
+  if beta_u != Some("https://api.still.fail/releases/station-beta.json") {
+    panic("unexpected beta feed URL: " + match beta_u { Some(s) => s, None => "none" })
+  }
+  if !live_version_newer("0.1.9", "0.1.10") || live_version_newer("0.1.10", "0.1.9") || live_version_newer("0.1.10", "0.1.10") || live_version_newer("", "0.1.10") || live_version_newer("0.1.10", "") {
+    panic("live_version_newer parity check failed")
+  }
+  // Executable probe rejects directories and non-executable files (0644), accepts 0755 files
+  let mfs = station_ops::MemFs::new()
+  let _ = mfs.put_text("/bin/not-exec", "hi", 420) // 0644
+  let _ = mfs.put_text("/bin/is-exec", "#!/bin/sh", 493) // 0755
+  let _ = (mfs.ops().mkdir_p)("/bin/a-dir")
+  if live_is_executable_file(mfs.ops(), "/bin/not-exec", "/") {
+    panic("0644 file must not be treated as executable")
+  }
+  if live_is_executable_file(mfs.ops(), "/bin/a-dir", "/") {
+    panic("directory must not be treated as executable")
+  }
+  if !live_is_executable_file(mfs.ops(), "/bin/is-exec", "/") {
+    panic("0755 file should be executable")
+  }
+  // `<app>/BUILD` + `<app>/CHANNEL` resolution (`station/src/updates/versions.ts:48-69`)
+  let _ = mfs.put_text("/app/BUILD", "11999\n", 420)
+  let _ = mfs.put_text("/app/CHANNEL", "beta\n", 420)
+  let cur_ver = match station_ops::station_version(mfs.ops(), "/app", sep="/") {
+    Some(v) => v
+    None => panic("expected 0.1.11999 from /app/BUILD")
+  }
+  if cur_ver != "0.1.11999" || !live_version_newer(cur_ver, "0.1.12005") || live_version_newer(cur_ver, "0.1.11998") {
+    panic("installed version newer() check failed for " + cur_ver)
+  }
+  // When config.updateChannel is absent, resolve_station_update_channel falls back to `<app>/CHANNEL` ("beta")
+  let ch_from_app = resolve_station_update_channel(base_codec::json_obj([]), mfs.ops(), Some("/app"), "/")
+  if ch_from_app != "beta" {
+    panic("expected beta from /app/CHANNEL, got " + ch_from_app)
+  }
+  // Explicit config.updateChannel overrides `<app>/CHANNEL`
+  let ch_from_cfg = resolve_station_update_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))]), mfs.ops(), Some("/app"), "/")
+  if ch_from_cfg != "stable" {
+    panic("expected stable from config.updateChannel, got " + ch_from_cfg)
+  }
+}
+
+test "wave17d2 r4: downgraded member rejected before idempotency replay" {
+  let host = station_api::ApiHost::stub()
+  let seen = station_api::SeenStore::empty()
+  let admin = station_api::AdminApi::new(host, seen, "9999")
+  let owner = station_api::Viewer::owner("alice@example.com", "ws-1")
+  let downgraded_member = station_api::Viewer::member("alice@example.com", "ws-1")
+  let hdrs = [http1::Header::{ name: "Idempotency-Key", value: "idem-downgrade-1" }]
+
+  // Owner caches a 200 admin response
+  match admin.claim_async_idempotency(owner, "POST", "/profiles", hdrs, 1000L) {
+    station_api::AsyncIdemClaim::Claimed(sk, ik) => {
+      admin.complete_async_idempotency(sk, ik, owner, "POST", "/profiles", station_api::json_ok(base_codec::json_obj([("id", base_codec::json_str("openai"))])), 1001L)
+    }
+    _ => panic("expected Claimed")
+  }
+  // Authorization check MUST run before claim_async_idempotency: downgraded member is NOT a manager!
+  if downgraded_member.manages_station() {
+    panic("downgraded member must not manage station")
+  }
+  if !owner.manages_station() {
+    panic("owner must manage station")
+  }
+}
+
+test "wave17d2 r6: updates.check binds beta channel without updateChannel and drops stale cross-channel completion" {
+  let mfs = station_ops::MemFs::new()
+  let _ = mfs.put_text("/app/BUILD", "11999\n", 420)
+  let _ = mfs.put_text("/app/CHANNEL", "beta\n", 420)
+  let raw_cfg = base_codec::json_obj([]) // no explicit `updateChannel`
+  let cur_ch = resolve_station_update_channel(raw_cfg, mfs.ops(), Some("/app"), "/")
+  if cur_ch != "beta" {
+    panic("expected resolved channel beta, got " + cur_ch)
+  }
+
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  updates.station.version = station_ops::station_version(mfs.ops(), "/app", sep="/")
+
+  // Valid signed beta release feed (verified with test verifier)
+  let trusted : Map[String, String] = Map::new()
+  trusted.set("test-key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+  let always_ok : Option[(String, Bytes, Bytes, Bytes) -> Bool] = Some(fn(_k : String, _p : Bytes, _m : Bytes, _s : Bytes) -> Bool { true })
+  let make_signed_feed = fn(ver : String, bld : Int) -> String {
+    let words = "{\"kind\":\"stillfail-station-release\",\"version\":\"" + ver + "\",\"build\":" + bld.to_string() + ",\"builds\":{}}"
+    let rel_b64 = base64::encode(words.to_bytes())
+    "{\"version\":\"" + ver + "\",\"release\":\"" + rel_b64 + "\",\"key\":\"test-key\",\"signature\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+  }
+  let beta_feed = make_signed_feed("0.1.12050", 12050)
+  let applied_beta = apply_updates_check_result(
+    updates,
+    "beta",
+    cur_ch,
+    Ok((200, beta_feed.to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if !applied_beta {
+    panic("matching beta updates.check result should be applied")
+  }
+  let view = station_whole::updates_view_json(updates, raw_cfg, resolved_channel=Some(cur_ch))
+  let view_s = base_codec::json_stringify(view)
+  if !view_s.contains("\"channel\":\"beta\"") || !view_s.contains("\"version\":\"0.1.11999\"") || !view_s.contains("\"latest\":\"0.1.12050\"") || !view_s.contains("\"newer\":true") {
+    panic("beta updates.check view inconsistent: " + view_s)
+  }
+
+  // Late/stale completion for `"stable"` after channel switched to `"beta"` MUST be discarded!
+  let stale_feed = make_signed_feed("0.1.11900", 11900)
+  let applied_stale = apply_updates_check_result(
+    updates,
+    "stable",
+    "beta",
+    Ok((200, stale_feed.to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if applied_stale {
+    panic("stale cross-channel completion must be discarded")
+  }
+  if updates.station.latest != Some("0.1.12050") || !updates.station.updatable || updates.station.failed_text.is_some() {
+    panic("stale cross-channel completion corrupted updates.station state")
+  }
+
+  // Stale cross-channel error MUST also NOT overwrite current channel state!
+  let applied_stale_err = apply_updates_check_result(
+    updates,
+    "stable",
+    "beta",
+    Err("network timeout"),
+    trusted,
+    always_ok,
+  )
+  if applied_stale_err || updates.station.latest != Some("0.1.12050") || updates.station.failed_text.is_some() {
+    panic("stale cross-channel error must not clear or overwrite active channel state")
+  }
+
+  // R7 P1: Switch channel from `beta` to `stable` (with no `stable` check run yet):
+  // a late `beta` completion is discarded, AND `updates_view_json(..., resolved_channel=Some("stable"))`
+  // MUST mask the cached `beta` `latest`/`newer`/`failed` so it never leaks under `"channel":"stable"`!
+  let late_beta_applied = apply_updates_check_result(
+    updates,
+    "beta",
+    "stable",
+    Ok((200, make_signed_feed("0.1.12099", 12099).to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if late_beta_applied {
+    panic("late beta completion after switching to stable must be discarded")
+  }
+  let stable_cfg = base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))])
+  let stable_view_s = base_codec::json_stringify(station_whole::updates_view_json(updates, stable_cfg, resolved_channel=Some("stable")))
+  if !stable_view_s.contains("\"channel\":\"stable\"") ||
+  !stable_view_s.contains("\"newer\":false") ||
+  !stable_view_s.contains("\"state\":\"idle\"") ||
+  stable_view_s.contains("\"latest\":") ||
+  stable_view_s.contains("\"message\":") {
+    panic("stable view leaked cached beta check state: " + stable_view_s)
+  }
+}

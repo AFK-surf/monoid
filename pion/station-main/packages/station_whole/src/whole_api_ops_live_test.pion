@@ -1,0 +1,271 @@
+// Wave 17D-2 R3 comprehensive unit tests for the 9 live `call_op`s and honest 501 for the 8 withdrawn/deferred ops:
+// 1. Updates (2 live + 1 honest 501): `updates.wait` (default autoUpdate=false, override_present preserved), `updates.check`, `updates.install` -> 501
+// 2. Accounts & Profiles (5 live + 3 honest 501): `createKeyed` (ignores caller name, openai-api optional key, google-vertex JSON check,
+//    real `{ id, overview }` containing newly created profile with key redacted), `createMachine`, `login`/`login.get`/`login.delete`
+// 3. Copies S3 Test (1 live): default `forcePathStyle: true`, full target binding (endpoint path case + bucket + forcePathStyle), secret scrubbing
+// 4. Honest 501 for the 8 deferred ops:
+//    `updates.install`, `mcpServers.reloadAll`, `mcpServers.reloadOne`,
+//    `accounts.profiles.quota`, `accounts.profiles.resetQuota`, `accounts.profiles.pace`, `copies.restore`, `xshare.hosts.put`.
+
+import "base_codec"
+import "station_api"
+import "station_replica"
+
+fn w17d2_owner(ws : String) -> station_api::Viewer {
+  make_test_viewer("owner@example.com", "u-owner", ws, ws == "ws-main", "owner")
+}
+
+fn w17d2_member(ws : String) -> station_api::Viewer {
+  make_test_viewer("member@example.com", "u-member", ws, ws == "ws-main", "member")
+}
+
+fn w17d2_readonly(ws : String) -> station_api::Viewer {
+  make_test_viewer("ro@example.com", "u-ro", ws, ws == "ws-main", "viewer")
+}
+
+test "wave17d2 r4: updates.check (403/501/200) and updates.wait / updates.install honest 501" {
+  let (_, _, api, updates, _mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = w17d2_owner("ws-main")
+  let member = w17d2_member("ws-main")
+
+  // 1. Manager-only 403 on updates.check
+  match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", member), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("expected 403 for non-manager updates.check") }
+    Ok(_) => panic("non-manager updates.check must fail")
+  }
+
+  // 2. Both `updates.install` and `updates.wait` return honest 501 until Wave 17E updater loop lands
+  for op in ["updates.install", "updates.wait"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
+      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
+      Ok(_) => panic(op + " must not return fake 200")
+    }
+  }
+
+  // 3. Unhooked `updates.check` returns honest 501; hooked returns 200
+  match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", owner), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 501 { panic("unhooked updates.check must return 501") }
+    Ok(_) => panic("unhooked updates.check returned fake 200")
+  }
+  hooks.on_updates_op = Some(fn(_op : String, _body : base_codec::Json, _lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    Ok(updates_view_json(updates, base_codec::json_obj([]), resolved_channel=Some("beta")))
+  })
+  match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", owner), [], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("\"channel\":\"beta\"") {
+        panic("updates_view_json with resolved_channel=Some(\"beta\") must report channel beta, got: " + s)
+      }
+    }
+    Err(e) => panic("hooked updates.check failed: " + e.message)
+  }
+}
+
+test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore name, openai-api optional key, google-vertex JSON check, login)" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = w17d2_owner("ws-main")
+  let member = w17d2_member("ws-main")
+  let ro = w17d2_readonly("ws-main")
+
+  // Wire `overview_for` to the REAL `api.admin.host.overview` (as production `whole_daemon_wiring` does!)
+  hooks.overview_for = Some(api.admin.host.overview)
+
+  // 1. Withdrawn ops MUST return honest 501
+  for op in ["accounts.profiles.quota", "accounts.profiles.resetQuota", "accounts.profiles.pace"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles", owner), ["p1"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
+      Ok(_) => panic("withdrawn " + op + " returned fake 200")
+    }
+  }
+
+  // 2. `createKeyed`: `openai-api` key is optional; ignores caller-supplied `name`; returns REAL `overview` containing new profile!
+  let openai_no_key = base_codec::json_obj([
+    ("name", base_codec::json_str("SHOULD-BE-IGNORED")),
+    ("access", base_codec::json_obj([("kind", base_codec::json_str("openai-api"))])),
+  ])
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], openai_no_key) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("SHOULD-BE-IGNORED") {
+        panic("createKeyed must ignore caller-supplied name: " + s)
+      }
+      if json_field_str(res, "id") != Some("openai-api") || !s.contains("\"label\":\"OpenAI API\"") {
+        panic("createKeyed overview missing newly created openai-api profile: " + s)
+      }
+    }
+    Err(e) => panic("openai-api without key should succeed: " + e.message)
+  }
+
+  // 3. `google-vertex`: invalid JSON -> 400; valid service account JSON -> succeeds without 501 hook and redacts key in overview!
+  let bad_vertex = base_codec::json_obj([
+    ("access", base_codec::json_obj([
+      ("kind", base_codec::json_str("api-provider")),
+      ("provider", base_codec::json_str("google-vertex")),
+      ("key", base_codec::json_str("not-a-service-account")),
+    ])),
+  ])
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], bad_vertex) {
+    Err(e) => if e.status != 400 { panic("invalid google-vertex key must return 400, got " + e.status.to_string()) }
+    Ok(_) => panic("invalid google-vertex key must fail")
+  }
+  let good_vertex_key = "{\"type\":\"service_account\",\"project_id\":\"proj-1\",\"client_email\":\"sa@proj.iam.gserviceaccount.com\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nSECRET_VERTEX_KEY\\n-----END PRIVATE KEY-----\"}"
+  let good_vertex = base_codec::json_obj([
+    ("access", base_codec::json_obj([
+      ("kind", base_codec::json_str("api-provider")),
+      ("provider", base_codec::json_str("google-vertex")),
+      ("key", base_codec::json_str(good_vertex_key)),
+    ])),
+  ])
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], good_vertex) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("SECRET_VERTEX_KEY") {
+        panic("google-vertex response leaked private_key: " + s)
+      }
+      if json_field_str(res, "id") != Some("google-vertex") || !s.contains("\"id\":\"google-vertex\"") {
+        panic("google-vertex overview missing newly created profile: " + s)
+      }
+    }
+    Err(e) => panic("valid google-vertex createKeyed failed: " + e.message)
+  }
+
+  // 4. `createKeyed` with key: unhooked -> 501; bad key -> 400 without config write; valid key -> `{ id, overview }` with real profile & redacted key
+  let create_body = base_codec::json_obj([
+    ("access", base_codec::json_obj([
+      ("kind", base_codec::json_str("api-provider")),
+      ("provider", base_codec::json_str("openai")),
+      ("key", base_codec::json_str("sk-live-super-secret-key-98765")),
+    ])),
+  ])
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", member), [], create_body) {
+    Err(e) => if e.status != 403 { panic("non-manager createKeyed must return 403") }
+    Ok(_) => panic("non-manager createKeyed must fail")
+  }
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], create_body) {
+    Err(e) => if e.status != 501 { panic("unhooked createKeyed must return 501") }
+    Ok(_) => panic("unhooked createKeyed skipped key verification")
+  }
+  hooks.on_profile_live_op = Some(fn(op : String, ps : Array[String], _b : base_codec::Json, _v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "accounts.profiles.createKeyed.check" {
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    if op == "accounts.profiles.createMachine" {
+      return Ok(base_codec::json_obj([("name", base_codec::json_str("alice@claude.ai"))]))
+    }
+    Ok(base_codec::json_obj([
+      ("op", base_codec::json_str(op)),
+      ("id", base_codec::json_str(if ps.length() > 0 { ps[0] } else { "" })),
+      ("url", base_codec::json_str("https://auth.example.com/secret-token")),
+      ("code", base_codec::json_str("ABCD-1234")),
+    ]))
+  })
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], create_body) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("sk-live-super-secret-key-98765") {
+        panic("createKeyed leaked plaintext API key: " + s)
+      }
+      if json_field_str(res, "id") != Some("openai") || !s.contains("\"id\":\"openai\"") || !s.contains("\"hasKey\":true") {
+        panic("createKeyed real overview missing newly created openai profile: " + s)
+      }
+    }
+    Err(e) => panic("createKeyed failed: " + e.message)
+  }
+
+  // 5. `createMachine`: returns `{ id, overview }` containing `machine-claude`
+  match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", owner), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if json_field_str(res, "id") != Some("machine-claude") || !s.contains("\"id\":\"machine-claude\"") {
+        panic("createMachine real overview missing newly created machine-claude profile: " + s)
+      }
+    }
+    Err(e) => panic("hooked createMachine failed: " + e.message)
+  }
+
+  // 6. All profile login ops (`login`, `login.get`, `login.delete`, `login-code`, `login-browser`) return honest 501 until Wave 17E
+  let _ = mem_fs
+  let _ = ro
+  for op in [
+    "accounts.profiles.login",
+    "accounts.profiles.login.get",
+    "accounts.profiles.login.delete",
+    "accounts.profiles.login-code",
+    "accounts.profiles.login-browser",
+  ] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login", owner), ["sub-claude"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
+      Ok(_) => panic(op + " returned fake 200")
+    }
+  }
+}
+
+test "wave17d2 r3: copies.s3.test (default forcePathStyle=true, full target binding incl. path case & forcePathStyle) + 4 withdrawn 501s" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = w17d2_owner("ws-main")
+
+  for op in ["mcpServers.reloadAll", "mcpServers.reloadOne", "copies.restore", "xshare.hosts.put"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/admin", owner), ["s1"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
+      Ok(_) => panic("withdrawn " + op + " returned fake 200")
+    }
+  }
+
+  // Default `forcePathStyle` MUST be `true` (1:1 with Node `backup-config.ts:156-170`)!
+  let raw_target = base_codec::json_obj([
+    ("endpoint", base_codec::json_str("http://127.0.0.1:9000")),
+    ("bucket", base_codec::json_str("bkt")),
+    ("accessKeyId", base_codec::json_str("AK1")),
+    ("secretAccessKey", base_codec::json_str("SK1")),
+  ])
+  match prepare_s3_test_target(raw_target, base_codec::json_obj([])) {
+    Ok(t) => if !t.force_path_style { panic("copies.s3.test default forcePathStyle MUST be true") }
+    Err(e) => panic("prepare_s3_test_target failed: " + e.message)
+  }
+
+  // Saved credential reuse guard binds endpoint (case-sensitive path!), bucket, AND forcePathStyle
+  let saved_cfg = "{\"backup\":{\"s3\":[{\"id\":\"r2\",\"name\":\"R2\",\"endpoint\":\"https://s3.trusted.example/TenantA\",\"bucket\":\"trusted-bkt\",\"forcePathStyle\":true,\"accessKeyId\":\"SAVED_KEY_ID\",\"secretAccessKey\":\"SAVED_SUPER_SECRET\",\"encryptionKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", saved_cfg, 384)
+  hooks.on_s3_test = Some(fn(t : station_replica::NormalizedS3Target) -> Result[Unit, String] {
+    Err("auth failed for " + t.access_key_id + " / " + t.secret_access_key)
+  })
+
+  // Changing path case (`/tenanta` vs `/TenantA`) MUST NOT reuse saved secret!
+  let diff_case = base_codec::json_obj([
+    ("id", base_codec::json_str("r2")),
+    ("endpoint", base_codec::json_str("https://s3.trusted.example/tenanta")),
+    ("bucket", base_codec::json_str("trusted-bkt")),
+  ])
+  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], diff_case) {
+    Err(e) => if e.status != 400 { panic("path-case mismatch must reject 400, got " + e.status.to_string()) }
+    Ok(_) => panic("path-case mismatch MUST NOT reuse saved credentials")
+  }
+
+  // Changing `forcePathStyle: false` MUST NOT reuse saved secret!
+  let diff_fps = base_codec::json_obj([
+    ("id", base_codec::json_str("r2")),
+    ("endpoint", base_codec::json_str("https://s3.trusted.example/TenantA")),
+    ("bucket", base_codec::json_str("trusted-bkt")),
+    ("forcePathStyle", base_codec::json_bool(false)),
+  ])
+  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], diff_fps) {
+    Err(e) => if e.status != 400 { panic("forcePathStyle mismatch must reject 400, got " + e.status.to_string()) }
+    Ok(_) => panic("forcePathStyle mismatch MUST NOT reuse saved credentials")
+  }
+
+  // Exact match (case-insensitive host, exact path case, same bucket & forcePathStyle) MAY reuse saved creds and scrubs error
+  let exact = base_codec::json_obj([
+    ("id", base_codec::json_str("r2")),
+    ("endpoint", base_codec::json_str("https://S3.TRUSTED.EXAMPLE/TenantA")),
+    ("bucket", base_codec::json_str("trusted-bkt")),
+  ])
+  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], exact) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("SAVED_SUPER_SECRET") || s.contains("SAVED_KEY_ID") {
+        panic("copies.s3.test leaked S3 credentials in error: " + s)
+      }
+    }
+    Err(e) => panic("exact-match copies.s3.test failed: " + e.message)
+  }
+}

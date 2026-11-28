@@ -2998,7 +2998,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
   assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
 
-  // 1b. Routes implemented in W17C-3A (#9161) & W17C-3B (#9162) return 200
+  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 R4 return 200
   for (const [m, p, body] of [
     ["GET", "/vault/uses", undefined],
     ["GET", "/vault/plain", undefined],
@@ -3008,16 +3008,87 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/mcp-servers", undefined],
     ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
   ] as const) {
-    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    const hdrs: Record<string, string> = { "content-type": "application/json" };
+    if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
+    const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 200, `${m} ${p} expected 200, got ${resp.status}: ${resp.body.toString()}`);
   }
 
-  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
-  for (const [m, p, body] of [
-    ["POST", "/updates", "{}"],
-    ["POST", "/updates/check", "{}"],
+  // `POST /updates/check` when unenrolled (no cloud url configured) returns 404 (aligned with Node updates.ts)
+  const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
+
+  // `POST /updates` (`updates.install`) and `POST /updates/wait` (`updates.wait`) return honest 501 until Wave 17E updater loop lands
+  for (const [p, body] of [
+    ["/updates", JSON.stringify({ id: "station" })],
+    ["/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
   ] as const) {
-    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    const uResp = await adminCall(conn, "POST", p, { "content-type": "application/json" }, Buffer.from(body));
+    assert.equal(uResp.status, 501, `POST ${p} expected honest 501, got ${uResp.status}: ${uResp.body.toString()}`);
+  }
+
+  // Non-blocking concurrency check: a slow external `POST /copies/s3/test` (default path-style!) MUST actually hit
+  // the 1200ms slow S3 server AND MUST NOT block concurrent `GET /status`!
+  let slowS3Hit = false;
+  const slowS3 = createHttpServer((req, res) => {
+    if (req.url?.startsWith("/test-bkt")) slowS3Hit = true;
+    setTimeout(() => {
+      res.writeHead(403, { "content-type": "application/xml" });
+      res.end("<Error><Code>AccessDenied</Code><Message>AKIA_LEAK_GUARD</Message></Error>");
+    }, 1200);
+  });
+  await new Promise<void>((resolve) => slowS3.listen(0, "127.0.0.1", () => resolve()));
+  const slowS3Port = (slowS3.address() as { port: number }).port;
+  try {
+    const t0 = Date.now();
+    const slowPromise = adminCall(
+      conn,
+      "POST",
+      "/copies/s3/test",
+      { "content-type": "application/json" },
+      Buffer.from(JSON.stringify({
+        endpoint: `http://127.0.0.1:${slowS3Port}`,
+        bucket: "test-bkt",
+        accessKeyId: "AKIA_TEST_1",
+        secretAccessKey: "SECRET_TEST_1",
+      })),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    const concurrentStatus = await adminCall(conn, "GET", "/status");
+    const elapsedStatus = Date.now() - t0;
+    assert.equal(concurrentStatus.status, 200, `concurrent GET /status failed: ${concurrentStatus.body.toString()}`);
+    assert.ok(elapsedStatus < 900, `GET /status was blocked by slow copies.s3.test! elapsed=${elapsedStatus}ms`);
+    const slowResp = await slowPromise;
+    const elapsedTotal = Date.now() - t0;
+    assert.equal(slowS3Hit, true, "copies.s3.test with default forcePathStyle=true MUST hit /test-bkt on slowS3");
+    assert.ok(elapsedTotal >= 1000, `copies.s3.test returned too early (${elapsedTotal}ms) instead of awaiting 1200ms S3 response`);
+    assert.equal(slowResp.status, 200, `POST /copies/s3/test expected 200 ok:false, got ${slowResp.status}: ${slowResp.body.toString()}`);
+    const slowJson = JSON.parse(slowResp.body.toString("utf8"));
+    assert.equal(slowJson.ok, false);
+    assert.ok(!slowResp.body.toString("utf8").includes("AKIA_LEAK_GUARD"), "copies.s3.test must not echo raw upstream XML");
+    assert.ok(!slowResp.body.toString("utf8").includes("SECRET_TEST_1"), "copies.s3.test must not leak secretAccessKey");
+  } finally {
+    await new Promise<void>((resolve) => slowS3.close(() => resolve()));
+  }
+
+  // Unimplemented / deferred Wave 17E ops return honest 501 (ZERO fake 200 stubs!)
+  for (const [m, p, body] of [
+    ["POST", "/mcp-servers/reload", "{}"],
+    ["POST", "/mcp-servers/s1/reload", "{}"],
+    ["GET", "/profiles/pace?v=2", undefined],
+    ["POST", "/profiles/p1/quota", "{}"],
+    ["POST", "/profiles/p1/reset-quota", "{}"],
+    ["POST", "/profiles/p1/login", "{}"],
+    ["GET", "/profiles/p1/login", undefined],
+    ["DELETE", "/profiles/p1/login", undefined],
+    ["POST", "/profiles/p1/login-code", JSON.stringify({ code: "123456" })],
+    ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
+    ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
+    ["POST", "/workspaces/join", JSON.stringify({ token: "tok-1" })],
+  ] as const) {
+    const hdrs: Record<string, string> = { "content-type": "application/json" };
+    if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
+    const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);
   }
 

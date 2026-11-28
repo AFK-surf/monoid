@@ -193,6 +193,7 @@ enum AdminStreamMode {
   DriveDownloading(DriveDownloadStreamState)
   SessionFileDownloading(SessionFileDownloadState)
   WaitingArchiveExtract(station_whole::SessionArchiveExtractSpec)
+  WaitingAsyncOp(AsyncAdminHttpState)
   WaitingLinkPreview(LinkPreviewAsyncState)
   WaitingFeedbackReport(Int64)
   SendingBody(AdminBodySendingState)
@@ -4493,6 +4494,92 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       None => ()
     }
 
+    // Wave 17D-2 R6: Non-blocking async interception for network-bound live ops
+    // (`updates.check`, `copies.s3.test`, `accounts.profiles.createKeyed`).
+    // Enforces unified `OLDEST_CORE`, `read_only_handover` write barrier, manager role, and `AdminApi` idempotency BEFORE async I/O.
+    match peer_id {
+      station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+        let mut req_lang = station_api::Lang::En
+        for hi in 0..<head.headers.length() {
+          if station_http::ascii_eq_ci(head.headers[hi].name, "accept-language") {
+            let lv = head.headers[hi].value.trim()
+            if lv.starts_with("zh") || lv.starts_with("ZH") || lv.starts_with("Zh") {
+              req_lang = station_api::Lang::Zh
+            }
+          }
+        }
+        let is_live_async_route = head.method == "POST"
+        && (norm_path == "/updates/check"
+          || norm_path == "/copies/s3/test"
+          || norm_path == "/profiles")
+        if is_live_async_route {
+          match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+            Some(old_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            None => ()
+          }
+          if st.core.api.read_only_handover {
+            astream.mode = AdminStreamMode::Done
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "station is in read-only handover mode"))
+            return
+          }
+          // Authorization MUST run BEFORE idempotency claim/replay so a downgraded member
+          // can never replay a cached 200 admin response with a prior Idempotency-Key!
+          if !v.manages_station() {
+            astream.mode = AdminStreamMode::Done
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "only workspace owners and admins can perform this action"))
+            return
+          }
+          let idem_claim : Option[(String, String)] = match st.core.api.admin.claim_async_idempotency(
+            v,
+            head.method,
+            norm_path,
+            head.headers,
+            now_w,
+          ) {
+            station_api::AsyncIdemClaim::NotKeyed => None
+            station_api::AsyncIdemClaim::Claimed(sk, ik) => Some((sk, ik))
+            station_api::AsyncIdemClaim::Replay(cached_resp) => {
+              // Set Done BEFORE send_admin_resp_and_finish so >64 KiB backpressured SendingBody is preserved!
+              astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, cached_resp)
+              return
+            }
+            station_api::AsyncIdemClaim::Conflict(conf_resp) => {
+              astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, conf_resp)
+              return
+            }
+          }
+          match try_intercept_async_admin_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim) {
+            Some(Ok(async_st)) => {
+              astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
+              return
+            }
+            Some(Err(resp)) => {
+              match idem_claim {
+                Some((sk, ik)) => st.core.api.admin.complete_async_idempotency(sk, ik, v, head.method, norm_path, resp, now_w)
+                None => ()
+              }
+              astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, resp)
+              return
+            }
+            None => {
+              match idem_claim {
+                Some((sk, _)) => st.core.api.admin.abort_async_idempotency(sk)
+                None => ()
+              }
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+
     // Wave 17D-3: Non-blocking async `GET /link-preview?url=` (all-IP DNS + `entry` pinning + multi-hop redirect check + hard monotonic deadline, zero `host_shim::wait`).
     if head.method == "GET" && norm_path == "/link-preview" {
       match check_oldest_core_fast(st, head.method, head.path, head.headers) {
@@ -5050,6 +5137,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       | AdminStreamMode::DriveDownloading(_)
       | AdminStreamMode::SessionFileDownloading(_)
       | AdminStreamMode::WaitingArchiveExtract(_)
+      | AdminStreamMode::WaitingAsyncOp(_)
       | AdminStreamMode::WaitingLinkPreview(_)
       | AdminStreamMode::WaitingFeedbackReport(_)
       | AdminStreamMode::SendingBody(_) => {
@@ -5834,6 +5922,32 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
+        // - If `stream.open` arrives with no active op, decodes and immediately `stream.close`s.
+        if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
+          let mut handled = false
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingAsyncOp(async_st) => {
+                handled = true
+                match step_async_admin_http_done(ctx, st, kind, async_st, d) {
+                  Some(resp) => {
+                    astream.mode = AdminStreamMode::Done
+                    send_admin_resp_and_finish(ctx, sid, resp)
+                  }
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+          if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
+            close_orphaned_async_stream_open(ctx, d)
+          }
+          return
+        }
         // Async `GET /link-preview` stream.open completion (Wave 17D-3).
         if kind == LINK_PREVIEW_TOK_OPEN {
           match st.admin_streams.get(sid) {
@@ -8626,6 +8740,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 | AdminStreamMode::DriveDownloading(_)
                 | AdminStreamMode::SessionFileDownloading(_)
                 | AdminStreamMode::WaitingArchiveExtract(_)
+                | AdminStreamMode::WaitingAsyncOp(_)
                 | AdminStreamMode::WaitingLinkPreview(_)
                 | AdminStreamMode::WaitingFeedbackReport(_)
                 | AdminStreamMode::SendingBody(_) => {
@@ -8766,6 +8881,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
                 AdminStreamMode::WaitingArchiveExtract(spec) => {
                   let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
+                  false
+                }
+                AdminStreamMode::WaitingAsyncOp(async_st) => {
+                  cancel_async_admin_op(ctx, st, async_st)
                   false
                 }
                 AdminStreamMode::WaitingLinkPreview(lp) => {
@@ -9033,12 +9152,19 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
           }
           st.upkeep.tick(now, clones_active)
-          // Enforce hard monotonic deadline on all in-flight `WaitingLinkPreview` streams (incl. hung DNS).
-          let lp_sids = st.admin_streams.keys()
-          for li in 0..<lp_sids.length() {
-            let lsid = lp_sids[li]
-            match st.admin_streams.get(lsid) {
+          // Enforce hard monotonic deadlines on all in-flight `WaitingAsyncOp` and `WaitingLinkPreview` streams.
+          let async_sids = st.admin_streams.keys()
+          for asi in 0..<async_sids.length() {
+            let asid = async_sids[asi]
+            match st.admin_streams.get(asid) {
               Some(astream) => match astream.mode {
+                AdminStreamMode::WaitingAsyncOp(async_st) => {
+                  if now >= async_st.deadline_ms {
+                    cancel_async_admin_op(ctx, st, async_st)
+                    astream.mode = AdminStreamMode::Done
+                    send_admin_resp_and_finish(ctx, asid, station_api::json_error(504, "request timed out"))
+                  }
+                }
                 AdminStreamMode::WaitingLinkPreview(lp) if now >= lp.deadline_ms => {
                   if lp.dns_ev_id > 0L {
                     st.dns_streams.remove(lp.dns_ev_id)
@@ -9052,7 +9178,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + lp.stream_id.to_string() + "}", None)
                     lp.stream_id = 0
                   }
-                  send_admin_resp_and_finish(ctx, lsid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                  send_admin_resp_and_finish(ctx, asid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
                   astream.mode = AdminStreamMode::Done
                 }
                 _ => ()
@@ -9392,6 +9518,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 match astream.mode {
                   AdminStreamMode::SseStreaming(cid) => {
                     let _ = st.core.api.events.disconnect(cid)
+                  }
+                  AdminStreamMode::WaitingAsyncOp(async_st) => {
+                    // Cancel/close any open async stream BEFORE removing from `admin_streams`!
+                    cancel_async_admin_op(ctx, st, async_st)
                   }
                   _ => ()
                 }

@@ -6,6 +6,7 @@
 import { runtimeNamed, runtimeTitle } from "../sessions/config.ts";
 import type { ModelChoice } from "../sessions/chat.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
+import { markdownBlocks } from "./markdown.ts";
 
 type Json = any;
 
@@ -95,7 +96,7 @@ export function newChatBlocks(user: string, choice: ModelChoice, words: string, 
     text: `${header}\n${words}`,
     blocks: [
       { type: "context", elements: [{ type: "mrkdwn", text: header }] },
-      { type: "markdown", text: words },
+      ...markdownBlocks(words),
     ],
   };
 }

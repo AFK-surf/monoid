@@ -930,7 +930,13 @@ fn dispatch_accounts_op(
     }
   }
 
-  // All remaining unbacked `accounts.*` ops (`createKeyed`, `createMachine`, `pace`, `resetQuota`, `quota`, `login*`) return honest 501.
+  // Wave 17D-2 live `accounts.profiles.*` ops
+  match dispatch_live_accounts_op(op, req, params, body, agents, cfg_opt, cfg_open_err, hooks, now_ms) {
+    Some(r) => return Some(r)
+    None => ()
+  }
+
+  // All remaining unbacked `accounts.*` ops return honest 501.
   Some(Err(err_not_implemented(op)))
 }
 
@@ -2039,8 +2045,11 @@ fn dispatch_settings_and_copies_op(
     return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.retire.off"))))
   }
 
-  // `copies.restore`, `copies.s3.test`, `xshare.hosts.put` stay honest 501 until real executors are wired.
-  if op == "copies.restore" || op == "copies.s3.test" || op == "xshare.hosts.put" {
+  // Wave 17D-2 R2: `copies.s3.test` wired; `copies.restore` and `xshare.hosts.put` stay honest 501 until Wave 17E.
+  if op == "copies.s3.test" {
+    return dispatch_live_copies_s3_test_op(op, req, body, cfg_opt, hooks)
+  }
+  if op == "copies.restore" || op == "xshare.hosts.put" {
     return Some(Err(err_not_implemented(op)))
   }
 

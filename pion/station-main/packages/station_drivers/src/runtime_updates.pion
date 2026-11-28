@@ -427,6 +427,7 @@ pub struct RuntimeSoftwareItem {
   pub mut installed : Bool
   pub mut version : Option[String]
   pub mut latest : Option[String]
+  pub mut checked_channel : Option[String]
   pub mut updatable : Bool
   pub mut uninstall : Option[UninstallHow]
   pub mut unremovable : Option[UninstallUnable]
@@ -444,6 +445,7 @@ pub fn RuntimeSoftwareItem::empty(id : String, is_station : Bool) -> RuntimeSoft
     installed: false,
     version: None,
     latest: None,
+    checked_channel: None,
     updatable: false,
     uninstall: None,
     unremovable: None,

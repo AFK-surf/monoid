@@ -468,6 +468,7 @@ pub struct LoginsOsRuntime {
 pub fn LoginsOsRuntime::new(
   pages : Option[station_devices::LoginPages],
   now_fn : () -> Int64 = host_shim::now_ms,
+  start_event_id : Int64 = 17179869184L,
 ) -> LoginsOsRuntime {
   LoginsOsRuntime::{
     manager: station_devices::LoginsManager::new(pages),
@@ -475,7 +476,7 @@ pub fn LoginsOsRuntime::new(
     by_id: Map::new(),
     by_event: Map::new(),
     pending_kills: Map::new(),
-    next_event_id: 17179869184L,
+    next_event_id: start_event_id,
   }
 }
 
@@ -497,7 +498,39 @@ pub fn LoginsOsRuntime::start_login(
   by_code_line : Option[String] = None,
   paste_on_open : Bool = false,
 ) -> Result[station_devices::LoginView, String] {
-  let view = match self.manager.start(command_line, starter, by_code_line, paste_on_open, now_ms) {
+  self.start_login_inner(command_line, starter, cwd, env_pairs, now_ms, by_code_line, paste_on_open, false)
+}
+
+pub fn LoginsOsRuntime::start_login_isolated(
+  self : LoginsOsRuntime,
+  command_line : String,
+  starter : station_devices::LoginStarter,
+  cwd : String,
+  env_pairs : Array[(String, String)],
+  now_ms : Int64,
+  by_code_line : Option[String] = None,
+  paste_on_open : Bool = false,
+) -> Result[station_devices::LoginView, String] {
+  self.start_login_inner(command_line, starter, cwd, env_pairs, now_ms, by_code_line, paste_on_open, true)
+}
+
+fn LoginsOsRuntime::start_login_inner(
+  self : LoginsOsRuntime,
+  command_line : String,
+  starter : station_devices::LoginStarter,
+  cwd : String,
+  env_pairs : Array[(String, String)],
+  now_ms : Int64,
+  by_code_line : Option[String],
+  paste_on_open : Bool,
+  isolated : Bool,
+) -> Result[station_devices::LoginView, String] {
+  let start_res = if isolated {
+    self.manager.start_isolated(command_line, starter, by_code_line, paste_on_open, now_ms)
+  } else {
+    self.manager.start(command_line, starter, by_code_line, paste_on_open, now_ms)
+  }
+  let view = match start_res {
     Ok(v) => v
     Err(r) => return Err("login start refused (" + r.status.to_string() + "): " + r.message)
   }

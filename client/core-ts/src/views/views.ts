@@ -3781,9 +3781,12 @@ export class Views implements Owner {
     return null;
   }
 
-  #openedEntries(station: string, raw: J): { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] {
+  /// Each chat a chat's agent opened, as #opened lists it. `archivedRecords` false: an archived one is titled and threaded
+  /// of its columns, its record not read (Data.chatNamedMany): what is shown of it is its title and that it is archived.
+  #openedEntries(station: string, raw: J, opts?: { archivedRecords?: boolean }): { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] {
     const items: { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] = [];
     const rawOpened = arr(get(raw, "opened"));
+    if (rawOpened.length === 0) return items;
     const ws = ofAddress(station);
     // (each one's station and session, its chat found with the others' at once)
     const asked: ({ o: J; at: string; session: string } | null)[] = rawOpened.map((o) => {
@@ -3792,14 +3795,14 @@ export class Views implements Owner {
       const there = str(get(o, "station"));
       return { o, at: there !== null && there !== "" ? `${ws}/${there}` : station, session };
     });
-    const named = this.#core.data.chatNamedMany(asked.flatMap((a) => (a === null ? [] : [[a.at, a.session] as const])));
+    const named = this.#core.data.chatNamedMany(asked.flatMap((a) => (a === null ? [] : [[a.at, a.session] as const])), { archivedRecords: opts?.archivedRecords });
     for (let idx = 0; idx < asked.length; idx++) {
       const a = asked[idx];
       if (a === null) continue;
       const { o, at, session } = a;
       const found = named.get(`${at}\u0001${session}`);
       const row = found?.row as J | undefined;
-      const title = str(get(row, "title")) || str(get(o, "title")) || t("core-views.new_chat");
+      const title = str(get(row, "title")) || (found?.title ? found.title : null) || str(get(o, "title")) || t("core-views.new_chat");
       const out: J = { station: at, session, title };
       if (isObject(row)) {
         const state = this.#openedState(row);
@@ -3814,7 +3817,7 @@ export class Views implements Owner {
         out.note = t("core-views.search.archived");
       }
       if (get(o, "led") === true) out.led = true;
-      items.push({ item: out, at, row, thread: u64(get(row, "thread")), idx });
+      items.push({ item: out, at, row, thread: u64(get(row, "thread")) ?? found?.thread ?? null, idx });
     }
     return items;
   }
@@ -3825,7 +3828,8 @@ export class Views implements Owner {
   /// waiting on its own work, ended, archived), newest created first within the same priority. Ended is done and also
   /// an agent stopped without saying so (idle, aborted): the app folds all of them away together (`subchat_is_done`).
   #opened(station: string, raw: J): J[] {
-    return this.#openedEntries(station, raw)
+    // (the archived ones shown by their titles alone: archived, none of their marks or lines is shown)
+    return this.#openedEntries(station, raw, { archivedRecords: false })
       .sort((a, b) => this.#openedRank(a.item) - this.#openedRank(b.item) || b.idx - a.idx)
       .map((x) => x.item);
   }
@@ -3836,7 +3840,8 @@ export class Views implements Owner {
     const words = refs.terms(q);
     const parent = this.#parentRow(station, thread, session);
     if (!isObject(parent)) return { ok: { items: [], words, reading: false } };
-    const entries = this.#openedEntries(station, parent);
+    // (searched, what an archived one's agent needs and its last words are found: their records read; else none is)
+    const entries = this.#openedEntries(station, parent, { archivedRecords: words.length > 0 });
     if (words.length === 0) {
       const items = entries
         .sort((a, b) => this.#openedRank(a.item) - this.#openedRank(b.item) || b.idx - a.idx)
@@ -3919,18 +3924,13 @@ export class Views implements Owner {
   /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone
   /// (and the words of the language they are said in), so kept by the record, the same object while it does not change.
   /// A chat that leads many is made again on each change while its agent is working: each of them was copied whole and
-  /// presented again every time.
+  /// presented again every time (present.openedState: its agents as the line reads them alone).
   readonly #openedStates = new WeakMap<object, { lang: string; mark: string | null; text: string | null; lead: string | null }>();
   #openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {
     const said = lang();
     const was = this.#openedStates.get(row);
     if (was !== undefined && was.lang === said) return was;
-    const agents = arr(row.agents);
-    // (presentRow and the presenting of each agent copy what they change: the record is read, never written;
-    // unread is cleared on this shallow copy so led sub-chats read by their leader still report settled done state)
-    const shown = decisions.presentRow({ ...row, unread: false, agents: agents.map((a: J) => present.session(a)) });
-    const line = present.rowStateLine(shown);
-    const made = { lang: said, mark: present.rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
+    const made = { lang: said, ...present.openedState(row) };
     this.#openedStates.set(row, made);
     return made;
   }

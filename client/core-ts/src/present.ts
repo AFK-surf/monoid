@@ -547,6 +547,19 @@ export function rowStateLine(row: J, cards = true, alreadySaid: (agent: J) => bo
   return [text, about, text, doneLead];
 }
 
+/// Where a chat a chat's agent opened stands (views.ts #openedState): its mark and its row's second line and what leads
+/// it, made of its record alone. Its agents as the line reads them (agentStated, not all session() says of them), and its
+/// card, if any, as a list shows it (decisions.presentRow, which copies it); with neither card nor decision, presentRow
+/// would change nothing the line reads (only `state`, `tone`), so the row is read as it is. `unread` cleared: a led chat
+/// read by its leader still says it is done.
+export function openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {
+  const agents: J[] = arr(get(row, "agents")) ?? [];
+  const stated = { ...row, unread: false, agents: agents.map((a: J) => agentStated(a)) };
+  const shown = get(row, "card") !== undefined || get(row, "decision") !== undefined ? decisions.presentRow(stated) : stated;
+  const line = rowStateLine(shown);
+  return { mark: rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
+}
+
 /// What a chat's agent needs a person for, let go by the viewer (忽略): its words, kept at the end of its messages,
 /// said as let go. Null where nothing it needs is let go.
 export function rowLetGoNeed(row: J): string | null {

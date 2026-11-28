@@ -7,18 +7,23 @@
 // 5. `AsyncUpkeepRunner` (non-blocking `station_sys::proc_spawn` `git gc --auto` pack upkeep
 //    with disjoint `9 << 32` `event_id` base and 30-minute per-repo deadline — NEVER blocks loop!)
 
+import "base64"
 import "base_codec"
 import "form"
 import "host_shim"
 import "lock"
 import "nodepath"
 import "station_api"
+import "station_cli"
 import "station_cloud"
 import "station_devices"
+import "station_drivers"
 import "station_jobs"
 import "station_mesh"
 import "station_ops"
+import "station_replica"
 import "station_sys"
+import "station_tools"
 import "station_vault"
 import "station_whole"
 
@@ -651,7 +656,9 @@ fn is_unix_launcher_pid(pid : Int) -> Bool {
   }
 }
 
-fn login_view_to_json(item : station_devices::LoginView, read_only : Bool) -> base_codec::Json {
+fn login_view_to_json(raw_item : station_devices::LoginView, read_only : Bool) -> base_codec::Json {
+  // 1:1 with Node: read-only members MUST receive `login_limited` projection (strips url, callback, code, code_url, error, browser, screen).
+  let item = if read_only { station_devices::login_limited(raw_item) } else { raw_item }
   let cmd_arr : Array[base_codec::Json] = []
   for ci in 0..<item.command.length() {
     cmd_arr.push(base_codec::json_str(item.command[ci]))
@@ -818,6 +825,187 @@ pub fn wire_whole_core_runtime_hooks(
         }
         Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
       }
+    }
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+
+  // Wire `overview_for` so `accounts.profiles.createKeyed` / `createMachine` return `{ id, overview }` (1:1 with Node).
+  core.api.hooks.overview_for = Some(core.api.admin.host.overview)
+  // Populate installed Station version from `<app>/BUILD` (`station/src/updates/versions.ts:66-69`).
+  match ctx.args.app {
+    Some(app_dir) => {
+      core.updates.station.version = station_ops::station_version(ctx.ops_fs, app_dir, sep=ctx.sep)
+    }
+    None => ()
+  }
+  // Wire real `<app>/OVERRIDE` detection so `updates` helpers match Node override protection.
+  core.api.hooks.is_update_override_present = Some(fn() -> Bool {
+    match ctx.args.app {
+      Some(app_dir) => station_cli::read_override(ctx.ops_fs, app_dir, sep=ctx.sep).is_some()
+      None => false
+    }
+  })
+
+  // Wave 17D-2 R7: Deferred Wave 17E ops (`updates.install`, `updates.wait`, `workspaces.join`,
+  // `mcpServers.reload*`, `accounts.profiles.{login*,pace,quota,resetQuota}`, `copies.restore`,
+  // `xshare.hosts.put`) remain honest 501 (hooks stay `None`).
+  // Network-bound live ops (`updates.check`, `copies.s3.test`, keyed profile check) are intercepted
+  // non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`.
+  core.api.hooks.on_mcp_reload = None
+  core.api.hooks.on_s3_test = None
+  core.api.hooks.on_workspace_join = None
+  core.api.hooks.on_updates_op = None
+
+  // Wave 17D-2 R6: Live `accounts.profiles.createMachine` executor:
+  // parses real credential JSON (rejects empty/corrupt files), distinguishes `notSignedIn` vs `keychain`,
+  // extracts real email (including Codex JWT id_token), and symlinks Codex `auth.json`.
+  // (`accounts.profiles.login*` remain honest 501 until Wave 17E lands the dedicated `LoginJob` runtime.)
+  core.api.hooks.on_profile_live_op = Some(fn(
+    op : String,
+    _params : Array[String],
+    body : base_codec::Json,
+    _viewer : station_api::Viewer,
+    _lang : station_api::Lang,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "accounts.profiles.createMachine" {
+      let rt = match base_codec::json_get(body, "runtime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let home = match station_sys::env_get("HOME") {
+        Some(h) if h.length() > 0 => h
+        _ => match station_sys::env_get("USERPROFILE") { Some(h) => h, None => "" }
+      }
+      if home.length() == 0 {
+        return Err(station_api::ApiError::new(400, "cannot read machine home directory"))
+      }
+      if rt == "claude" {
+        let cred_path = nodepath::join(ctx.sep, [home, ".claude", ".credentials.json"])
+        let raw_txt = match ctx.ops_fs.read_text(cred_path) {
+          Ok(t) => t.trim()
+          Err(_) => return Err(station_api::ApiError::new(400, "Claude Code is not signed in on this machine or credentials are stored only in the keychain"))
+        }
+        if raw_txt.length() == 0 {
+          return Err(station_api::ApiError::new(400, "Claude Code credentials file is empty (keychain-only or signed out)"))
+        }
+        let cred_j = match base_codec::json_parse(raw_txt) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => return Err(station_api::ApiError::new(400, "Claude Code credentials file is unreadable"))
+        }
+        let has_oauth = match base_codec::json_get(cred_j, "claudeAiOauth") {
+          Some(oa) => match base_codec::json_get(oa, "accessToken") {
+            Some(base_codec::Json::Str(t)) if t.trim().length() > 0 => true
+            _ => false
+          }
+          None => false
+        }
+        if !has_oauth {
+          return Err(station_api::ApiError::new(400, "Claude Code credentials are missing OAuth access token"))
+        }
+        let mut email = ""
+        let claude_json = nodepath::join(ctx.sep, [home, ".claude.json"])
+        match ctx.ops_fs.read_text(claude_json) {
+          Ok(ct) => match base_codec::json_parse(ct) {
+            base_codec::JsonParseResult::Ok(cj) => match base_codec::json_get(cj, "oauthAccount") {
+              Some(oa) => match base_codec::json_get(oa, "emailAddress") {
+                Some(base_codec::Json::Str(em)) if em.trim().length() > 0 => email = em.trim()
+                _ => ()
+              }
+              None => ()
+            }
+            _ => ()
+          }
+          Err(_) => ()
+        }
+        return Ok(base_codec::json_obj([
+          ("loggedIn", base_codec::json_bool(true)),
+          ("usable", base_codec::json_bool(true)),
+          ("email", base_codec::json_str(email)),
+          ("name", base_codec::json_str(if email.length() > 0 { email } else { "Claude Code" })),
+        ]))
+      }
+      if rt == "codex" {
+        let codex_home = match station_sys::env_get("CODEX_HOME") {
+          Some(ch) if ch.trim().length() > 0 => ch.trim()
+          _ => nodepath::join(ctx.sep, [home, ".codex"])
+        }
+        let auth_path = nodepath::join(ctx.sep, [codex_home, "auth.json"])
+        let raw_txt = match ctx.ops_fs.read_text(auth_path) {
+          Ok(t) => t.trim()
+          Err(_) => return Err(station_api::ApiError::new(400, "Codex is not signed in on this machine or auth.json is missing"))
+        }
+        if raw_txt.length() == 0 {
+          return Err(station_api::ApiError::new(400, "Codex auth.json is empty"))
+        }
+        let auth_j = match base_codec::json_parse(raw_txt) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => return Err(station_api::ApiError::new(400, "Codex auth.json is unreadable"))
+        }
+        let id_tok = match base_codec::json_get(auth_j, "tokens") {
+          Some(toks) => match base_codec::json_get(toks, "id_token") {
+            Some(base_codec::Json::Str(s)) if s.trim().length() > 0 => s.trim()
+            _ => ""
+          }
+          None => ""
+        }
+        let api_key = match base_codec::json_get(auth_j, "OPENAI_API_KEY") {
+          Some(base_codec::Json::Str(s)) if s.trim().length() > 0 => s.trim()
+          _ => ""
+        }
+        if id_tok.length() == 0 && api_key.length() == 0 {
+          return Err(station_api::ApiError::new(400, "Codex auth.json has no usable credentials"))
+        }
+        // Extract real email from Codex JWT `id_token` payload (1:1 with `station/src/accounts/machine.ts:195-235`)
+        let mut email = ""
+        if id_tok.length() > 0 {
+          let parts = id_tok.split(".")
+          if parts.length() >= 2 {
+            let mut b64 = parts[1].replace("-", "+").replace("_", "/")
+            let rem = b64.length() % 4
+            if rem == 2 {
+              b64 = b64 + "=="
+            } else if rem == 3 {
+              b64 = b64 + "="
+            }
+            match base64::decode(b64) {
+              Ok(payload_b) => match base_codec::json_parse(payload_b.to_string()) {
+                base_codec::JsonParseResult::Ok(claims) => {
+                  match base_codec::json_get(claims, "email") {
+                    Some(base_codec::Json::Str(em)) if em.trim().length() > 0 => email = em.trim()
+                    _ => match base_codec::json_get(claims, "https://api.openai.com/profile") {
+                      Some(prof) => match base_codec::json_get(prof, "email") {
+                        Some(base_codec::Json::Str(em)) if em.trim().length() > 0 => email = em.trim()
+                        _ => ()
+                      }
+                      None => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+              Err(_) => ()
+            }
+          }
+        }
+        // `linkCodexAuthSoon`: link `<data>/homes/machine-codex/auth.json` to machine's `auth.json` (NEVER copy,
+        // because Codex rotates single-use refresh tokens!). Propagate any mkdir/symlink error so config is not written.
+        let target_home = nodepath::join(ctx.sep, [ctx.data, "homes", "machine-codex"])
+        match (ctx.ops_fs.mkdir_p)(target_home) {
+          Ok(_) => ()
+          Err(e) => return Err(station_api::ApiError::new(500, "failed to create Codex profile home: " + station_ops::fs_err_msg(e)))
+        }
+        let target_auth = nodepath::join(ctx.sep, [target_home, "auth.json"])
+        if ctx.ops_fs.exists(target_auth) {
+          let _ = (core.agents.jobs.fs.remove_file)(target_auth)
+        }
+        if !station_sys::symlink(auth_path, target_auth, is_dir=false) {
+          return Err(station_api::ApiError::new(500, "failed to link Codex machine auth.json"))
+        }
+        return Ok(base_codec::json_obj([
+          ("loggedIn", base_codec::json_bool(true)),
+          ("usable", base_codec::json_bool(true)),
+          ("email", base_codec::json_str(email)),
+          ("name", base_codec::json_str(if email.length() > 0 { email } else { "Codex" })),
+        ]))
+      }
+      return Err(station_api::ApiError::new(400, "unsupported machine login runtime " + rt))
     }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
   })

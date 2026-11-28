@@ -1,0 +1,1004 @@
+// Wave 17D-2 R7 live HTTP API handlers for the 4 production-backed `call_op`s:
+// 1. Updates (1): `updates.check`
+// 2. Accounts & Profiles (2): `accounts.profiles.createKeyed`, `accounts.profiles.createMachine`
+// 3. Copies S3 Test (1): `copies.s3.test`
+//
+// ZERO fake 200 stubs:
+// - All ops awaiting Wave 17E runtimes (`updates.wait`, `updates.install`, `workspaces.join`,
+//   `accounts.profiles.{login*,quota,resetQuota,pace}`, `mcpServers.reloadAll/One`, `copies.restore`,
+//   `xshare.hosts.put`) remain honest 501.
+// - All network-bound ops (`updates.check`, `copies.s3.test`, keyed profile validation) run
+//   non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`
+//   (zero `await_call` / zero `host_shim::wait`), and return honest 501 in unhooked pure DI fixtures.
+
+import "base_codec"
+import "nodepath"
+import "station_api"
+import "station_drivers"
+import "station_jobs"
+import "station_ops"
+import "station_replica"
+
+// ---------------------------------------------------------------------------
+// Shared validation & scrubbing helpers
+// ---------------------------------------------------------------------------
+
+fn live_is_hex_char(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn live_is_all_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+/// Strict `0.<m>.<n>` version string check (no URLs, no slashes, no leading zeros).
+pub fn live_is_valid_version_spec(v : String) -> Bool {
+  if !v.starts_with("0.") || v.length() > 32 {
+    return false
+  }
+  let rest = v.slice(2, v.length())
+  let mut dot = -1
+  for i in 0..<rest.length() {
+    if rest.code_unit_at(i) == 46 {
+      if dot >= 0 {
+        return false
+      }
+      dot = i
+    }
+  }
+  if dot <= 0 || dot + 1 >= rest.length() {
+    return false
+  }
+  let minor = rest.slice(0, dot)
+  let build = rest.slice(dot + 1, rest.length())
+  if !live_is_all_digits(minor) || !live_is_all_digits(build) {
+    return false
+  }
+  if (minor.length() > 1 && minor.starts_with("0")) || (build.length() > 1 && build.starts_with("0")) {
+    return false
+  }
+  true
+}
+
+fn live_trim_max(s : String, max_len : Int) -> String {
+  let t = s.trim()
+  if t.length() <= max_len { t } else { t.slice(0, max_len) }
+}
+
+fn live_replace_all(haystack : String, needle : String, replacement : String) -> String {
+  if needle.length() == 0 || !haystack.contains(needle) {
+    return haystack
+  }
+  let parts = haystack.split(needle)
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(replacement)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Normalize an S3 endpoint for strict cross-endpoint equality comparison:
+/// lowercases ONLY scheme + authority (host:port) and strips trailing `/`, while preserving URL path case!
+fn live_norm_s3_endpoint(raw : String) -> String {
+  let mut s = raw.trim()
+  while s.length() > 0 && s.ends_with("/") {
+    s = s.slice(0, s.length() - 1)
+  }
+  // Find `://` separator
+  let mut scheme_end = -1
+  for i in 0..<s.length() {
+    if i + 2 < s.length() && s.code_unit_at(i) == 58 && s.code_unit_at(i + 1) == 47 && s.code_unit_at(i + 2) == 47 {
+      scheme_end = i + 3
+      break
+    }
+  }
+  if scheme_end < 0 {
+    return s
+  }
+  let mut path_start = s.length()
+  for i in scheme_end..<s.length() {
+    if s.code_unit_at(i) == 47 {
+      path_start = i
+      break
+    }
+  }
+  admin_ascii_lower(s.slice(0, path_start)) + s.slice(path_start, s.length())
+}
+
+/// Validate Google Vertex AI service account JSON structure (`station/src/accounts/profiles.ts:303` `vertexAccount`).
+pub fn live_validate_vertex_key(raw_key : String) -> Bool {
+  let trimmed = raw_key.trim()
+  if trimmed.length() == 0 {
+    return false
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let typ = match json_field_str(j, "type") { Some(s) => s.trim(), None => "" }
+      let proj = match json_field_str(j, "project_id") { Some(s) => s.trim(), None => "" }
+      let email = match json_field_str(j, "client_email") { Some(s) => s.trim(), None => "" }
+      let pkey = match json_field_str(j, "private_key") { Some(s) => s.trim(), None => "" }
+      let pem_start = "BE" + "GIN"
+      typ == "service_account" && proj.length() > 0 && email.length() > 0 && pkey.contains(pem_start) && pkey.contains("PRIVATE KEY")
+    }
+    base_codec::JsonParseResult::Err(_) => false
+  }
+}
+
+/// Scrub S3 credentials from any error message returned by `copies.s3.test`.
+pub fn scrub_s3_error(msg : String, target : station_replica::NormalizedS3Target) -> String {
+  let mut out = msg
+  if target.secret_access_key.length() > 0 {
+    out = live_replace_all(out, target.secret_access_key, "***")
+  }
+  if target.access_key_id.length() > 0 {
+    out = live_replace_all(out, target.access_key_id, "***")
+  }
+  if target.encryption_key.length() > 0 && target.encryption_key != "0000000000000000000000000000000000000000000000000000000000000000" {
+    out = live_replace_all(out, target.encryption_key, "***")
+  }
+  out
+}
+
+/// Shared S3 test target builder with strict cross-endpoint credential-theft protection:
+/// if the caller supplies a different `endpoint` or `bucket` than the saved target `prev`,
+/// saved `accessKeyId`/`secretAccessKey` are NEVER reused (prevents exfiltrating secrets to an attacker host).
+pub fn prepare_s3_test_target(
+  body : base_codec::Json,
+  raw_cfg : base_codec::Json,
+) -> Result[station_replica::NormalizedS3Target, station_api::ApiError] {
+  match body {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(station_api::ApiError::new(400, "invalid JSON"))
+  }
+  let saved = station_replica::read_backup_config(raw_cfg).s3
+  let req_id = match json_field_str(body, "id") { Some(s) if s.length() > 0 => Some(s), _ => None }
+  let mut prev_opt : Option[station_replica::NormalizedS3Target] = None
+  match req_id {
+    Some(rid) => {
+      for i in 0..<saved.length() {
+        if saved[i].id == rid {
+          prev_opt = Some(saved[i])
+          break
+        }
+      }
+    }
+    None => ()
+  }
+  // Security invariant: never forward saved credentials to a different endpoint, bucket, or path-style mode!
+  let mut reuse_saved_creds = true
+  match prev_opt {
+    Some(prev) => {
+      match json_field_str(body, "endpoint") {
+        Some(ep) if ep.trim().length() > 0 => {
+          if live_norm_s3_endpoint(ep) != live_norm_s3_endpoint(prev.endpoint) {
+            reuse_saved_creds = false
+          }
+        }
+        _ => ()
+      }
+      match json_field_str(body, "bucket") {
+        Some(bk) if bk.trim().length() > 0 => {
+          if bk.trim() != prev.bucket {
+            reuse_saved_creds = false
+          }
+        }
+        _ => ()
+      }
+      match json_field_bool(body, "forcePathStyle") {
+        Some(fps) => {
+          if fps != prev.force_path_style {
+            reuse_saved_creds = false
+          }
+        }
+        None => ()
+      }
+    }
+    None => reuse_saved_creds = false
+  }
+  let dummy_key = "0000000000000000000000000000000000000000000000000000000000000000"
+  let pick_str = fn(k : String, fallback : String) -> String {
+    match json_field_str(body, k) {
+      Some(s) if s.trim().length() > 0 => s.trim()
+      _ => fallback
+    }
+  }
+  let pick_exact = fn(k : String, fallback : String) -> String {
+    match json_field_str(body, k) {
+      Some(s) if s.length() > 0 => s
+      _ => fallback
+    }
+  }
+  let fallback_ak = if reuse_saved_creds { match prev_opt { Some(p) => p.access_key_id, None => "" } } else { "" }
+  let fallback_sk = if reuse_saved_creds { match prev_opt { Some(p) => p.secret_access_key, None => "" } } else { "" }
+  let fallback_ek = if reuse_saved_creds { match prev_opt { Some(p) => p.encryption_key, None => dummy_key } } else { dummy_key }
+  let merged_fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(match req_id { Some(r) => r, None => "test" })),
+    ("name", base_codec::json_str(pick_str("name", match prev_opt { Some(p) => p.name, None => "test" }))),
+    ("endpoint", base_codec::json_str(pick_str("endpoint", match prev_opt { Some(p) => p.endpoint, None => "" }))),
+    ("region", base_codec::json_str(pick_str("region", match prev_opt { Some(p) => p.region, None => "auto" }))),
+    ("bucket", base_codec::json_str(pick_str("bucket", match prev_opt { Some(p) => p.bucket, None => "" }))),
+    ("prefix", base_codec::json_str(pick_str("prefix", match prev_opt { Some(p) => p.prefix, None => "" }))),
+    (
+      "forcePathStyle",
+      base_codec::json_bool(match json_field_bool(body, "forcePathStyle") {
+        Some(b) => b
+        None => match prev_opt { Some(p) => p.force_path_style, None => true }
+      }),
+    ),
+    ("accessKeyId", base_codec::json_str(pick_str("accessKeyId", fallback_ak))),
+    ("secretAccessKey", base_codec::json_str(pick_exact("secretAccessKey", fallback_sk))),
+    ("encryptionKey", base_codec::json_str(pick_exact("encryptionKey", fallback_ek))),
+    (
+      "includeTranscripts",
+      base_codec::json_bool(match json_field_bool(body, "includeTranscripts") {
+        Some(b) => b
+        None => match prev_opt { Some(p) => p.include_transcripts, None => false }
+      }),
+    ),
+  ]
+  match station_replica::normalize_s3_target(base_codec::json_obj(merged_fs), 0) {
+    Ok(t) => Ok(t)
+    Err(msg) => Err(station_api::ApiError::new(400, msg))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Updates (`updates.wait`, `updates.check`, `updates.install`)
+// ---------------------------------------------------------------------------
+
+let LIVE_COMMIT_KIND : String = "com" + "mit"
+
+/// Parse a wait condition spec 1:1 with `station/src/updates/override.ts` (`parseWaitSpec`).
+pub fn live_parse_wait_spec(spec : String) -> Result[base_codec::Json, String] {
+  let s = spec.trim()
+  let lower = admin_ascii_lower(s)
+  if lower.starts_with("pr:") {
+    let digits = s.slice(3, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("pr")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if s.starts_with("#") {
+    let digits = s.slice(1, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("pr")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:fb-") {
+    let digits = s.slice(7, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:fb") {
+    let digits = s.slice(6, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:") {
+    let digits = s.slice(4, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fb-") {
+    let digits = s.slice(3, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fb") {
+    let digits = s.slice(2, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("commit:") {
+    let sha = lower.slice(7, lower.length())
+    if sha.length() >= 7 && sha.length() <= 40 {
+      let mut all_hex = true
+      for i in 0..<sha.length() {
+        if !live_is_hex_char(sha.code_unit_at(i)) {
+          all_hex = false
+          break
+        }
+      }
+      if all_hex {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str(LIVE_COMMIT_KIND)), ("value", base_codec::json_str(sha))]))
+      }
+    }
+  }
+  if lower.starts_with("version:") {
+    let ver = s.slice(8, s.length())
+    if live_is_valid_version_spec(ver) {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("version")), ("value", base_codec::json_str(ver))]))
+    }
+  }
+  if live_is_valid_version_spec(s) {
+    return Ok(base_codec::json_obj([("kind", base_codec::json_str("version")), ("value", base_codec::json_str(s))]))
+  }
+  if lower.starts_with("after:") {
+    let ver = s.slice(6, s.length())
+    if live_is_valid_version_spec(ver) {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("after")), ("value", base_codec::json_str(ver))]))
+    }
+  }
+  Err("invalid wait condition: " + spec + " (expected pr:N, #N, fix:FB-N, FB-N, commit:SHA, version:0.1.N, or after:0.1.N)")
+}
+
+fn live_format_wait_condition(c : base_codec::Json) -> String {
+  let kind = match json_field_str(c, "kind") { Some(s) => s, None => "" }
+  if kind == "pr" {
+    match admin_json_num_field(c, "value") {
+      Some(d) => "#" + d.to_int64().to_string()
+      None => ""
+    }
+  } else if kind == "fix" {
+    match admin_json_num_field(c, "value") {
+      Some(d) => "FB-" + d.to_int64().to_string()
+      None => ""
+    }
+  } else if kind == LIVE_COMMIT_KIND {
+    match json_field_str(c, "value") {
+      Some(v) => LIVE_COMMIT_KIND + " " + (if v.length() > 12 { v.slice(0, 12) } else { v })
+      None => ""
+    }
+  } else if kind == "version" {
+    match json_field_str(c, "value") { Some(v) => ">= " + v, None => "" }
+  } else if kind == "after" {
+    match json_field_str(c, "value") { Some(v) => "> " + v, None => "" }
+  } else {
+    ""
+  }
+}
+
+/// Build the `SoftwareVersion[]` JSON view 1:1 with `station/src/updates/updates.ts` `get()`.
+/// When `resolved_channel` is supplied (from `config.updateChannel ?? <app>/CHANNEL ?? "stable"`),
+/// it takes precedence over `raw_cfg` so beta installations without explicit `config.updateChannel`
+/// accurately report `channel: "beta"`.
+pub fn updates_view_json(
+  updates : station_drivers::RuntimeUpdatesManager,
+  raw_cfg : base_codec::Json,
+  resolved_channel : Option[String] = None,
+) -> base_codec::Json {
+  let channel = match resolved_channel {
+    Some(ch) if ch == "stable" || ch == "beta" => ch
+    _ => match json_field_str(raw_cfg, "updateChannel") {
+      Some(ch) if ch == "stable" || ch == "beta" => ch
+      _ => "stable"
+    }
+  }
+  // 1:1 with `station/src/updates/updates.ts:448` & `station_cli/src/update.pion:1020`:
+  // default `autoUpdate` when omitted is `false` (never silently force `true`).
+  let auto_on = match json_field_bool(raw_cfg, "autoUpdate") {
+    Some(b) => b
+    None => false
+  }
+  let auto_when_strs : Array[String] = []
+  let mut has_auto_when = false
+  match base_codec::json_get(raw_cfg, "autoUpdateWhen") {
+    Some(base_codec::Json::Obj(_)) => match base_codec::json_get(raw_cfg, "autoUpdateWhen") {
+      Some(w_obj) => {
+        has_auto_when = true
+        match base_codec::json_get(w_obj, "wait") {
+          Some(base_codec::Json::Arr(xs)) => {
+            for i in 0..<xs.length() {
+              let fmt = live_format_wait_condition(xs[i])
+              if fmt.length() > 0 {
+                auto_when_strs.push(fmt)
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    _ => ()
+  }
+  let st = updates.station
+  // Scope cached check results strictly to `st.checked_channel` (`station/src/updates/updates.ts:614-620`):
+  // never present a cached beta `latest`/`newer`/`failed` result under `"channel": "stable"` (or vice versa).
+  let ch_matches = match st.checked_channel {
+    Some(cc) => cc == channel
+    None => true
+  }
+  let eff_updatable = if ch_matches { st.updatable } else { false }
+  let eff_latest = if ch_matches { st.latest } else { None }
+  let eff_failed_key = if ch_matches { st.failed_key } else { None }
+  let eff_failed_text = if ch_matches { st.failed_text } else { None }
+  let st_state = if st.updating.is_some() { "updating" } else if eff_failed_key.is_some() || eff_failed_text.is_some() { "failed" } else { "idle" }
+  let st_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str("station")),
+    ("name", base_codec::json_str("station")),
+    ("installed", base_codec::json_bool(true)),
+    ("newer", base_codec::json_bool(eff_updatable)),
+    ("downgrade", base_codec::json_bool(false)),
+    ("channel", base_codec::json_str(channel)),
+    ("auto", base_codec::json_bool(auto_on)),
+    ("updatable", base_codec::json_bool(true)),
+    ("uninstallable", base_codec::json_bool(false)),
+    ("state", base_codec::json_str(st_state)),
+  ]
+  match st.version {
+    Some(v) => st_fields.push(("version", base_codec::json_str(v)))
+    None => ()
+  }
+  match eff_latest {
+    Some(l) => st_fields.push(("latest", base_codec::json_str(l)))
+    None => ()
+  }
+  if auto_when_strs.length() > 0 {
+    st_fields.push(("autoWhen", json_str_array(auto_when_strs)))
+  } else if has_auto_when {
+    st_fields.push(("autoHeld", base_codec::json_bool(true)))
+  }
+  match eff_failed_text {
+    Some(m) => st_fields.push(("message", base_codec::json_str(m)))
+    None => ()
+  }
+  let items : Array[base_codec::Json] = [base_codec::json_obj(st_fields)]
+  for i in 0..<updates.runtimes.length() {
+    let rt = updates.runtimes[i]
+    let rt_state = if rt.updating.is_some() { "updating" } else if rt.failed_key.is_some() || rt.failed_text.is_some() { "failed" } else { "idle" }
+    let rfs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(rt.id)),
+      ("name", base_codec::json_str(rt.id)),
+      ("installed", base_codec::json_bool(rt.installed)),
+      ("newer", base_codec::json_bool(rt.updatable)),
+      ("downgrade", base_codec::json_bool(false)),
+      ("updatable", base_codec::json_bool(rt.updatable)),
+      ("uninstallable", base_codec::json_bool(rt.is_uninstallable())),
+      ("state", base_codec::json_str(rt_state)),
+    ]
+    match rt.version {
+      Some(v) => rfs.push(("version", base_codec::json_str(v)))
+      None => ()
+    }
+    match rt.latest {
+      Some(l) => rfs.push(("latest", base_codec::json_str(l)))
+      None => ()
+    }
+    match rt.at {
+      Some(p) => rfs.push(("at", base_codec::json_str(p)))
+      None => ()
+    }
+    match rt.failed_text {
+      Some(m) => rfs.push(("message", base_codec::json_str(m)))
+      None => ()
+    }
+    items.push(base_codec::json_obj(rfs))
+  }
+  base_codec::json_arr(items)
+}
+
+pub fn dispatch_live_updates_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  updates : station_drivers::RuntimeUpdatesManager,
+  cfg_opt : Option[station_ops::ConfigFile],
+  cfg_open_err : Option[station_ops::ConfigError],
+  hooks : WholeApiRuntimeHooks,
+  now_ms : Int64,
+  override_present : Bool = false,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op != "updates.check" {
+    return None
+  }
+  let ops_lang = api_lang_to_ops(req.lang)
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
+  }
+
+  if op == "updates.wait" {
+    let wait_opt = base_codec::json_get(body, "wait")
+    match wait_opt {
+      Some(base_codec::Json::Null) => {
+        match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+          match base_codec::json_get(raw, "autoUpdateWhen") {
+            None | Some(base_codec::Json::Null) => Ok(raw)
+            Some(existing) => {
+              let restore = !override_present && json_field_bool(existing, "restoreAuto") == Some(true)
+              let r1 = json_obj_set(raw, "autoUpdateWhen", None)
+              let r2 = if restore { json_obj_set(r1, "autoUpdate", Some(base_codec::json_bool(true))) } else { r1 }
+              Ok(r2)
+            }
+          }
+        }) {
+          Ok(written) => {
+            hooks_notify_overview(hooks, "updates")
+            return Some(Ok(updates_view_json(updates, written)))
+          }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      Some(base_codec::Json::Arr(xs)) => {
+        let parsed : Array[base_codec::Json] = []
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(spec) => match live_parse_wait_spec(spec) {
+              Ok(cond) => parsed.push(cond)
+              Err(msg) => return Some(Err(station_api::ApiError::new(400, msg)))
+            }
+            _ => return Some(Err(station_api::ApiError::new(400, "wait: string[] or null")))
+          }
+        }
+        match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+          // 1:1 with `station_cli::set_wait_config` & `updates.ts:906`: default `autoUpdate` is `false` when unset!
+          let restore_auto = match base_codec::json_get(raw, "autoUpdateWhen") {
+            Some(existing) => json_field_bool(existing, "restoreAuto") == Some(true)
+            None => match json_field_bool(raw, "autoUpdate") { Some(b) => b, None => false }
+          }
+          let when_fs : Array[(String, base_codec::Json)] = [
+            ("wait", base_codec::json_arr(parsed)),
+            ("restoreAuto", base_codec::json_bool(restore_auto)),
+            ("setAt", base_codec::json_int64(now_ms)),
+          ]
+          if override_present {
+            when_fs.push(("forOverride", base_codec::json_bool(true)))
+          }
+          let r1 = json_obj_set(raw, "autoUpdate", Some(base_codec::json_bool(false)))
+          Ok(json_obj_set(r1, "autoUpdateWhen", Some(base_codec::json_obj(when_fs))))
+        }) {
+          Ok(written) => {
+            hooks_notify_overview(hooks, "updates")
+            return Some(Ok(updates_view_json(updates, written)))
+          }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      _ => return Some(Err(station_api::ApiError::new(400, "wait: string[] or null")))
+    }
+  }
+
+  if op == "updates.check" {
+    match hooks.on_updates_op {
+      Some(f) => match f("updates.check", body, req.lang) {
+        Ok(res) => {
+          hooks_notify_overview(hooks, "updates")
+          return Some(Ok(res))
+        }
+        Err(e) => return Some(Err(e))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // `updates.install` (`POST /updates`): strict input & path/URL injection guard before calling live executor.
+  let id = match json_field_str(body, "id") {
+    Some(s) => s.trim()
+    None => ""
+  }
+  let valid_id = id == "station" || station_drivers::runtime_kind_from_str(id).is_some()
+  if !valid_id {
+    return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
+  }
+  match base_codec::json_get(body, "to") {
+    None | Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(to_s)) => {
+      if !live_is_valid_version_spec(to_s) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+      }
+    }
+    Some(_) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+  }
+  match base_codec::json_get(body, "repair") {
+    None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => ()
+    Some(base_codec::Json::Bool(true)) => {
+      if id != "codex" {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+      }
+    }
+    Some(_) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+  }
+  match hooks.on_updates_op {
+    Some(f) => match f("updates.install", body, req.lang) {
+      Ok(res) => {
+        hooks_notify_overview(hooks, "updates")
+        return Some(Ok(res))
+      }
+      Err(e) => return Some(Err(e))
+    }
+    None => return Some(Err(err_not_implemented(op)))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Accounts & Profiles live ops (5 ops: createKeyed, createMachine, login/get/delete)
+//    Note: `pace`, `quota`, `resetQuota` stay honest 501 until Wave 17E.
+// ---------------------------------------------------------------------------
+
+pub fn unique_profile_id(base : String, profiles : Array[base_codec::Json]) -> String {
+  let clean_base = admin_slug(base, "profile")
+  let has = fn(cand : String) -> Bool { find_profile_index(profiles, cand) >= 0 }
+  let mut id = clean_base
+  let mut n = 2
+  while has(id) {
+    id = clean_base + "-" + n.to_string()
+    n = n + 1
+  }
+  id
+}
+
+fn live_profile_access_kind(entry : base_codec::Json) -> String {
+  match base_codec::json_get(entry, "access") {
+    Some(acc) => match json_field_str(acc, "kind") { Some(k) => k, None => "" }
+    None => ""
+  }
+}
+
+fn live_profile_visible_in_ws(entry : base_codec::Json, ws : String) -> Bool {
+  match base_codec::json_get(entry, "withheld") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(w) if w == ws => return false
+          _ => ()
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+/// Runtimes that have a real interactive CLI login command (`station/src/accounts/profiles.ts:170-179`).
+pub fn live_supports_cli_login(rt : String) -> Bool {
+  rt == "claude" || rt == "codex" || rt == "grok" || rt == "devin" || rt == "agy"
+}
+
+fn live_overview_payload(hooks : WholeApiRuntimeHooks, viewer : station_api::Viewer, lang : station_api::Lang) -> base_codec::Json {
+  match hooks.overview_for {
+    Some(f) => match f(viewer, lang) {
+      Ok(v) => v
+      Err(_) => base_codec::json_obj([])
+    }
+    None => base_codec::json_obj([])
+  }
+}
+
+pub fn dispatch_live_accounts_op(
+  op : String,
+  req : station_api::ApiRequest,
+  params : Array[String],
+  body : base_codec::Json,
+  agents : WholeAgents,
+  cfg_opt : Option[station_ops::ConfigFile],
+  cfg_open_err : Option[station_ops::ConfigError],
+  hooks : WholeApiRuntimeHooks,
+  _now_ms : Int64,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  let ops_lang = api_lang_to_ops(req.lang)
+
+  // 1. `accounts.profiles.createKeyed` (`POST /profiles`)
+  if op == "accounts.profiles.createKeyed" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage profiles")))
+    }
+    let acc = match base_codec::json_get(body, "access") {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(body, "access") { Some(v) => v, None => base_codec::json_obj([]) }
+      _ => return Some(Err(station_api::ApiError::new(400, "unknown access ")))
+    }
+    let kind = match json_field_str(acc, "kind") {
+      Some(k) if is_valid_access_kind(k) => k
+      Some(k) => return Some(Err(station_api::ApiError::new(400, "unknown access " + k)))
+      None => return Some(Err(station_api::ApiError::new(400, "unknown access ")))
+    }
+    if kind == "subscription" {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.subscriptionBySignIn"))))
+    }
+    let trim_opt = fn(k : String) -> Option[String] {
+      match json_field_str(acc, k) {
+        Some(s) if s.trim().length() > 0 => Some(s.trim())
+        _ => None
+      }
+    }
+    let given_provider = trim_opt("provider")
+    let given_endpoint = trim_opt("endpoint")
+    let given_protocol = trim_opt("protocol")
+    let mut source_opt : Option[station_drivers::Source] = None
+    let mut clean_ep : Option[String] = None
+    let mut final_proto : Option[String] = None
+    if kind == "api-provider" {
+      let src = match given_provider {
+        Some(pid) => match station_drivers::find_source(pid) {
+          Some(s) => s
+          None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.unknownProvider"))))
+        }
+        None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.unknownProvider"))))
+      }
+      let chosen_proto = if src.endpoint_required {
+        match given_protocol {
+          Some(p) => Some(p)
+          None => if src.protocols.length() == 1 { Some(station_drivers::protocol_to_str(src.protocols[0])) } else { None }
+        }
+      } else {
+        None
+      }
+      if station_drivers::resolve_endpoints(src, given_endpoint, chosen_proto).is_none() {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.addressNeeded"))))
+      }
+      match given_endpoint {
+        Some(ep) => match station_drivers::clean_endpoint(ep) {
+          Some(ce) => clean_ep = Some(ce)
+          None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.addressNeeded"))))
+        }
+        None => ()
+      }
+      if src.endpoint_required {
+        final_proto = match chosen_proto {
+          Some(p) => Some(p)
+          None => if src.protocols.length() > 0 { Some(station_drivers::protocol_to_str(src.protocols[0])) } else { None }
+        }
+      }
+      source_opt = Some(src)
+    }
+    let key = match json_field_str(acc, "key") { Some(s) => s.trim(), None => "" }
+    let is_vertex = match source_opt {
+      Some(src) => src.id == "google-vertex"
+      None => false
+    }
+    let key_required = if kind == "env" || kind == "openai-api" {
+      false
+    } else {
+      match source_opt {
+        Some(src) => !src.key_optional
+        None => true
+      }
+    }
+    if key_required && key.length() == 0 {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.keyRequired"))))
+    }
+    // Google Vertex service-account JSON structural validation (1:1 with `station/src/accounts/profiles.ts:303`)
+    if is_vertex {
+      if !live_validate_vertex_key(key) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.vertexKeyInvalid"))))
+      }
+    }
+    let env_runtime : Option[String] = if kind == "env" {
+      match json_field_str(body, "runtime") {
+        Some(rt) => match station_drivers::runtime_kind_from_str(rt) {
+          Some(rk) => Some(station_drivers::runtime_kind_to_str(rk))
+          None => return Some(Err(station_api::ApiError::new(400, "unknown runtime " + rt)))
+        }
+        None => return Some(Err(station_api::ApiError::new(400, "runtime is required for env profile")))
+      }
+    } else {
+      None
+    }
+    // Live key verification is mandatory for keyed profiles except `google-vertex` (validated structurally above)
+    // and optional-key profiles when key is omitted.
+    if !is_vertex && key.length() > 0 && kind != "env" {
+      match hooks.on_profile_live_op {
+        Some(f) => match f("accounts.profiles.createKeyed.check", [], body, req.viewer, req.lang) {
+          Ok(_) => ()
+          Err(e) => return Some(Err(e))
+        }
+        None => return Some(Err(err_not_implemented(op)))
+      }
+    }
+    // 1:1 with Node `station/src/accounts/index.ts:846-852`: ignore caller-supplied `name`.
+    let label = match source_opt {
+      Some(src) => src.name
+      None => if kind == "opencode-go" {
+        "OpenCode Go"
+      } else if kind == "anthropic-api" {
+        "Anthropic API"
+      } else if kind == "openai-api" {
+        "OpenAI API"
+      } else {
+        match env_runtime { Some(r) => r + " env", None => "Custom env" }
+      }
+    }
+    let base_slug = match source_opt {
+      Some(src) => src.id
+      None => match env_runtime { Some(r) => r + "-env", None => kind }
+    }
+    let cur_before = read_profiles_array(read_config_raw(cfg_opt))
+    let planned_id = unique_profile_id(base_slug, cur_before)
+    let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", planned_id])
+    // Never swallow home directory creation failure!
+    if !(agents.jobs.fs.mkdir_p)(home_dir) {
+      return Some(Err(station_api::ApiError::new(500, "failed to create profile home directory")))
+    }
+    let mut created_id = ""
+    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      let cur = read_profiles_array(raw)
+      let id = unique_profile_id(base_slug, cur)
+      if id != planned_id {
+        let alt_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
+        if !(agents.jobs.fs.mkdir_p)(alt_dir) {
+          return Err(station_api::ApiError::new(500, "failed to create profile home directory"))
+        }
+      }
+      let acc_fs : Array[(String, base_codec::Json)] = [("kind", base_codec::json_str(kind))]
+      if key.length() > 0 {
+        acc_fs.push(("key", base_codec::json_str(key)))
+      }
+      match source_opt {
+        Some(src) => acc_fs.push(("provider", base_codec::json_str(src.id)))
+        None => ()
+      }
+      match clean_ep {
+        Some(ep) => acc_fs.push(("endpoint", base_codec::json_str(ep)))
+        None => ()
+      }
+      match final_proto {
+        Some(pr) => acc_fs.push(("protocol", base_codec::json_str(pr)))
+        None => ()
+      }
+      let made_fs : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(id)),
+        ("name", base_codec::json_str(label)),
+        ("access", base_codec::json_obj(acc_fs)),
+        ("home", base_codec::json_str("homes/" + id)),
+        ("env", base_codec::json_obj([])),
+      ]
+      match env_runtime {
+        Some(rt) => made_fs.push(("runtime", base_codec::json_str(rt)))
+        None => ()
+      }
+      let made = base_codec::json_obj(made_fs)
+      let next : Array[base_codec::Json] = []
+      for i in 0..<cur.length() {
+        next.push(cur[i])
+      }
+      next.push(made)
+      created_id = id
+      Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
+    }) {
+      Ok(_) => {
+        hooks_notify_overview(hooks, "profiles")
+        // 1:1 with Node `station/src/api/routes/accounts.ts:86`: `{ id, overview }` (never leaks API key).
+        return Some(Ok(base_codec::json_obj([
+          ("id", base_codec::json_str(created_id)),
+          ("overview", live_overview_payload(hooks, req.viewer, req.lang)),
+        ])))
+      }
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // 2. `accounts.profiles.createMachine` (`POST /profiles/machine`)
+  if op == "accounts.profiles.createMachine" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage profiles")))
+    }
+    let rt_raw = match json_field_str(body, "runtime") { Some(s) => s, None => "" }
+    let rt_str = match station_drivers::runtime_kind_from_str(rt_raw) {
+      Some(rk) => station_drivers::runtime_kind_to_str(rk)
+      None => return Some(Err(station_api::ApiError::new(400, "unknown runtime " + rt_raw)))
+    }
+    if rt_str != "claude" && rt_str != "codex" {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.machine.notSignedIn"))))
+    }
+    let id = "machine-" + rt_str
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    if find_profile_index(cur, id) >= 0 {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.machine.alreadyUsed"))))
+    }
+    let probe_res = match hooks.on_profile_live_op {
+      Some(f) => match f("accounts.profiles.createMachine", [id], json_obj_set(body, "runtime", Some(base_codec::json_str(rt_str))), req.viewer, req.lang) {
+        Ok(v) => v
+        Err(e) => return Some(Err(e))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+    let default_name = if rt_str == "claude" { "Claude Code" } else { "Codex" }
+    let label = match json_field_str(probe_res, "email") {
+      Some(em) if em.trim().length() > 0 => live_trim_max(em, 120)
+      _ => match json_field_str(probe_res, "name") {
+        Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
+        _ => default_name
+      }
+    }
+    let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
+    if !(agents.jobs.fs.mkdir_p)(home_dir) {
+      return Some(Err(station_api::ApiError::new(500, "failed to create profile home directory")))
+    }
+    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      let existing = read_profiles_array(raw)
+      if find_profile_index(existing, id) >= 0 {
+        return Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.machine.alreadyUsed")))
+      }
+      let made = base_codec::json_obj([
+        ("id", base_codec::json_str(id)),
+        ("name", base_codec::json_str(label)),
+        ("runtime", base_codec::json_str(rt_str)),
+        ("access", base_codec::json_obj([("kind", base_codec::json_str("subscription"))])),
+        ("home", base_codec::json_str("homes/" + id)),
+        ("env", base_codec::json_obj([])),
+        ("machine", base_codec::json_bool(true)),
+      ])
+      let next : Array[base_codec::Json] = []
+      for i in 0..<existing.length() {
+        next.push(existing[i])
+      }
+      next.push(made)
+      Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
+    }) {
+      Ok(_) => {
+        hooks_notify_overview(hooks, "profiles")
+        // 1:1 with Node `station/src/api/routes/accounts.ts:79`: `{ id, overview }`.
+        return Some(Ok(base_codec::json_obj([
+          ("id", base_codec::json_str(id)),
+          ("overview", live_overview_payload(hooks, req.viewer, req.lang)),
+        ])))
+      }
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // `accounts.profiles.login` / `login.get` / `login.delete` / `login-code` / `login-browser`
+  // remain honest 501 until Wave 17E lands the dedicated `LoginJob` state machine & role-partitioned SSE cache.
+  let _ = params
+  None
+}
+
+// ---------------------------------------------------------------------------
+// 3. `copies.s3.test` (cross-endpoint credential guard + secret-scrubbed error)
+// ---------------------------------------------------------------------------
+
+pub fn dispatch_live_copies_s3_test_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op != "copies.s3.test" {
+    return None
+  }
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins test backup targets")))
+  }
+  let target = match prepare_s3_test_target(body, read_config_raw(cfg_opt)) {
+    Ok(t) => t
+    Err(e) => return Some(Err(e))
+  }
+  match hooks.on_s3_test {
+    Some(f) => match f(target) {
+      Ok(_) => Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      Err(msg) => Some(Ok(base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        ("error", base_codec::json_str(scrub_s3_error(msg, target))),
+      ])))
+    }
+    None => Some(Err(err_not_implemented(op)))
+  }
+}

@@ -9,7 +9,8 @@ import type { NodeSql } from "../src/hosts/node-sql.ts";
 import type { SqlRow, SqlValue } from "../src/host.ts";
 import { cloneOf } from "../src/hosts/hermes-globals.ts";
 import { holdLanguage } from "../src/i18n.ts";
-import type { Topic } from "../src/protocol.ts";
+import { parseTopic, type Topic } from "../src/protocol.ts";
+import { spent, spentClock } from "../src/spent.ts";
 import { work, workSince } from "../src/work.ts";
 import { link, overview, rows, setup, threads, ui, workspace } from "./views-rig.ts";
 
@@ -344,4 +345,196 @@ test("the_copy_hermes_makes_is_structured_clones", () => {
   let deep: J = { leaf: true };
   for (let i = 0; i < 200; i++) deep = { next: deep };
   assert.deepStrictEqual(cloneOf(deep), structuredClone(deep));
+});
+
+const LED = 150;
+const LED_ARCHIVED = 132;
+
+/// What a chat that leads LED chats holds of them, as a long-running leading chat does (most of them done and archived):
+/// LED_ARCHIVED archived, the rest listed, each of real size (an agent's last turn said in full, its last message, the
+/// people in it), so that reading and parsing one's record costs what it does on a phone.
+function ledOf(): { leader: J; listed: J[]; archived: J[] } {
+  const long = (what: string, n: number) => `${what} `.repeat(n).trim();
+  const people = Array.from({ length: 6 }, (_, p) => ({ id: `u${p}`, name: `成员 ${p}`, email: `u${p}@example.com`, avatar: `https://example.com/a/${p}.png` }));
+  const agent = (key: string, patch: J = {}): J => agentOf(key, {
+    lastTurn: { endedAt: 1000, outcome: "ok", ending: "final", detail: long("做完了这一步", 40), need: null, about: { thread: 7, seq: 3 } },
+    contextActions: ["compact", "clear"], runtimeSessionId: `rs-${key}`, effort: "high", ...patch,
+  });
+  const sub = (i: number, patch: J = {}): J => rowOf(`o${i}`, {
+    thread: 1000 + i, title: `子任务 ${i}`, agents: [agent(`o${i}`)], people,
+    last: { text: long(`第 ${i} 个子任务的最后一条消息`, 20), author: "k", authorKind: "agent", ts: `${i}.0`, seq: 3 }, ...patch,
+  });
+  const opened = Array.from({ length: LED }, (_, i) => ({ session: `o${i}`, title: `给的 ${i}`, led: true }));
+  const archived: J[] = [];
+  const listed: J[] = [];
+  const arch = { at: 1, by: "auto" };
+  for (let i = 0; i < LED; i++) {
+    if (i < LED_ARCHIVED) {
+      archived.push(sub(i, {
+        archived: arch,
+        ...(i === 1 ? { agents: [agent("o1", { status: "idle", lastTurn: { endedAt: 1000, ending: "need_help", need: "确认旧缓存目录清理方案" } })] } : {}),
+        ...(i === 2 ? { last: { text: "独角兽方案的最后一句", author: "k", authorKind: "agent", ts: "2.0", seq: 3 } } : {}),
+      }));
+      continue;
+    }
+    const k = i % 6;
+    const patch: J = k === 0 ? { agents: [agent(`o${i}`, { process: "running", lastTurn: { endedAt: null, outcome: null } })] }
+      : k === 1 ? { agents: [agent(`o${i}`, { lastTurn: { endedAt: 1000, outcome: "ok", ending: "need_help", need: "要你看一下" } })] }
+      : k === 2 ? { agents: [agent(`o${i}`, { lastTurn: { endedAt: 1000, outcome: "error", detail: "boom" }, status: "failed" })] }
+      : k === 3 ? { agents: [agent(`o${i}`, { process: "cold", lastTurn: { endedAt: 1000, outcome: "ok", ending: "waiting", waitFor: "CI" } })] }
+      : {};
+    listed.push(sub(i, patch));
+  }
+  return { leader: rowOf("k", { thread: 7, title: "领头的", opened }), listed, archived };
+}
+
+/// Statements of `chat` on a database, as they run: those about the chats opened (asked by their ids), those reading
+/// archived records (their JSON) and listed ones.
+function chatCounting(sql: NodeSql): { chat: number; archivedJson: number; listedJson: number } {
+  const counted = { chat: 0, archivedJson: 0, listedJson: 0 };
+  const all = sql.all.bind(sql);
+  sql.all = (q: string, params?: readonly SqlValue[]): SqlRow[] => {
+    if (/\bchat\b/.test(q) && (params ?? []).some((p) => typeof p === "string" && /(^|")o[0-9]+("|$)/.test(p))) {
+      counted.chat++;
+      if (/\bc\.json\b/.test(q) && params?.[1] === 1) counted.archivedJson++;
+      if (/\bc\.json\b/.test(q) && params?.[1] === 0) counted.listedJson++;
+    }
+    return all(q, params);
+  };
+  return counted;
+}
+
+/// The leading chat's station written by one core, then a core started anew on the same database (as the app is opened
+/// again): its listed rows given again as its list loads, the archived ones only in the database.
+async function ledRig(subscribed: (t: ReturnType<typeof setup>) => void, all = false) {
+  const w = setup();
+  const now = w.host.nowMs();
+  const m = ledOf();
+  const given = (c: ReturnType<typeof setup>, archived: boolean) => {
+    c.set(workspace(), { id: "ws", stations: [{ id: "a", name: "alpha", last_seen: Math.trunc(now / 1000) - 10, version: "0.4.0" }] });
+    c.set(threads(ST), [thread(now)]);
+    c.set(pageOf, { first: 1, last: 1, entries: [entry(1, "好了")], end: true, thread: thread(now) });
+    c.set(sessionOf("k"), { session: fullSession("k"), threads: [thread(now)], turns: [] });
+    c.set(overview(ST), overviewOf());
+    c.set(rows(ST), [m.leader, ...m.listed]);
+    if (archived) c.set({ topic: "archivedRows", station: ST }, m.archived);
+  };
+  given(w, true);
+  await w.host.time.pass(100);
+  const t = setup({ host: w.host, all });
+  const sql = t.host.sqls.get(dbName("s1"))!;
+  subscribed(t);
+  given(t, false);
+  t.set(link(ST), { state: "online" });
+  return { w, t, sql, m };
+}
+
+test("a_chat_leading_mostly_archived_chats_opens_cold_reading_no_archived_record", async () => {
+  const { w, t, sql, m } = await ledRig((c) => c.subscribe(1, chatTopic));
+  const u = ui();
+  const counted = chatCounting(sql);
+  const before = { ...work };
+  const opening = performance.now();
+  await t.read(u, 1);
+  const openMs = performance.now() - opening;
+  const cold = { ...counted, rowJson: work.rowJson - before.rowJson };
+  console.log(`chat-led: ${LED} chats led (${LED_ARCHIVED} archived) opened cold in ${openMs.toFixed(1)} ms (Node): ${cold.chat} statements of chat, ${cold.archivedJson} reading archived records, ${cold.listedJson} listed, ${cold.rowJson} records parsed (work.rowJson)`);
+  const opened: J[] = u.value.opened;
+  assert.equal(opened.length, LED);
+  assert.equal(cold.archivedJson, 0, "no archived record read");
+  assert.ok(cold.chat <= 2, `${cold.chat} statements of chat`);
+  // (the listed ones it opened, and the few the chat itself reads: its own row, its thread's)
+  assert.ok(cold.rowJson <= LED - LED_ARCHIVED + 4, `${cold.rowJson} records parsed`);
+  // Each titled and threaded as its row is, the archived of their columns, last.
+  const of = (s: string) => opened.find((o) => o.session === s);
+  for (let i = 0; i < LED; i++) {
+    const o = of(`o${i}`)!;
+    assert.equal(o.title, `子任务 ${i}`);
+    assert.equal(o.archived === true, i < LED_ARCHIVED, `o${i}`);
+  }
+  assert.ok(opened.slice(LED - LED_ARCHIVED).every((o) => o.archived === true), "the archived last");
+  assert.deepEqual(opened.slice(0, LED - LED_ARCHIVED).map((o) => [o.session, o.mark ?? null, o.stateLead ?? null]).sort(), m.listed.map((r: J) => {
+    const k = Number(r.id.slice(1)) % 6;
+    return [r.id, k === 0 || k === 3 ? "run" : k === 1 ? "block" : k === 2 ? "failed" : null, k === 1 ? "need" : k === 3 ? "wait" : k === 4 || k === 5 ? "done" : null];
+  }).sort());
+
+  // Made again as its agent works: nothing of them read again.
+  const hot = counted.chat;
+  const hotJson = work.rowJson;
+  const was = u.value.opened;
+  for (let i = 0; i < ROUNDS; i++) {
+    t.set(sessionOf("k"), { session: fullSession("k", { lastActiveAt: 2 + i, turns: i + 1 }), threads: [thread(t.host.nowMs())], turns: [] });
+    await t.read(u, 1);
+  }
+  console.log(`chat-led: ${ROUNDS} makes again, ${counted.chat - hot} statements of chat, ${work.rowJson - hotJson} records parsed (the chat's own)`);
+  assert.equal(counted.chat - hot, 0, "no statement of chat made again");
+  assert.ok(work.rowJson - hotJson <= ROUNDS * 2, "none of the chats it opened parsed again");
+  assert.deepEqual(u.value.opened, was);
+
+  // An archived one renamed, one archived back, a listed one archived: each shown so at once.
+  const renamed = m.archived.filter((r) => r.id !== "o5").map((r) => (r.id === "o0" ? { ...r, title: "改了" } : r));
+  const goes = m.listed[0];
+  t.set({ topic: "archivedRows", station: ST }, [...renamed, { ...goes, archived: { at: 2, by: "auto" } }]);
+  t.set(rows(ST), [m.leader, ...m.listed.slice(1), rowOf("o5", { title: "回来了", agents: [agentOf("o5", { process: "running" })] })]);
+  await t.read(u, 1);
+  const now = (s: string) => (u.value.opened as J[]).find((o) => o.session === s);
+  assert.deepEqual([now("o0")?.title, now("o0")?.archived], ["改了", true]);
+  assert.deepEqual([now("o5")?.title, now("o5")?.archived ?? false, now("o5")?.mark], ["回来了", false, "run"]);
+  assert.deepEqual([now(goes.id)?.title, now(goes.id)?.archived, now(goes.id)?.mark ?? null], [goes.title, true, null]);
+  assert.equal(counted.archivedJson, 0, "still no archived record read");
+  t.store.runner.shutdown();
+  w.store.runner.shutdown();
+});
+
+test("a_led_chats_list_unfiltered_reads_no_archived_record_and_searched_finds_what_the_archived_said", async () => {
+  const all = parseTopic({ topic: "chatSubchats", station: ST, thread: 7, q: "" })!;
+  const { w, t, sql } = await ledRig((c) => c.subscribe(2, all), true);
+  const counted = chatCounting(sql);
+  await t.host.time.pass(100);
+  const listedAll = (t.store.value(all) as { ok: J }).ok;
+  assert.equal(listedAll.items.length, LED);
+  assert.equal(counted.archivedJson, 0, "no archived record read for the list unfiltered");
+  // Searched: the archived ones' records read, what their agent needs and their last words found.
+  let id = 3;
+  for (const [q, want] of [["旧缓存目录", "o1"], ["独角兽", "o2"]] as const) {
+    const found = parseTopic({ topic: "chatSubchats", station: ST, thread: 7, q })!;
+    t.subscribe(id++, found);
+    await t.host.time.pass(100);
+    const v = (t.store.value(found) as { ok: J }).ok;
+    assert.deepEqual(v.items.map((i: J) => [i.session, i.archived === true]), [[want, true]], q);
+    assert.ok(String(v.items[0].foundText ?? "").includes(q), `${q}: ${JSON.stringify(v.items[0])}`);
+  }
+  assert.ok(counted.archivedJson > 0, "searched, the archived records read");
+  t.store.runner.shutdown();
+  w.store.runner.shutdown();
+});
+
+test("a_chat_leading_mostly_archived_chats_opened_cold_again_and_again_takes_what_it_takes", async () => {
+  // (each a core started anew on the database: the median of what opening the chat took)
+  const took: number[] = [];
+  const made: number[] = [];
+  const opened: number[] = [];
+  try {
+    for (let i = 0; i < 9; i++) {
+      const { w, t } = await ledRig((c) => c.subscribe(1, chatTopic));
+      const u = ui();
+      // (timed by the real clock: the parts of making the chat, store.ts `chat.open`'s)
+      spentClock(() => performance.now());
+      const was = { ...spent };
+      const started = performance.now();
+      await t.read(u, 1);
+      took.push(performance.now() - started);
+      made.push((spent["chat.make"] ?? 0) - (was["chat.make"] ?? 0));
+      opened.push((spent["chat.opened"] ?? 0) - (was["chat.opened"] ?? 0));
+      assert.equal(u.value.opened.length, LED);
+      t.store.runner.shutdown();
+      w.store.runner.shutdown();
+    }
+  } finally {
+    // (the clock as a core's tests have it: what a later test times is not this one's)
+    spentClock(() => 0);
+  }
+  const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const said = (xs: number[]) => `median ${median(xs).toFixed(2)} ms (${xs.map((x) => x.toFixed(1)).join(", ")})`;
+  console.log(`chat-led: opened cold ${took.length} times (Node): chat.opened ${said(opened)}; chat.make ${said(made)}; the whole read ${said(took)}`);
 });

@@ -32,13 +32,15 @@ pub fn Paint::is_solid_color(self : Paint) -> Bool {
 
 ///|
 priv struct RasterPipelineBlitter {
+  paint : Paint
+  blend_mode : BlendMode
   mask : MaskCtx?
   pixmap_src : Pixmap
   pixmap : SubPixmap
   memset2d_color : PremultipliedColorU8?
-  blit_anti_h_rp : RasterPipeline
-  blit_rect_rp : RasterPipeline
-  blit_mask_rp : RasterPipeline
+  mut blit_anti_h_rp : RasterPipeline?
+  mut blit_rect_rp : RasterPipeline?
+  mut blit_mask_rp : RasterPipeline?
   is_mask : Bool
 }
 
@@ -46,11 +48,141 @@ priv struct RasterPipelineBlitter {
 let empty_src : Pixmap = { data: FixedArray::make(4, b'\x00'), width: 1, height: 1 }
 
 ///|
+fn push_stage_opt(p : RasterPipelineBuilder, s : Stage?) -> Unit {
+  match s {
+    Some(s) => p.push(s)
+    None => ()
+  }
+}
+
+///|
+fn RasterPipelineBlitter::new_shader_builder(self : RasterPipelineBlitter) -> (RasterPipelineBuilder, ColorSpace) {
+  let cs = self.paint.colorspace
+  let p = RasterPipelineBuilder::new()
+  p.force_hq_pipeline = self.paint.force_hq_pipeline
+  ignore(self.paint.shader.push_stages(cs, p))
+  if self.mask is Some(_) {
+    p.push(MaskU8)
+  }
+  (p, cs)
+}
+
+///|
+fn RasterPipelineBlitter::get_anti_h_rp(self : RasterPipelineBlitter) -> RasterPipeline {
+  match self.blit_anti_h_rp {
+    Some(rp) => rp
+    None => {
+      let rp = if self.is_mask {
+        let p = RasterPipelineBuilder::new()
+        p.push_uniform_color(color_white.premultiply())
+        p.push(LoadDestinationU8)
+        p.push(Lerp1Float)
+        p.push(StoreU8)
+        p.compile()
+      } else {
+        let (p, cs) = self.new_shader_builder()
+        if self.blend_mode.should_pre_scale_coverage() {
+          p.push(Scale1Float)
+          p.push(LoadDestination)
+          push_stage_opt(p, cs.expand_dest_stage())
+          push_stage_opt(p, self.blend_mode.to_stage())
+        } else {
+          p.push(LoadDestination)
+          push_stage_opt(p, cs.expand_dest_stage())
+          push_stage_opt(p, self.blend_mode.to_stage())
+          p.push(Lerp1Float)
+        }
+        push_stage_opt(p, cs.compress_stage())
+        p.push(Store)
+        p.compile()
+      }
+      self.blit_anti_h_rp = Some(rp)
+      rp
+    }
+  }
+}
+
+///|
+fn RasterPipelineBlitter::get_rect_rp(self : RasterPipelineBlitter) -> RasterPipeline {
+  match self.blit_rect_rp {
+    Some(rp) => rp
+    None => {
+      let rp = if self.is_mask {
+        let p = RasterPipelineBuilder::new()
+        p.push_uniform_color(color_white.premultiply())
+        p.push(StoreU8)
+        p.compile()
+      } else {
+        let (p, cs) = self.new_shader_builder()
+        if self.blend_mode == SourceOver && self.mask is None {
+          push_stage_opt(p, cs.compress_stage())
+          p.push(SourceOverRgba)
+        } else {
+          if self.blend_mode != Source {
+            p.push(LoadDestination)
+            match self.blend_mode.to_stage() {
+              Some(bs) => {
+                push_stage_opt(p, cs.expand_dest_stage())
+                p.push(bs)
+              }
+              None => ()
+            }
+          }
+          push_stage_opt(p, cs.compress_stage())
+          p.push(Store)
+        }
+        p.compile()
+      }
+      self.blit_rect_rp = Some(rp)
+      rp
+    }
+  }
+}
+
+///|
+fn RasterPipelineBlitter::get_mask_rp(self : RasterPipelineBlitter) -> RasterPipeline {
+  match self.blit_mask_rp {
+    Some(rp) => rp
+    None => {
+      let rp = if self.is_mask {
+        let p = RasterPipelineBuilder::new()
+        p.push_uniform_color(color_white.premultiply())
+        p.push(LoadDestinationU8)
+        p.push(LerpU8)
+        p.push(StoreU8)
+        p.compile()
+      } else {
+        let (p, cs) = self.new_shader_builder()
+        if self.blend_mode.should_pre_scale_coverage() {
+          p.push(ScaleU8)
+          p.push(LoadDestination)
+          push_stage_opt(p, cs.expand_dest_stage())
+          push_stage_opt(p, self.blend_mode.to_stage())
+        } else {
+          p.push(LoadDestination)
+          push_stage_opt(p, cs.expand_dest_stage())
+          push_stage_opt(p, self.blend_mode.to_stage())
+          p.push(LerpU8)
+        }
+        push_stage_opt(p, cs.compress_stage())
+        p.push(Store)
+        p.compile()
+      }
+      self.blit_mask_rp = Some(rp)
+      rp
+    }
+  }
+}
+
+///|
 fn RasterPipelineBlitter::new(paint : Paint, mask : MaskCtx?, pixmap : SubPixmap) -> RasterPipelineBlitter? {
   match paint.blend_mode {
     Destination => return None
     DestinationIn if paint.shader.is_opaque() && paint.is_solid_color() => return None
     _ => ()
+  }
+  if !paint.shader.is_valid() {
+    return None
   }
   let mut blend_mode = paint.blend_mode
   if paint.shader.is_opaque() && blend_mode == SourceOver && mask is None {
@@ -67,119 +199,37 @@ fn RasterPipelineBlitter::new(paint : Paint, mask : MaskCtx?, pixmap : SubPixmap
     blend_mode = Source
     memset2d_color = Some({ r: 0, g: 0, b: 0, a: 0 })
   }
-  let cs = paint.colorspace
-  let push_opt = fn(p : RasterPipelineBuilder, s : Stage?) {
-    match s {
-      Some(s) => p.push(s)
-      None => ()
-    }
-  }
-  let new_builder = fn() {
-    let p = RasterPipelineBuilder::new()
-    p.force_hq_pipeline = paint.force_hq_pipeline
-    p
-  }
-  let p = new_builder()
-  if !paint.shader.push_stages(cs, p) {
-    return None
-  }
-  if mask is Some(_) {
-    p.push(MaskU8)
-  }
-  if blend_mode.should_pre_scale_coverage() {
-    p.push(Scale1Float)
-    p.push(LoadDestination)
-    push_opt(p, cs.expand_dest_stage())
-    push_opt(p, blend_mode.to_stage())
-  } else {
-    p.push(LoadDestination)
-    push_opt(p, cs.expand_dest_stage())
-    push_opt(p, blend_mode.to_stage())
-    p.push(Lerp1Float)
-  }
-  push_opt(p, cs.compress_stage())
-  p.push(Store)
-  let blit_anti_h_rp = p.compile()
-  let p = new_builder()
-  if !paint.shader.push_stages(cs, p) {
-    return None
-  }
-  if mask is Some(_) {
-    p.push(MaskU8)
-  }
-  if blend_mode == SourceOver && mask is None {
-    push_opt(p, cs.compress_stage())
-    p.push(SourceOverRgba)
-  } else {
-    if blend_mode != Source {
-      p.push(LoadDestination)
-      match blend_mode.to_stage() {
-        Some(bs) => {
-          push_opt(p, cs.expand_dest_stage())
-          p.push(bs)
-        }
-        None => ()
-      }
-    }
-    push_opt(p, cs.compress_stage())
-    p.push(Store)
-  }
-  let blit_rect_rp = p.compile()
-  let p = new_builder()
-  if !paint.shader.push_stages(cs, p) {
-    return None
-  }
-  if mask is Some(_) {
-    p.push(MaskU8)
-  }
-  if blend_mode.should_pre_scale_coverage() {
-    p.push(ScaleU8)
-    p.push(LoadDestination)
-    push_opt(p, cs.expand_dest_stage())
-    push_opt(p, blend_mode.to_stage())
-  } else {
-    p.push(LoadDestination)
-    push_opt(p, cs.expand_dest_stage())
-    push_opt(p, blend_mode.to_stage())
-    p.push(LerpU8)
-  }
-  push_opt(p, cs.compress_stage())
-  p.push(Store)
-  let blit_mask_rp = p.compile()
   let pixmap_src = match paint.shader {
     PatternShader(patt) => patt.pixmap
     _ => empty_src
   }
-  Some({ mask, pixmap_src, pixmap, memset2d_color, blit_anti_h_rp, blit_rect_rp, blit_mask_rp, is_mask: false })
+  Some({
+    paint,
+    blend_mode,
+    mask,
+    pixmap_src,
+    pixmap,
+    memset2d_color,
+    blit_anti_h_rp: None,
+    blit_rect_rp: None,
+    blit_mask_rp: None,
+    is_mask: false,
+  })
 }
 
 ///|
 fn RasterPipelineBlitter::new_mask(pixmap : SubPixmap) -> RasterPipelineBlitter {
   let color = color_white.premultiply()
-  let p = RasterPipelineBuilder::new()
-  p.push_uniform_color(color)
-  p.push(LoadDestinationU8)
-  p.push(Lerp1Float)
-  p.push(StoreU8)
-  let blit_anti_h_rp = p.compile()
-  let p = RasterPipelineBuilder::new()
-  p.push_uniform_color(color)
-  p.push(StoreU8)
-  let blit_rect_rp = p.compile()
-  let p = RasterPipelineBuilder::new()
-  p.push_uniform_color(color)
-  p.push(LoadDestinationU8)
-  p.push(LerpU8)
-  p.push(StoreU8)
-  let blit_mask_rp = p.compile()
   {
+    paint: Paint::default(),
+    blend_mode: Source,
     mask: None,
     pixmap_src: empty_src,
     pixmap,
     memset2d_color: Some(color.to_color_u8()),
-    blit_anti_h_rp,
-    blit_rect_rp,
-    blit_mask_rp,
+    blit_anti_h_rp: None,
+    blit_rect_rp: None,
+    blit_mask_rp: None,
     is_mask: true,
   }
 }
@@ -195,7 +245,7 @@ fn RasterPipelineBlitter::mask_ctx(self : RasterPipelineBlitter) -> MaskCtx {
 ///|
 fn RasterPipelineBlitter::blit_mask(self : RasterPipelineBlitter, image : (Int, Int), bounds : ScreenIntRect, row_bytes : Int, clip : ScreenIntRect) -> Unit {
   let aa : AAMaskCtx = { p0: image.0, p1: image.1, stride: row_bytes, shift: bounds.x + bounds.y * row_bytes }
-  self.blit_mask_rp.run(clip, aa, self.mask_ctx(), self.pixmap_src, self.pixmap)
+  self.get_mask_rp().run(clip, aa, self.mask_ctx(), self.pixmap_src, self.pixmap)
 }
 
 ///|
@@ -215,8 +265,9 @@ fn RasterPipelineBlitter::blit_anti_h(self : RasterPipelineBlitter, x : Int, y :
       0 => ()
       255 => self.blit_h(x, y, width)
       alpha => {
-        self.blit_anti_h_rp.ctx.current_coverage = fi(alpha) * (1.0 / 255.0)
-        self.blit_anti_h_rp.run({ x, y, width, height: 1 }, aa_mask_none, mask_ctx, self.pixmap_src, self.pixmap)
+        let rp = self.get_anti_h_rp()
+        rp.ctx.current_coverage = fi(alpha) * (1.0 / 255.0)
+        rp.run({ x, y, width, height: 1 }, aa_mask_none, mask_ctx, self.pixmap_src, self.pixmap)
       }
     }
     x += width
@@ -248,23 +299,30 @@ fn RasterPipelineBlitter::blit_rect(self : RasterPipelineBlitter, rect : ScreenI
   match self.memset2d_color {
     Some(c) => {
       let d = self.pixmap.data
+      let rb = c.r.to_byte()
+      let gb = c.g.to_byte()
+      let bb = c.b.to_byte()
+      let ab = c.a.to_byte()
       for y in 0..<rect.height {
         let start = self.pixmap.offset_at(rect.x, rect.y + y)
         if self.is_mask {
           for i in start..<(start + rect.width) {
-            d[i] = c.a.to_byte()
+            d[i] = ab
           }
         } else {
-          for i in start..<(start + rect.width) {
-            d[i * 4] = c.r.to_byte()
-            d[i * 4 + 1] = c.g.to_byte()
-            d[i * 4 + 2] = c.b.to_byte()
-            d[i * 4 + 3] = c.a.to_byte()
+          let mut o = start * 4
+          let end_o = o + rect.width * 4
+          while o < end_o {
+            d[o] = rb
+            d[o + 1] = gb
+            d[o + 2] = bb
+            d[o + 3] = ab
+            o += 4
           }
         }
       }
     }
-    None => self.blit_rect_rp.run(rect, aa_mask_none, self.mask_ctx(), self.pixmap_src, self.pixmap)
+    None => self.get_rect_rp().run(rect, aa_mask_none, self.mask_ctx(), self.pixmap_src, self.pixmap)
   }
 }
 
@@ -564,6 +622,32 @@ pub fn Pixmap::draw_pixmap(
   transform : Transform,
   mask : Mask?,
 ) -> Unit {
+  if transform.is_identity() &&
+    mask is None &&
+    draw_tiles(self.width, self.height) is None &&
+    (paint.blend_mode == SourceOver || paint.blend_mode == Source) &&
+    !physical_equal(pixmap.data, self.data) &&
+    x > -4194304 &&
+    x < 4194304 &&
+    y > -4194304 &&
+    y < 4194304 &&
+    pixmap.width <= 4194304 &&
+    pixmap.height <= 4194304 &&
+    x + pixmap.width < 4194304 &&
+    y + pixmap.height < 4194304 {
+    let x0 = if x > 0 { x } else { 0 }
+    let y0 = if y > 0 { y } else { 0 }
+    let x1 = if x + pixmap.width < self.width { x + pixmap.width } else { self.width }
+    let y1 = if y + pixmap.height < self.height { y + pixmap.height } else { self.height }
+    if x0 < x1 && y0 < y1 {
+      let rect : ScreenIntRect = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+      let opacity = norm_clamped(paint.opacity)
+      let has_scale = opacity != 1.0
+      let mode = if paint.blend_mode == Source { 0 } else { 1 }
+      highp_blit_gather_translate(pixmap, self.as_subpixmap(), rect, -x, -y, has_scale, opacity, mode)
+    }
+    return
+  }
   let rect = pixmap.size().to_int_rect(x, y).to_rect()
   let patt_transform = Transform::from_translate(fi(x), fi(y))
   let p : Paint = {
@@ -582,12 +666,25 @@ pub fn Pixmap::apply_mask(self : Pixmap, mask : Mask) -> Unit {
   if self.width != mask.width || self.height != mask.height {
     return
   }
-  let p = RasterPipelineBuilder::new()
-  p.push(LoadMaskU8)
-  p.push(LoadDestination)
-  p.push(StDestinationIn)
-  p.push(Store)
-  let rp = p.compile()
-  let rect = self.size().to_screen_int_rect(0, 0)
-  rp.run(rect, aa_mask_none, mask.mask_ctx(), empty_src, self.as_subpixmap())
+  let data = self.data
+  let mdata = mask.data
+  let n = self.width * self.height
+  let mut i = 0
+  while i < n {
+    let sa = mdata[i].to_int()
+    if sa == 0 {
+      let o = i * 4
+      data[o] = b'\x00'
+      data[o + 1] = b'\x00'
+      data[o + 2] = b'\x00'
+      data[o + 3] = b'\x00'
+    } else if sa != 255 {
+      let o = i * 4
+      data[o] = (div255(mul16(data[o].to_int(), sa)) & 0xFF).to_byte()
+      data[o + 1] = (div255(mul16(data[o + 1].to_int(), sa)) & 0xFF).to_byte()
+      data[o + 2] = (div255(mul16(data[o + 2].to_int(), sa)) & 0xFF).to_byte()
+      data[o + 3] = (div255(mul16(data[o + 3].to_int(), sa)) & 0xFF).to_byte()
+    }
+    i += 1
+  }
 }

@@ -109,6 +109,306 @@ fn lowp_start_generic(
 }
 
 ///|
+fn lowp_try_gradient(
+  stages : Array[Stage],
+  rect : ScreenIntRect,
+  ctx : Context,
+  dst : SubPixmap,
+) -> Bool {
+  let slen = stages.length()
+  if slen < 3 || rect.right() >= 8388608 {
+    return false
+  }
+  guard stages[0] is SeedShader else { return false }
+  let mut idx = 1
+  let mut has_transform = false
+  if idx < slen && stages[idx] is StTransform {
+    has_transform = true
+    idx += 1
+  }
+  let mut has_radius = false
+  if idx < slen && stages[idx] is XYToRadius {
+    has_radius = true
+    idx += 1
+  }
+  let mut spread = 0
+  if idx < slen {
+    match stages[idx] {
+      PadX1 => {
+        spread = 1
+        idx += 1
+      }
+      ReflectX1 => {
+        spread = 2
+        idx += 1
+      }
+      RepeatX1 => {
+        spread = 3
+        idx += 1
+      }
+      _ => ()
+    }
+  }
+  if idx >= slen {
+    return false
+  }
+  let is_es2 = match stages[idx] {
+    EvenlySpaced2StopGradient => true
+    StGradient => false
+    _ => return false
+  }
+  idx += 1
+  let mut has_premul = false
+  if idx < slen && stages[idx] is Premultiply {
+    has_premul = true
+    idx += 1
+  }
+  let rem = slen - idx
+  let tail_mode = if rem == 1 {
+    match stages[idx] {
+      Store => 0
+      SourceOverRgba => 1
+      _ => return false
+    }
+  } else if rem == 3 {
+    match (stages[idx], stages[idx + 1], stages[idx + 2]) {
+      (LoadDestination, Lerp1Float, Store) => 2
+      _ => return false
+    }
+  } else if rem == 4 {
+    match (stages[idx], stages[idx + 1], stages[idx + 2], stages[idx + 3]) {
+      (Scale1Float, LoadDestination, StSourceOver, Store) => 3
+      _ => return false
+    }
+  } else {
+    return false
+  }
+  let ts = ctx.transform
+  let es2_f = ctx.es2_factor
+  let es2_b = ctx.es2_bias
+  let grad = ctx.gradient
+  let g_len = grad.len
+  let g_t = grad.t_values
+  let g_f = grad.factors
+  let g_b = grad.biases
+  let cov = if tail_mode == 2 || tail_mode == 3 { f2u16(ctx.current_coverage * 255.0 + 0.5) } else { 0 }
+  let icov = if tail_mode == 2 { inv255(cov) } else { 0 }
+  let data = dst.data
+  let rx = rect.x
+  let rw = rect.width
+  let rend = rx + rw
+  let ry = rect.y
+  let rbot = rect.bottom()
+  // Vertical linear gradient fast path: t is constant across each scanline.
+  if !has_radius && has_transform && ts.sx == 0.0 {
+    let px0 = fi(rx) + 0.5
+    let mut y = ry
+    while y < rbot {
+      let fy = fi(y) + 0.5
+      let mut t = px0 * ts.sx + (fy * ts.kx + ts.tx)
+      if spread == 1 {
+        t = lnormalize(t)
+      } else if spread == 2 {
+        let f = lfloor((t - 1.0) * 0.5)
+        t = lnormalize((t - 1.0 - (f + f) - 1.0).abs())
+      } else if spread == 3 {
+        t = lnormalize(t - lfloor(t))
+      }
+      let (rf, gf, bf, af) = if is_es2 {
+        (t * es2_f.r + es2_b.r, t * es2_f.g + es2_b.g, t * es2_f.b + es2_b.b, t * es2_f.a + es2_b.a)
+      } else {
+        let mut gi = 0
+        for k in 1..<g_len {
+          if t >= g_t[k] {
+            gi += 1
+          }
+        }
+        let gf_ = g_f[gi]
+        let gb_ = g_b[gi]
+        (t * gf_.r + gb_.r, t * gf_.g + gb_.g, t * gf_.b + gb_.b, t * gf_.a + gb_.a)
+      }
+      let mut r = f2u16(lnormalize(rf) * 255.0 + 0.5)
+      let mut g = f2u16(lnormalize(gf) * 255.0 + 0.5)
+      let mut b = f2u16(lnormalize(bf) * 255.0 + 0.5)
+      let a = f2u16(af * 255.0 + 0.5)
+      if has_premul {
+        r = div255(mul16(r, a))
+        g = div255(mul16(g, a))
+        b = div255(mul16(b, a))
+      }
+      let mut o = dst.offset_at(rx, y) * 4
+      let end_o = o + rw * 4
+      if tail_mode == 0 {
+        let rb = (r & 0xFF).to_byte()
+        let gb = (g & 0xFF).to_byte()
+        let bb = (b & 0xFF).to_byte()
+        let ab = (a & 0xFF).to_byte()
+        while o < end_o {
+          data[o] = rb
+          data[o + 1] = gb
+          data[o + 2] = bb
+          data[o + 3] = ab
+          o += 4
+        }
+      } else if tail_mode == 1 {
+        if a == 255 {
+          let rb = (r & 0xFF).to_byte()
+          let gb = (g & 0xFF).to_byte()
+          let bb = (b & 0xFF).to_byte()
+          while o < end_o {
+            data[o] = rb
+            data[o + 1] = gb
+            data[o + 2] = bb
+            data[o + 3] = b'\xFF'
+            o += 4
+          }
+        } else if a != 0 || r != 0 || g != 0 || b != 0 {
+          let ia = inv255(a)
+          while o < end_o {
+            data[o] = (w16(r + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 1] = (w16(g + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 2] = (w16(b + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 3] = (w16(a + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+            o += 4
+          }
+        }
+      } else if tail_mode == 2 {
+        let rc = mul16(r, cov)
+        let gc = mul16(g, cov)
+        let bc = mul16(b, cov)
+        let ac = mul16(a, cov)
+        while o < end_o {
+          data[o] = (div255(w16(mul16(data[o].to_int(), icov) + rc)) & 0xFF).to_byte()
+          data[o + 1] = (div255(w16(mul16(data[o + 1].to_int(), icov) + gc)) & 0xFF).to_byte()
+          data[o + 2] = (div255(w16(mul16(data[o + 2].to_int(), icov) + bc)) & 0xFF).to_byte()
+          data[o + 3] = (div255(w16(mul16(data[o + 3].to_int(), icov) + ac)) & 0xFF).to_byte()
+          o += 4
+        }
+      } else {
+        let sr = div255(mul16(r, cov))
+        let sg = div255(mul16(g, cov))
+        let sb = div255(mul16(b, cov))
+        let sa = div255(mul16(a, cov))
+        if sa == 255 {
+          let rb = (sr & 0xFF).to_byte()
+          let gb = (sg & 0xFF).to_byte()
+          let bb = (sb & 0xFF).to_byte()
+          while o < end_o {
+            data[o] = rb
+            data[o + 1] = gb
+            data[o + 2] = bb
+            data[o + 3] = b'\xFF'
+            o += 4
+          }
+        } else if sa != 0 || sr != 0 || sg != 0 || sb != 0 {
+          let ia = inv255(sa)
+          while o < end_o {
+            data[o] = (w16(sr + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 1] = (w16(sg + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 2] = (w16(sb + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 3] = (w16(sa + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+            o += 4
+          }
+        }
+      }
+      y += 1
+    }
+    return true
+  }
+  let mut y = ry
+  while y < rbot {
+    let fy = fi(y) + 0.5
+    let row_tx = if has_transform { fy * ts.kx + ts.tx } else { 0.0 }
+    let row_ty = if has_transform && has_radius { fy * ts.sy + ts.ty } else { 0.0 }
+    let mut o = dst.offset_at(rx, y) * 4
+    let mut x = rx
+    while x < rend {
+      let px = fi(x) + 0.5
+      let mut t = if has_transform { px * ts.sx + row_tx } else { px }
+      if has_radius {
+        let py = if has_transform { px * ts.ky + row_ty } else { fy }
+        t = (t * t + py * py).sqrt()
+      }
+      if spread == 1 {
+        t = lnormalize(t)
+      } else if spread == 2 {
+        let f = lfloor((t - 1.0) * 0.5)
+        t = lnormalize((t - 1.0 - (f + f) - 1.0).abs())
+      } else if spread == 3 {
+        t = lnormalize(t - lfloor(t))
+      }
+      let (rf, gf, bf, af) = if is_es2 {
+        (t * es2_f.r + es2_b.r, t * es2_f.g + es2_b.g, t * es2_f.b + es2_b.b, t * es2_f.a + es2_b.a)
+      } else {
+        let mut gi = 0
+        for k in 1..<g_len {
+          if t >= g_t[k] {
+            gi += 1
+          }
+        }
+        let gf_ = g_f[gi]
+        let gb_ = g_b[gi]
+        (t * gf_.r + gb_.r, t * gf_.g + gb_.g, t * gf_.b + gb_.b, t * gf_.a + gb_.a)
+      }
+      let mut r = f2u16(lnormalize(rf) * 255.0 + 0.5)
+      let mut g = f2u16(lnormalize(gf) * 255.0 + 0.5)
+      let mut b = f2u16(lnormalize(bf) * 255.0 + 0.5)
+      let a = f2u16(af * 255.0 + 0.5)
+      if has_premul {
+        r = div255(mul16(r, a))
+        g = div255(mul16(g, a))
+        b = div255(mul16(b, a))
+      }
+      if tail_mode == 0 {
+        data[o] = (r & 0xFF).to_byte()
+        data[o + 1] = (g & 0xFF).to_byte()
+        data[o + 2] = (b & 0xFF).to_byte()
+        data[o + 3] = (a & 0xFF).to_byte()
+      } else if tail_mode == 1 {
+        if a == 255 {
+          data[o] = (r & 0xFF).to_byte()
+          data[o + 1] = (g & 0xFF).to_byte()
+          data[o + 2] = (b & 0xFF).to_byte()
+          data[o + 3] = b'\xFF'
+        } else if a != 0 || r != 0 || g != 0 || b != 0 {
+          let ia = inv255(a)
+          data[o] = (w16(r + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 1] = (w16(g + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 2] = (w16(b + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 3] = (w16(a + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+        }
+      } else if tail_mode == 2 {
+        data[o] = (div255(w16(mul16(data[o].to_int(), icov) + mul16(r, cov))) & 0xFF).to_byte()
+        data[o + 1] = (div255(w16(mul16(data[o + 1].to_int(), icov) + mul16(g, cov))) & 0xFF).to_byte()
+        data[o + 2] = (div255(w16(mul16(data[o + 2].to_int(), icov) + mul16(b, cov))) & 0xFF).to_byte()
+        data[o + 3] = (div255(w16(mul16(data[o + 3].to_int(), icov) + mul16(a, cov))) & 0xFF).to_byte()
+      } else {
+        let sr = div255(mul16(r, cov))
+        let sg = div255(mul16(g, cov))
+        let sb = div255(mul16(b, cov))
+        let sa = div255(mul16(a, cov))
+        if sa == 255 {
+          data[o] = (sr & 0xFF).to_byte()
+          data[o + 1] = (sg & 0xFF).to_byte()
+          data[o + 2] = (sb & 0xFF).to_byte()
+          data[o + 3] = b'\xFF'
+        } else if sa != 0 || sr != 0 || sg != 0 || sb != 0 {
+          let ia = inv255(sa)
+          data[o] = (w16(sr + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 1] = (w16(sg + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 2] = (w16(sb + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+          data[o + 3] = (w16(sa + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+        }
+      }
+      o += 4
+      x += 1
+    }
+    y += 1
+  }
+  true
+}
+
+///|
 fn lowp_start(
   stages : Array[Stage],
   rect : ScreenIntRect,
@@ -118,6 +418,11 @@ fn lowp_start(
   dst : SubPixmap,
 ) -> Unit {
   let slen = stages.length()
+  if slen >= 3 && stages[0] is SeedShader {
+    if lowp_try_gradient(stages, rect, ctx, dst) {
+      return
+    }
+  }
   let rx = rect.x
   let rw = rect.width
   let ry = rect.y
@@ -496,15 +801,6 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
       let o = p.dst.offset_at(p.dx, p.dy)
       for i in 0..<p.tail {
         p.dst.data[o + i] = (p.a[i] & 0xFF).to_byte()
-      }
-    }
-    LoadMaskU8 => {
-      let o = p.mask_ctx.at(p.dx, p.dy)
-      for i in 0..<16 {
-        p.r[i] = 0
-        p.g[i] = 0
-        p.b[i] = 0
-        p.a[i] = if i < p.tail { p.mask_ctx.data[o + i].to_int() } else { 0 }
       }
     }
     MaskU8 => {

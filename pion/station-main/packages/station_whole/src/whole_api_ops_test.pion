@@ -159,8 +159,8 @@ fn make_mem_whole_api_fixture_full(
         None => Err(station_api::ApiError::new(404, "unsupported api op: " + op))
       }
     },
-    overview: fn(_v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-      Ok(base_codec::json_obj([]))
+    overview: fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(build_overview_with_counts("st-w17c2", "ws-main", [], Some(cfg_file), agents.disabled_runtimes, 0, 0, 0, v, l))
     },
     host_sample: fn(_l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
       Ok(base_codec::json_obj([]))
@@ -201,17 +201,17 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   let req = make_test_api_req("POST", "/test")
 
   // All read_ops are now wired (zero 501 read_ops remain in Wave 17C-3A).
+  // Ops gated on daemon runtime hooks return honest 501 when unhooked in pure DI fixtures;
+  // the 7 ops awaiting Wave 17E runtimes (`mcpServers.reload*`, `accounts.profiles.{pace,quota,resetQuota}`,
+  // `copies.restore`, `xshare.hosts.put`) also return honest 501 everywhere.
   let unimplemented_call_ops : Array[String] = [
-    "updates.install",
     "updates.check",
     "updates.wait",
+    "updates.install",
     "network.station.restart",
     "workspaces.join",
     "copies.restore",
-    "copies.s3.test",
     "xshare.hosts.put",
-    "accounts.profiles.createKeyed",
-    "accounts.profiles.createMachine",
     "accounts.profiles.pace",
     "accounts.profiles.resetQuota",
     "accounts.profiles.quota",

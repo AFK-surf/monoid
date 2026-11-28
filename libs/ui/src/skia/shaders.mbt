@@ -254,6 +254,17 @@ fn Shader::is_opaque(self : Shader) -> Bool {
 }
 
 ///|
+fn Shader::is_valid(self : Shader) -> Bool {
+  match self {
+    SolidColor(_) => true
+    LinearGradient(g) => g.base.transform.invert() is Some(_)
+    RadialGradient(g) => g.base.transform.invert() is Some(_)
+    SweepGradient(g) => g.base.transform.invert() is Some(_)
+    PatternShader(patt) => patt.transform.invert() is Some(_)
+  }
+}
+
+///|
 fn Shader::push_stages(self : Shader, cs : ColorSpace, p : RasterPipelineBuilder) -> Bool {
   match self {
     SolidColor(color) => {

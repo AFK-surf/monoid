@@ -1,5 +1,56 @@
 // tiny-skia's high precision pipeline: 8 pixels at a time in floats, lane by lane as the
 // SIMD types compute them (src/wide: SSE's min, max and conversions; reciprocals exact).
+// Optimized with module-level scratch buffers, inlined blend stages (zero closures),
+// allocation-free bilinear/bicubic sampling, and direct scanline fast paths for integer-translate
+// nearest-neighbor pixmap blits (`Gather`).
+// Invariant: module-level scratch buffers (`highp_r`..`highp_wy`) rely on single-threaded,
+// non-reentrant execution of `highp_start_generic` (same as `lowp.mbt`). Lanes `>= p.tail` are
+// never stored to `dst` and no stage reads across lanes except `MaskU8`, which zeros `>= p.tail`.
+
+///|
+let highp_r : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_g : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_b : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_a : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_dr : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_dg : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_db : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_da : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_mask_c : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_cx : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_cy : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_xs : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_ys : FixedArray[Float] = FixedArray::make(8, 0.0)
+
+///|
+let highp_wx : FixedArray[Float] = FixedArray::make(32, 0.0)
+
+///|
+let highp_wy : FixedArray[Float] = FixedArray::make(32, 0.0)
 
 ///|
 /// _mm_max_ps: a where a > b, else b.
@@ -103,7 +154,7 @@ priv struct HighP {
 }
 
 ///|
-fn highp_start(
+fn highp_start_generic(
   stages : Array[Stage],
   rect : ScreenIntRect,
   aa_mask_ctx : AAMaskCtx,
@@ -112,16 +163,15 @@ fn highp_start(
   src : Pixmap,
   dst : SubPixmap,
 ) -> Unit {
-  let z = fn() { FixedArray::make(8, (0.0 : Float)) }
   let p : HighP = {
-    r: z(),
-    g: z(),
-    b: z(),
-    a: z(),
-    dr: z(),
-    dg: z(),
-    db: z(),
-    da: z(),
+    r: highp_r,
+    g: highp_g,
+    b: highp_b,
+    a: highp_a,
+    dr: highp_dr,
+    dg: highp_dg,
+    db: highp_db,
+    da: highp_da,
     tail: 0,
     dx: 0,
     dy: 0,
@@ -148,6 +198,312 @@ fn highp_start(
       p.run(stages)
     }
   }
+}
+
+///|
+fn highp_fill_const_run(
+  sdata : FixedArray[Byte],
+  so : Int,
+  ddata : FixedArray[Byte],
+  do_start : Int,
+  count : Int,
+  has_scale : Bool,
+  cov : Float,
+  cov_finite_unit : Bool,
+  mode : Int,
+) -> Unit {
+  let inv255 : Float = 1.0 / 255.0
+  let s0 = sdata[so].to_int()
+  let s1 = sdata[so + 1].to_int()
+  let s2 = sdata[so + 2].to_int()
+  let s3 = sdata[so + 3].to_int()
+  let mut do_ = do_start
+  let do_end = do_ + count * 4
+  if !has_scale {
+    if mode == 0 || s3 == 255 {
+      let b0 = sdata[so]
+      let b1 = sdata[so + 1]
+      let b2 = sdata[so + 2]
+      let b3 = sdata[so + 3]
+      while do_ < do_end {
+        ddata[do_] = b0
+        ddata[do_ + 1] = b1
+        ddata[do_ + 2] = b2
+        ddata[do_ + 3] = b3
+        do_ += 4
+      }
+    } else if s3 != 0 || s0 != 0 || s1 != 0 || s2 != 0 {
+      let sr = fi(s0) * inv255
+      let sg = fi(s1) * inv255
+      let sb = fi(s2) * inv255
+      let sa = fi(s3) * inv255
+      let ia : Float = 1.0 - sa
+      while do_ < do_end {
+        ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+        ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+        ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+        ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+        do_ += 4
+      }
+    }
+  } else {
+    let sr = (fi(s0) * inv255) * cov
+    let sg = (fi(s1) * inv255) * cov
+    let sb = (fi(s2) * inv255) * cov
+    let sa = (fi(s3) * inv255) * cov
+    if mode == 0 {
+      let b0 = unnorm(sr).to_byte()
+      let b1 = unnorm(sg).to_byte()
+      let b2 = unnorm(sb).to_byte()
+      let b3 = unnorm(sa).to_byte()
+      while do_ < do_end {
+        ddata[do_] = b0
+        ddata[do_ + 1] = b1
+        ddata[do_ + 2] = b2
+        ddata[do_ + 3] = b3
+        do_ += 4
+      }
+    } else if !(cov_finite_unit && s3 == 0 && s0 == 0 && s1 == 0 && s2 == 0) {
+      let ia : Float = 1.0 - sa
+      while do_ < do_end {
+        ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+        ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+        ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+        ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+        do_ += 4
+      }
+    }
+  }
+}
+
+///|
+/// Direct scanline blit for `SeedShader -> [int-translate StTransform] -> Gather -> [Scale1Float] -> (Store | SourceOverRgba)`.
+/// `mode == 0` is `Store`; `mode == 1` is `SourceOverRgba`.
+/// Caller must ensure `!physical_equal(src.data, dst.data)` and `src.width/height > 0`.
+fn highp_blit_gather_translate(
+  src : Pixmap,
+  dst : SubPixmap,
+  rect : ScreenIntRect,
+  itx : Int,
+  ity : Int,
+  has_scale : Bool,
+  cov : Float,
+  mode : Int,
+) -> Unit {
+  let sdata = src.data
+  let ddata = dst.data
+  let sw = src.width
+  let sh = src.height
+  let rx = rect.x
+  let rw = rect.width
+  let rend = rx + rw
+  let ry = rect.y
+  let rbot = rect.bottom()
+  let inv255 : Float = 1.0 / 255.0
+  let cov_finite_unit = cov >= 0.0 && cov <= 1.0
+  let x_in_lo = if rx > -itx { rx } else { -itx }
+  let x_in_hi = if rend < sw - itx { rend } else { sw - itx }
+  let mut y = ry
+  while y < rbot {
+    let sy_raw = y + ity
+    let sy = if sy_raw < 0 { 0 } else if sy_raw >= sh { sh - 1 } else { sy_raw }
+    let src_row = sy * sw
+    // Left clamped prefix (sx == 0)
+    let left_end = if x_in_lo < rend { x_in_lo } else { rend }
+    if rx < left_end {
+      highp_fill_const_run(
+        sdata,
+        src_row * 4,
+        ddata,
+        dst.offset_at(rx, y) * 4,
+        left_end - rx,
+        has_scale,
+        cov,
+        cov_finite_unit,
+        mode,
+      )
+    }
+    // Unclamped interior (sx == x + itx)
+    if x_in_lo < x_in_hi {
+      let count = x_in_hi - x_in_lo
+      let mut so = (src_row + x_in_lo + itx) * 4
+      let mut do_ = dst.offset_at(x_in_lo, y) * 4
+      let do_end = do_ + count * 4
+      if !has_scale {
+        if mode == 0 {
+          sdata.blit_to(ddata, len=count * 4, src_offset=so, dst_offset=do_)
+        } else {
+          while do_ < do_end {
+            let b3 = sdata[so + 3]
+            if b3 == b'\xFF' {
+              ddata[do_] = sdata[so]
+              ddata[do_ + 1] = sdata[so + 1]
+              ddata[do_ + 2] = sdata[so + 2]
+              ddata[do_ + 3] = b'\xFF'
+            } else {
+              let b0 = sdata[so]
+              let b1 = sdata[so + 1]
+              let b2 = sdata[so + 2]
+              if b3 != b'\x00' || b0 != b'\x00' || b1 != b'\x00' || b2 != b'\x00' {
+                if ddata[do_ + 3] == b'\x00' &&
+                  ddata[do_] == b'\x00' &&
+                  ddata[do_ + 1] == b'\x00' &&
+                  ddata[do_ + 2] == b'\x00' {
+                  ddata[do_] = b0
+                  ddata[do_ + 1] = b1
+                  ddata[do_ + 2] = b2
+                  ddata[do_ + 3] = b3
+                } else {
+                  let sr = fi(b0.to_int()) * inv255
+                  let sg = fi(b1.to_int()) * inv255
+                  let sb = fi(b2.to_int()) * inv255
+                  let sa = fi(b3.to_int()) * inv255
+                  let ia : Float = 1.0 - sa
+                  ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+                  ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+                  ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+                  ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+                }
+              }
+            }
+            so += 4
+            do_ += 4
+          }
+        }
+      } else if mode == 0 {
+        while do_ < do_end {
+          let b0 = sdata[so]
+          let b1 = sdata[so + 1]
+          let b2 = sdata[so + 2]
+          let b3 = sdata[so + 3]
+          if cov_finite_unit && b3 == b'\x00' && b0 == b'\x00' && b1 == b'\x00' && b2 == b'\x00' {
+            ddata[do_] = b'\x00'
+            ddata[do_ + 1] = b'\x00'
+            ddata[do_ + 2] = b'\x00'
+            ddata[do_ + 3] = b'\x00'
+          } else {
+            ddata[do_] = unnorm((fi(b0.to_int()) * inv255) * cov).to_byte()
+            ddata[do_ + 1] = unnorm((fi(b1.to_int()) * inv255) * cov).to_byte()
+            ddata[do_ + 2] = unnorm((fi(b2.to_int()) * inv255) * cov).to_byte()
+            ddata[do_ + 3] = unnorm((fi(b3.to_int()) * inv255) * cov).to_byte()
+          }
+          so += 4
+          do_ += 4
+        }
+      } else {
+        while do_ < do_end {
+          let b0 = sdata[so]
+          let b1 = sdata[so + 1]
+          let b2 = sdata[so + 2]
+          let b3 = sdata[so + 3]
+          if !(cov_finite_unit && b3 == b'\x00' && b0 == b'\x00' && b1 == b'\x00' && b2 == b'\x00') {
+            let sr = (fi(b0.to_int()) * inv255) * cov
+            let sg = (fi(b1.to_int()) * inv255) * cov
+            let sb = (fi(b2.to_int()) * inv255) * cov
+            let sa = (fi(b3.to_int()) * inv255) * cov
+            let ia : Float = 1.0 - sa
+            ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+            ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+            ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+            ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+          }
+          so += 4
+          do_ += 4
+        }
+      }
+    }
+    // Right clamped suffix (sx == sw - 1)
+    let right_start = if x_in_hi > rx { x_in_hi } else { rx }
+    if right_start < rend {
+      highp_fill_const_run(
+        sdata,
+        (src_row + sw - 1) * 4,
+        ddata,
+        dst.offset_at(right_start, y) * 4,
+        rend - right_start,
+        has_scale,
+        cov,
+        cov_finite_unit,
+        mode,
+      )
+    }
+    y += 1
+  }
+}
+
+///|
+fn highp_try_gather_translate(
+  stages : Array[Stage],
+  rect : ScreenIntRect,
+  ctx : Context,
+  src : Pixmap,
+  dst : SubPixmap,
+) -> Bool {
+  let slen = stages.length()
+  if slen < 3 || slen > 5 {
+    return false
+  }
+  guard stages[0] is SeedShader else { return false }
+  if physical_equal(src.data, dst.data) ||
+    src.width <= 0 ||
+    src.height <= 0 ||
+    src.width > 4194304 ||
+    src.height > 4194304 ||
+    rect.right() >= 4194304 ||
+    rect.bottom() >= 4194304 {
+    return false
+  }
+  let mut idx = 1
+  let mut itx = 0
+  let mut ity = 0
+  if stages[idx] is StTransform {
+    let ts = ctx.transform
+    if !ts.is_translate() ||
+      ts.tx != ts.tx.trunc() ||
+      ts.ty != ts.ty.trunc() ||
+      ts.tx.abs() >= 4194304.0 ||
+      ts.ty.abs() >= 4194304.0 {
+      return false
+    }
+    itx = ts.tx.to_int()
+    ity = ts.ty.to_int()
+    idx += 1
+  }
+  if idx >= slen || !(stages[idx] is Gather) {
+    return false
+  }
+  idx += 1
+  let mut has_scale = false
+  if idx < slen && stages[idx] is Scale1Float {
+    has_scale = true
+    idx += 1
+  }
+  if idx + 1 != slen {
+    return false
+  }
+  let mode = match stages[idx] {
+    Store => 0
+    SourceOverRgba => 1
+    _ => return false
+  }
+  highp_blit_gather_translate(src, dst, rect, itx, ity, has_scale, ctx.current_coverage, mode)
+  true
+}
+
+///|
+fn highp_start(
+  stages : Array[Stage],
+  rect : ScreenIntRect,
+  aa_mask_ctx : AAMaskCtx,
+  mask_ctx : MaskCtx,
+  ctx : Context,
+  src : Pixmap,
+  dst : SubPixmap,
+) -> Unit {
+  if highp_try_gather_translate(stages, rect, ctx, src, dst) {
+    return
+  }
+  highp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, src, dst)
 }
 
 ///|
@@ -212,20 +568,31 @@ fn HighP::stage(self : HighP, s : Stage) -> Bool {
       }
     LoadDestination => p.load_dst()
     Store => p.store()
-    LoadDestinationU8 | StoreU8 | LoadMaskU8 => return false
+    LoadDestinationU8 | StoreU8 => return false
     Gather => {
-      let ix = gather_ix(p.src, p.r, p.g)
-      load_8888_gather(p.src, ix, p.r, p.g, p.b, p.a)
+      let pix = p.src
+      let pw = pix.width
+      let w = ulp_sub(fi(pw))
+      let h = ulp_sub(fi(pix.height))
+      let d = pix.data
+      let inv255 : Float = 1.0 / 255.0
+      for i in 0..<p.tail {
+        let x = smin(smax(p.r[i], 0.0), w)
+        let y = smin(smax(p.g[i], 0.0), h)
+        let o = (trunc_int(y) * pw + trunc_int(x)) * 4
+        p.r[i] = fi(d[o].to_int()) * inv255
+        p.g[i] = fi(d[o + 1].to_int()) * inv255
+        p.b[i] = fi(d[o + 2].to_int()) * inv255
+        p.a[i] = fi(d[o + 3].to_int()) * inv255
+      }
     }
     MaskU8 => {
       let offset = p.mask_ctx.at(p.dx, p.dy)
-      let c = FixedArray::make(8, (0.0 : Float))
       let mut all_zero = true
-      for i in 0..<p.tail {
-        c[i] = fi(p.mask_ctx.data[offset + i].to_int()) / 255.0
-      }
       for i in 0..<8 {
-        if c[i] != 0.0 {
+        let v : Float = if i < p.tail { fi(p.mask_ctx.data[offset + i].to_int()) / 255.0 } else { 0.0 }
+        highp_mask_c[i] = v
+        if v != 0.0 {
           all_zero = false
         }
       }
@@ -233,10 +600,11 @@ fn HighP::stage(self : HighP, s : Stage) -> Bool {
         return false
       }
       for i in 0..<8 {
-        p.r[i] = p.r[i] * c[i]
-        p.g[i] = p.g[i] * c[i]
-        p.b[i] = p.b[i] * c[i]
-        p.a[i] = p.a[i] * c[i]
+        let ci = highp_mask_c[i]
+        p.r[i] = p.r[i] * ci
+        p.g[i] = p.g[i] * ci
+        p.b[i] = p.b[i] * ci
+        p.a[i] = p.a[i] * ci
       }
     }
     ScaleU8 => {
@@ -277,88 +645,331 @@ fn HighP::stage(self : HighP, s : Stage) -> Bool {
         p.a[i] = hlerp(p.da[i], p.a[i], c)
       }
     }
-    StClear => p.blend1(fn(_s, _d, _sa, _da) { 0.0 })
-    StSourceAtop => p.blend1(fn(s, d, sa, da) { s * da + d * (1.0 - sa) })
-    StDestinationAtop => p.blend1(fn(s, d, sa, da) { d * sa + s * (1.0 - da) })
-    StSourceIn => p.blend1(fn(s, _d, _sa, da) { s * da })
-    StDestinationIn => p.blend1(fn(_s, d, sa, _da) { d * sa })
-    StSourceOut => p.blend1(fn(s, _d, _sa, da) { s * (1.0 - da) })
-    StDestinationOut => p.blend1(fn(_s, d, sa, _da) { d * (1.0 - sa) })
-    StSourceOver => p.blend1(fn(s, d, sa, _da) { d * (1.0 - sa) + s })
-    StDestinationOver => p.blend1(fn(s, d, _sa, da) { s * (1.0 - da) + d })
-    StModulate => p.blend1(fn(s, d, _sa, _da) { s * d })
-    StMultiply => p.blend1(fn(s, d, sa, da) { s * (1.0 - da) + d * (1.0 - sa) + s * d })
-    StScreen => p.blend1(fn(s, d, _sa, _da) { s + d - s * d })
-    StXor => p.blend1(fn(s, d, sa, da) { s * (1.0 - da) + d * (1.0 - sa) })
-    StPlus => p.blend1(fn(s, d, _sa, _da) { smin(s + d, 1.0) })
-    StDarken => p.blend2(fn(s, d, sa, da) { s + d - smax(s * da, d * sa) })
-    StLighten => p.blend2(fn(s, d, sa, da) { s + d - smin(s * da, d * sa) })
+    StClear =>
+      for i in 0..<8 {
+        p.r[i] = 0.0
+        p.g[i] = 0.0
+        p.b[i] = 0.0
+        p.a[i] = 0.0
+      }
+    StSourceAtop =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        p.r[i] = p.r[i] * da + p.dr[i] * isa
+        p.g[i] = p.g[i] * da + p.dg[i] * isa
+        p.b[i] = p.b[i] * da + p.db[i] * isa
+        p.a[i] = sa * da + da * isa
+      }
+    StDestinationAtop =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let ida : Float = 1.0 - da
+        p.r[i] = p.dr[i] * sa + p.r[i] * ida
+        p.g[i] = p.dg[i] * sa + p.g[i] * ida
+        p.b[i] = p.db[i] * sa + p.b[i] * ida
+        p.a[i] = da * sa + sa * ida
+      }
+    StSourceIn =>
+      for i in 0..<8 {
+        let da = p.da[i]
+        p.r[i] = p.r[i] * da
+        p.g[i] = p.g[i] * da
+        p.b[i] = p.b[i] * da
+        p.a[i] = p.a[i] * da
+      }
+    StDestinationIn =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        p.r[i] = p.dr[i] * sa
+        p.g[i] = p.dg[i] * sa
+        p.b[i] = p.db[i] * sa
+        p.a[i] = p.da[i] * sa
+      }
+    StSourceOut =>
+      for i in 0..<8 {
+        let ida : Float = 1.0 - p.da[i]
+        p.r[i] = p.r[i] * ida
+        p.g[i] = p.g[i] * ida
+        p.b[i] = p.b[i] * ida
+        p.a[i] = p.a[i] * ida
+      }
+    StDestinationOut =>
+      for i in 0..<8 {
+        let isa : Float = 1.0 - p.a[i]
+        p.r[i] = p.dr[i] * isa
+        p.g[i] = p.dg[i] * isa
+        p.b[i] = p.db[i] * isa
+        p.a[i] = p.da[i] * isa
+      }
+    StSourceOver =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let isa : Float = 1.0 - sa
+        p.r[i] = p.dr[i] * isa + p.r[i]
+        p.g[i] = p.dg[i] * isa + p.g[i]
+        p.b[i] = p.db[i] * isa + p.b[i]
+        p.a[i] = p.da[i] * isa + sa
+      }
+    StDestinationOver =>
+      for i in 0..<8 {
+        let da = p.da[i]
+        let ida : Float = 1.0 - da
+        p.r[i] = p.r[i] * ida + p.dr[i]
+        p.g[i] = p.g[i] * ida + p.dg[i]
+        p.b[i] = p.b[i] * ida + p.db[i]
+        p.a[i] = p.a[i] * ida + da
+      }
+    StModulate =>
+      for i in 0..<8 {
+        p.r[i] = p.r[i] * p.dr[i]
+        p.g[i] = p.g[i] * p.dg[i]
+        p.b[i] = p.b[i] * p.db[i]
+        p.a[i] = p.a[i] * p.da[i]
+      }
+    StMultiply =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        p.r[i] = p.r[i] * ida + p.dr[i] * isa + p.r[i] * p.dr[i]
+        p.g[i] = p.g[i] * ida + p.dg[i] * isa + p.g[i] * p.dg[i]
+        p.b[i] = p.b[i] * ida + p.db[i] * isa + p.b[i] * p.db[i]
+        p.a[i] = sa * ida + da * isa + sa * da
+      }
+    StScreen =>
+      for i in 0..<8 {
+        p.r[i] = p.r[i] + p.dr[i] - p.r[i] * p.dr[i]
+        p.g[i] = p.g[i] + p.dg[i] - p.g[i] * p.dg[i]
+        p.b[i] = p.b[i] + p.db[i] - p.b[i] * p.db[i]
+        p.a[i] = p.a[i] + p.da[i] - p.a[i] * p.da[i]
+      }
+    StXor =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        p.r[i] = p.r[i] * ida + p.dr[i] * isa
+        p.g[i] = p.g[i] * ida + p.dg[i] * isa
+        p.b[i] = p.b[i] * ida + p.db[i] * isa
+        p.a[i] = sa * ida + da * isa
+      }
+    StPlus =>
+      for i in 0..<8 {
+        p.r[i] = smin(p.r[i] + p.dr[i], 1.0)
+        p.g[i] = smin(p.g[i] + p.dg[i], 1.0)
+        p.b[i] = smin(p.b[i] + p.db[i], 1.0)
+        p.a[i] = smin(p.a[i] + p.da[i], 1.0)
+      }
+    StDarken =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        p.r[i] = p.r[i] + p.dr[i] - smax(p.r[i] * da, p.dr[i] * sa)
+        p.g[i] = p.g[i] + p.dg[i] - smax(p.g[i] * da, p.dg[i] * sa)
+        p.b[i] = p.b[i] + p.db[i] - smax(p.b[i] * da, p.db[i] * sa)
+        p.a[i] = da * (1.0 - sa) + sa
+      }
+    StLighten =>
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        p.r[i] = p.r[i] + p.dr[i] - smin(p.r[i] * da, p.dr[i] * sa)
+        p.g[i] = p.g[i] + p.dg[i] - smin(p.g[i] * da, p.dg[i] * sa)
+        p.b[i] = p.b[i] + p.db[i] - smin(p.b[i] * da, p.db[i] * sa)
+        p.a[i] = da * (1.0 - sa) + sa
+      }
     StDifference =>
-      p.blend2(fn(s, d, sa, da) {
-        let m = smin(s * da, d * sa)
-        s + d - (m + m)
-      })
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let mr = smin(p.r[i] * da, p.dr[i] * sa)
+        p.r[i] = p.r[i] + p.dr[i] - (mr + mr)
+        let mg = smin(p.g[i] * da, p.dg[i] * sa)
+        p.g[i] = p.g[i] + p.dg[i] - (mg + mg)
+        let mb = smin(p.b[i] * da, p.db[i] * sa)
+        p.b[i] = p.b[i] + p.db[i] - (mb + mb)
+        p.a[i] = da * (1.0 - sa) + sa
+      }
     StExclusion =>
-      p.blend2(fn(s, d, _sa, _da) {
-        let m = s * d
-        s + d - (m + m)
-      })
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let mr = p.r[i] * p.dr[i]
+        p.r[i] = p.r[i] + p.dr[i] - (mr + mr)
+        let mg = p.g[i] * p.dg[i]
+        p.g[i] = p.g[i] + p.dg[i] - (mg + mg)
+        let mb = p.b[i] * p.db[i]
+        p.b[i] = p.b[i] + p.db[i] - (mb + mb)
+        p.a[i] = da * (1.0 - sa) + sa
+      }
     StColorBurn =>
-      p.blend2(fn(s, d, sa, da) {
-        if d == da {
-          d + s * (1.0 - da)
-        } else if s == 0.0 {
-          d * (1.0 - sa)
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        p.r[i] = if dr == da {
+          dr + sr * ida
+        } else if sr == 0.0 {
+          dr * isa
         } else {
-          sa * (da - smin(da, (da - d) * sa * (1.0 / s))) + s * (1.0 - da) + d * (1.0 - sa)
+          sa * (da - smin(da, (da - dr) * sa * (1.0 / sr))) + sr * ida + dr * isa
         }
-      })
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        p.g[i] = if dg == da {
+          dg + sg * ida
+        } else if sg == 0.0 {
+          dg * isa
+        } else {
+          sa * (da - smin(da, (da - dg) * sa * (1.0 / sg))) + sg * ida + dg * isa
+        }
+        let sb = p.b[i]
+        let db = p.db[i]
+        p.b[i] = if db == da {
+          db + sb * ida
+        } else if sb == 0.0 {
+          db * isa
+        } else {
+          sa * (da - smin(da, (da - db) * sa * (1.0 / sb))) + sb * ida + db * isa
+        }
+        p.a[i] = da * isa + sa
+      }
     StColorDodge =>
-      p.blend2(fn(s, d, sa, da) {
-        if d == 0.0 {
-          s * (1.0 - da)
-        } else if s == sa {
-          s + d * (1.0 - sa)
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        p.r[i] = if dr == 0.0 {
+          sr * ida
+        } else if sr == sa {
+          sr + dr * isa
         } else {
-          sa * smin(da, d * sa * (1.0 / (sa - s))) + s * (1.0 - da) + d * (1.0 - sa)
+          sa * smin(da, dr * sa * (1.0 / (sa - sr))) + sr * ida + dr * isa
         }
-      })
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        p.g[i] = if dg == 0.0 {
+          sg * ida
+        } else if sg == sa {
+          sg + dg * isa
+        } else {
+          sa * smin(da, dg * sa * (1.0 / (sa - sg))) + sg * ida + dg * isa
+        }
+        let sb = p.b[i]
+        let db = p.db[i]
+        p.b[i] = if db == 0.0 {
+          sb * ida
+        } else if sb == sa {
+          sb + db * isa
+        } else {
+          sa * smin(da, db * sa * (1.0 / (sa - sb))) + sb * ida + db * isa
+        }
+        p.a[i] = da * isa + sa
+      }
     StHardLight =>
-      p.blend2(fn(s, d, sa, da) {
-        s * (1.0 - da) +
-        d * (1.0 - sa) +
-        (if s + s <= sa {
-          let m = s * d
-          m + m
-        } else {
-          let m = (da - d) * (sa - s)
-          sa * da - (m + m)
-        })
-      })
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        p.r[i] = sr * ida +
+          dr * isa +
+          (if sr + sr <= sa {
+            let m = sr * dr
+            m + m
+          } else {
+            let m = (da - dr) * (sa - sr)
+            sa * da - (m + m)
+          })
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        p.g[i] = sg * ida +
+          dg * isa +
+          (if sg + sg <= sa {
+            let m = sg * dg
+            m + m
+          } else {
+            let m = (da - dg) * (sa - sg)
+            sa * da - (m + m)
+          })
+        let sb = p.b[i]
+        let db = p.db[i]
+        p.b[i] = sb * ida +
+          db * isa +
+          (if sb + sb <= sa {
+            let m = sb * db
+            m + m
+          } else {
+            let m = (da - db) * (sa - sb)
+            sa * da - (m + m)
+          })
+        p.a[i] = da * isa + sa
+      }
     StOverlay =>
-      p.blend2(fn(s, d, sa, da) {
-        s * (1.0 - da) +
-        d * (1.0 - sa) +
-        (if d + d <= da {
-          let m = s * d
-          m + m
-        } else {
-          let m = (da - d) * (sa - s)
-          sa * da - (m + m)
-        })
-      })
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        p.r[i] = sr * ida +
+          dr * isa +
+          (if dr + dr <= da {
+            let m = sr * dr
+            m + m
+          } else {
+            let m = (da - dr) * (sa - sr)
+            sa * da - (m + m)
+          })
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        p.g[i] = sg * ida +
+          dg * isa +
+          (if dg + dg <= da {
+            let m = sg * dg
+            m + m
+          } else {
+            let m = (da - dg) * (sa - sg)
+            sa * da - (m + m)
+          })
+        let sb = p.b[i]
+        let db = p.db[i]
+        p.b[i] = sb * ida +
+          db * isa +
+          (if db + db <= da {
+            let m = sb * db
+            m + m
+          } else {
+            let m = (da - db) * (sa - sb)
+            sa * da - (m + m)
+          })
+        p.a[i] = da * isa + sa
+      }
     StSoftLight =>
-      p.blend2(fn(s, d, sa, da) {
-        let m : Float = if da > 0.0 { d / da } else { 0.0 }
-        let s2 = s + s
-        let m4 = m + m + (m + m)
-        let dark_src = d * (sa + (s2 - sa) * (1.0 - m))
-        let dark_dst = (m4 * m4 + m4) * (m - 1.0) + 7.0 * m
-        let lite_dst = m.sqrt() - m
-        let d4 = d + d + (d + d)
-        let lite_src = d * sa + da * (s2 - sa) * (if d4 <= da { dark_dst } else { lite_dst })
-        s * (1.0 - da) + d * (1.0 - sa) + (if s2 <= sa { dark_src } else { lite_src })
-      })
+      for i in 0..<8 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa : Float = 1.0 - sa
+        let ida : Float = 1.0 - da
+        p.r[i] = highp_soft_light_ch(p.r[i], p.dr[i], sa, da, isa, ida)
+        p.g[i] = highp_soft_light_ch(p.g[i], p.dg[i], sa, da, isa, ida)
+        p.b[i] = highp_soft_light_ch(p.b[i], p.db[i], sa, da, isa, ida)
+        p.a[i] = da * isa + sa
+      }
     StHue => p.blend3(0)
     StSaturation => p.blend3(1)
     StColor => p.blend3(2)
@@ -584,27 +1195,16 @@ fn hlerp(from : Float, to : Float, t : Float) -> Float {
 }
 
 ///|
-fn HighP::blend1(self : HighP, f : (Float, Float, Float, Float) -> Float) -> Unit {
-  for i in 0..<8 {
-    let sa = self.a[i]
-    let da = self.da[i]
-    self.r[i] = f(self.r[i], self.dr[i], sa, da)
-    self.g[i] = f(self.g[i], self.dg[i], sa, da)
-    self.b[i] = f(self.b[i], self.db[i], sa, da)
-    self.a[i] = f(sa, da, sa, da)
-  }
-}
-
-///|
-fn HighP::blend2(self : HighP, f : (Float, Float, Float, Float) -> Float) -> Unit {
-  for i in 0..<8 {
-    let sa = self.a[i]
-    let da = self.da[i]
-    self.r[i] = f(self.r[i], self.dr[i], sa, da)
-    self.g[i] = f(self.g[i], self.dg[i], sa, da)
-    self.b[i] = f(self.b[i], self.db[i], sa, da)
-    self.a[i] = da * (1.0 - sa) + sa
-  }
+fn highp_soft_light_ch(s : Float, d : Float, sa : Float, da : Float, isa : Float, ida : Float) -> Float {
+  let m : Float = if da > 0.0 { d / da } else { 0.0 }
+  let s2 = s + s
+  let m4 = m + m + (m + m)
+  let dark_src = d * (sa + (s2 - sa) * (1.0 - m))
+  let dark_dst = (m4 * m4 + m4) * (m - 1.0) + 7.0 * m
+  let lite_dst = m.sqrt() - m
+  let d4 = d + d + (d + d)
+  let lite_src = d * sa + da * (s2 - sa) * (if d4 <= da { dark_dst } else { lite_dst })
+  s * ida + d * isa + (if s2 <= sa { dark_src } else { lite_src })
 }
 
 ///|
@@ -661,8 +1261,11 @@ fn set_sat(r : Float, g : Float, b : Float, s : Float) -> (Float, Float, Float) 
   let mn = smin(r, smin(g, b))
   let mx = smax(r, smax(g, b))
   let sat = mx - mn
-  let scale = fn(c : Float) -> Float { if sat == 0.0 { 0.0 } else { (c - mn) * s / sat } }
-  (scale(r), scale(g), scale(b))
+  if sat == 0.0 {
+    (0.0, 0.0, 0.0)
+  } else {
+    ((r - mn) * s / sat, (g - mn) * s / sat, (b - mn) * s / sat)
+  }
 }
 
 ///|
@@ -672,16 +1275,18 @@ fn set_lum(r : Float, g : Float, b : Float, l : Float) -> (Float, Float, Float) 
 }
 
 ///|
+fn clip_ch(c : Float, mn : Float, mx : Float, l : Float, a : Float) -> Float {
+  let c = if mx >= 0.0 { c } else { l + (c - l) * l / (l - mn) }
+  let c = if mx > a { l + (c - l) * (a - l) / (mx - l) } else { c }
+  smax(c, 0.0)
+}
+
+///|
 fn clip_color(r : Float, g : Float, b : Float, a : Float) -> (Float, Float, Float) {
   let mn = smin(r, smin(g, b))
   let mx = smax(r, smax(g, b))
   let l = lum(r, g, b)
-  let clip = fn(c : Float) -> Float {
-    let c = if mx >= 0.0 { c } else { l + (c - l) * l / (l - mn) }
-    let c = if mx > a { l + (c - l) * (a - l) / (mx - l) } else { c }
-    smax(c, 0.0)
-  }
-  (clip(r), clip(g), clip(b))
+  (clip_ch(r, mn, mx, l, a), clip_ch(g, mn, mx, l, a), clip_ch(b, mn, mx, l, a))
 }
 
 ///|
@@ -752,7 +1357,16 @@ fn HighP::load_dst(self : HighP) -> Unit {
 
 ///|
 fn unnorm(v : Float) -> Int {
-  round_int(smin(smax(v, 0.0), 1.0) * 255.0) & 0xFF
+  let x = smin(smax(v, 0.0), 1.0) * 255.0
+  let ti = x.to_int()
+  let d = x - fi(ti)
+  if d > 0.5 {
+    ti + 1
+  } else if d == 0.5 {
+    ti + (ti & 1)
+  } else {
+    ti
+  }
 }
 
 ///|
@@ -773,36 +1387,6 @@ fn ulp_sub(v : Float) -> Float {
 }
 
 ///|
-fn gather_ix(pixmap : Pixmap, xs : FixedArray[Float], ys : FixedArray[Float]) -> FixedArray[Int] {
-  let w = ulp_sub(fi(pixmap.width))
-  let h = ulp_sub(fi(pixmap.height))
-  FixedArray::makei(8, fn(i) {
-    let x = smin(smax(xs[i], 0.0), w)
-    let y = smin(smax(ys[i], 0.0), h)
-    trunc_int(y) * pixmap.width + trunc_int(x)
-  })
-}
-
-///|
-fn load_8888_gather(
-  pixmap : Pixmap,
-  ix : FixedArray[Int],
-  r : FixedArray[Float],
-  g : FixedArray[Float],
-  b : FixedArray[Float],
-  a : FixedArray[Float],
-) -> Unit {
-  let d = pixmap.data
-  for i in 0..<8 {
-    let o = ix[i] * 4
-    r[i] = fi(d[o].to_int()) * (1.0 / 255.0)
-    g[i] = fi(d[o + 1].to_int()) * (1.0 / 255.0)
-    b[i] = fi(d[o + 2].to_int()) * (1.0 / 255.0)
-    a[i] = fi(d[o + 3].to_int()) * (1.0 / 255.0)
-  }
-}
-
-///|
 fn bicubic_near(t : Float) -> Float {
   t * (t * ((-21.0 / 18.0 : Float) * t + (27.0 / 18.0 : Float)) + (9.0 / 18.0 : Float)) + (1.0 / 18.0 : Float)
 }
@@ -813,66 +1397,73 @@ fn bicubic_far(t : Float) -> Float {
 }
 
 ///|
-/// bilinear (n 2) and bicubic (n 4) sampling of the source.
+/// bilinear (n 2) and bicubic (n 4) sampling of the source, allocation-free via module scratch buffers.
 fn HighP::sampler(self : HighP, n : Int) -> Unit {
-  let cx = FixedArray::makei(8, fn(i) { self.r[i] })
-  let cy = FixedArray::makei(8, fn(i) { self.g[i] })
-  let wx = Array::makei(n, fn(_) { FixedArray::make(8, (0.0 : Float)) })
-  let wy = Array::makei(n, fn(_) { FixedArray::make(8, (0.0 : Float)) })
-  for i in 0..<8 {
-    let fx = (cx[i] + 0.5) - lfloor(cx[i] + 0.5)
-    let fy = (cy[i] + 0.5) - lfloor(cy[i] + 0.5)
+  let tail = self.tail
+  let start : Float = if n == 2 { -0.5 } else { -1.5 }
+  for i in 0..<tail {
+    let cx = self.r[i]
+    let cy = self.g[i]
+    highp_cx[i] = cx
+    highp_cy[i] = cy
+    highp_ys[i] = cy + start
+    let fx = (cx + 0.5) - lfloor(cx + 0.5)
+    let fy = (cy + 0.5) - lfloor(cy + 0.5)
     if n == 2 {
-      wx[0][i] = 1.0 - fx
-      wx[1][i] = fx
-      wy[0][i] = 1.0 - fy
-      wy[1][i] = fy
+      highp_wx[i] = 1.0 - fx
+      highp_wx[8 + i] = fx
+      highp_wy[i] = 1.0 - fy
+      highp_wy[8 + i] = fy
     } else {
-      wx[0][i] = bicubic_far(1.0 - fx)
-      wx[1][i] = bicubic_near(1.0 - fx)
-      wx[2][i] = bicubic_near(fx)
-      wx[3][i] = bicubic_far(fx)
-      wy[0][i] = bicubic_far(1.0 - fy)
-      wy[1][i] = bicubic_near(1.0 - fy)
-      wy[2][i] = bicubic_near(fy)
-      wy[3][i] = bicubic_far(fy)
+      highp_wx[i] = bicubic_far(1.0 - fx)
+      highp_wx[8 + i] = bicubic_near(1.0 - fx)
+      highp_wx[16 + i] = bicubic_near(fx)
+      highp_wx[24 + i] = bicubic_far(fx)
+      highp_wy[i] = bicubic_far(1.0 - fy)
+      highp_wy[8 + i] = bicubic_near(1.0 - fy)
+      highp_wy[16 + i] = bicubic_near(fy)
+      highp_wy[24 + i] = bicubic_far(fy)
     }
-  }
-  for i in 0..<8 {
     self.r[i] = 0.0
     self.g[i] = 0.0
     self.b[i] = 0.0
     self.a[i] = 0.0
   }
-  let start : Float = if n == 2 { -0.5 } else { -1.5 }
   let pix = self.src
-  let ys = FixedArray::makei(8, fn(i) { cy[i] + start })
-  let rr = FixedArray::make(8, (0.0 : Float))
-  let gg = FixedArray::make(8, (0.0 : Float))
-  let bb = FixedArray::make(8, (0.0 : Float))
-  let aa = FixedArray::make(8, (0.0 : Float))
+  let pw = pix.width
+  let ph = pix.height
+  let wf = fi(pw)
+  let hf = fi(ph)
+  let w_ulp = ulp_sub(wf)
+  let h_ulp = ulp_sub(hf)
+  let spread = self.ctx.sampler_spread
+  let inv_w = self.ctx.sampler_inv_width
+  let inv_h = self.ctx.sampler_inv_height
+  let sdata = pix.data
+  let inv255 : Float = 1.0 / 255.0
   for j in 0..<n {
-    let xs = FixedArray::makei(8, fn(i) { cx[i] + start })
+    let wy_base = j * 8
+    for i in 0..<tail {
+      highp_xs[i] = highp_cx[i] + start
+    }
     for k in 0..<n {
-      let tx = FixedArray::makei(8, fn(i) {
-        tile(xs[i], self.ctx.sampler_spread, fi(pix.width), self.ctx.sampler_inv_width)
-      })
-      let ty = FixedArray::makei(8, fn(i) {
-        tile(ys[i], self.ctx.sampler_spread, fi(pix.height), self.ctx.sampler_inv_height)
-      })
-      let ix = gather_ix(pix, tx, ty)
-      load_8888_gather(pix, ix, rr, gg, bb, aa)
-      for i in 0..<8 {
-        let w = wx[k][i] * wy[j][i]
-        self.r[i] = w * rr[i] + self.r[i]
-        self.g[i] = w * gg[i] + self.g[i]
-        self.b[i] = w * bb[i] + self.b[i]
-        self.a[i] = w * aa[i] + self.a[i]
-        xs[i] = xs[i] + 1.0
+      let wx_base = k * 8
+      for i in 0..<tail {
+        let tx = tile(highp_xs[i], spread, wf, inv_w)
+        let ty = tile(highp_ys[i], spread, hf, inv_h)
+        let x = smin(smax(tx, 0.0), w_ulp)
+        let y = smin(smax(ty, 0.0), h_ulp)
+        let o = (trunc_int(y) * pw + trunc_int(x)) * 4
+        let w = highp_wx[wx_base + i] * highp_wy[wy_base + i]
+        self.r[i] = w * (fi(sdata[o].to_int()) * inv255) + self.r[i]
+        self.g[i] = w * (fi(sdata[o + 1].to_int()) * inv255) + self.g[i]
+        self.b[i] = w * (fi(sdata[o + 2].to_int()) * inv255) + self.b[i]
+        self.a[i] = w * (fi(sdata[o + 3].to_int()) * inv255) + self.a[i]
+        highp_xs[i] = highp_xs[i] + 1.0
       }
     }
-    for i in 0..<8 {
-      ys[i] = ys[i] + 1.0
+    for i in 0..<tail {
+      highp_ys[i] = highp_ys[i] + 1.0
     }
   }
 }

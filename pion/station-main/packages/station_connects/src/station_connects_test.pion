@@ -321,6 +321,20 @@ test "SlackConnector: at-least-once ACK, interactive payload ACK, table text, sh
     Ok(ts) => debug_assert(ts == "1700.999", "pure-file post uses real sharedTs")
     Err(e) => debug_assert(false, e)
   }
+
+  // Ordered list with nested bullets emits native rich_text with offset + inline bold/code,
+  // and markdown blocks guard CJK + code-span star boundaries with ZWSP.
+  let nested = "结论：\n\n1. **第一项（`a.ex`，`#1`）**：\n   - 细则\n\n2. **第二项**：\n   - 语音**没给 `voice_item.text`**（测试）\n\n3. **第三项**：\n   - 收尾\n\n<@U1> 确认吗？"
+  let nested_blocks = slack_markdown_blocks(nested)
+  debug_assert(nested_blocks.length() == 3, "intro markdown + rich_text + trailing markdown")
+  let nested_json = base_codec::json_stringify(base_codec::json_arr(nested_blocks))
+  debug_assert(str_contains(nested_json, "\"type\":\"rich_text\""), "emits rich_text block")
+  debug_assert(str_contains(nested_json, "\"offset\":1"), "second ordered item gets offset 1")
+  debug_assert(str_contains(nested_json, "\"offset\":2"), "third ordered item gets offset 2")
+  debug_assert(str_contains(nested_json, "\"text\":\"voice_item.text\",\"style\":{\"bold\":true,\"code\":true}"), "bold+code inline parsed")
+  let cjk_fixed = slack_fix_markdown_emphasis("文件头是 *`#!OPUS_RAW_V1`*：既不是 MP3")
+  debug_assert(str_contains(cjk_fixed, "`\u{200B}*："), "ZWSP inserted before closing star beside CJK")
+  debug_assert(slack_fix_markdown_emphasis("**hello** [x](https://x)") == "**hello** [x](https://x)", "plain ASCII unchanged")
 }
 
 // ---------------------------------------------------------------------------

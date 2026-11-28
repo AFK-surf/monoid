@@ -410,3 +410,102 @@ test "lowp end-to-end AA circle + translucent rect sanity" {
   let outside = pm.pixel(10, 10).unwrap()
   assert_true(outside.a > 128 && outside.a < 255)
 }
+
+///|
+test "lowp gradient fast paths byte-exact equivalence with generic stage pipeline" {
+  let w = 29
+  let h = 11
+  let rect = ScreenIntRect::from_xywh(1, 1, 27, 9).unwrap()
+  let spreads : Array[SpreadMode] = [Pad, Reflect, Repeat]
+  let stops_2_opaque : Array[GradientStop] = [
+    GradientStop::new(0.0, Color::from_rgba8(240, 60, 20, 255)),
+    GradientStop::new(1.0, Color::from_rgba8(20, 140, 250, 255)),
+  ]
+  let stops_2_alpha : Array[GradientStop] = [
+    GradientStop::new(0.0, Color::from_rgba8(240, 60, 20, 80)),
+    GradientStop::new(1.0, Color::from_rgba8(20, 140, 250, 220)),
+  ]
+  let stops_4_alpha : Array[GradientStop] = [
+    GradientStop::new(0.0, Color::from_rgba8(255, 0, 0, 0)),
+    GradientStop::new(0.25, Color::from_rgba8(255, 200, 0, 140)),
+    GradientStop::new(0.7, Color::from_rgba8(0, 220, 120, 255)),
+    GradientStop::new(1.0, Color::from_rgba8(40, 60, 255, 190)),
+  ]
+  let stops_4_opaque : Array[GradientStop] = [
+    GradientStop::new(0.0, Color::from_rgba8(255, 30, 10, 255)),
+    GradientStop::new(0.3, Color::from_rgba8(255, 220, 40, 255)),
+    GradientStop::new(0.65, Color::from_rgba8(20, 200, 140, 255)),
+    GradientStop::new(1.0, Color::from_rgba8(30, 50, 240, 255)),
+  ]
+
+  let check_shader = fn(shader : Shader, blend : BlendMode, cov : Float, is_aa_edge : Bool) -> Unit raise {
+    let pb = RasterPipelineBuilder::new()
+    assert_true(shader.push_stages(Linear, pb))
+    if is_aa_edge {
+      if blend.should_pre_scale_coverage() {
+        pb.push(Scale1Float)
+        pb.push(LoadDestination)
+        match blend.to_stage() {
+          Some(s) => pb.push(s)
+          None => ()
+        }
+      } else {
+        pb.push(LoadDestination)
+        match blend.to_stage() {
+          Some(s) => pb.push(s)
+          None => ()
+        }
+        pb.push(Lerp1Float)
+      }
+      pb.push(Store)
+    } else if blend == SourceOver {
+      pb.push(SourceOverRgba)
+    } else {
+      pb.push(Store)
+    }
+    let rp = pb.compile()
+    assert_true(rp.low)
+    rp.ctx.current_coverage = cov
+    let pm_fast = Pixmap::new(w, h).unwrap()
+    let pm_ref = Pixmap::new(w, h).unwrap()
+    fill_pattern_pixmap(pm_fast)
+    fill_pattern_pixmap(pm_ref)
+    lowp_start(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_fast.as_subpixmap())
+    lowp_start_generic(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_ref.as_subpixmap())
+    assert_bytes_eq(pm_fast.data, pm_ref.data)
+  }
+
+  let stop_sets = [stops_2_opaque, stops_2_alpha, stops_4_opaque, stops_4_alpha]
+  let lines : Array[(Point, Point)] = [
+    (Point::from_xy(2.0, 5.0), Point::from_xy(26.0, 5.0)), // horizontal
+    (Point::from_xy(14.0, 1.0), Point::from_xy(14.0, 10.0)), // vertical (sx == 0 constant-row fast path)
+    (Point::from_xy(2.0, 2.0), Point::from_xy(25.0, 9.0)), // diagonal
+  ]
+
+  for spread in spreads {
+    for stops in stop_sets {
+      for seg in lines {
+        let (p0, p1) = seg
+        let sh = LinearGradient::new(p0, p1, stops, spread, Transform::identity()).unwrap()
+        check_shader(sh, Source, 1.0, false)
+        check_shader(sh, SourceOver, 1.0, false)
+        check_shader(sh, Source, 0.43, true)
+        check_shader(sh, SourceOver, 0.67, true)
+      }
+      // Concentric radial gradient (XYToRadius in lowp)
+      let rsh = RadialGradient::new(
+        Point::from_xy(14.0, 5.5),
+        0.0,
+        Point::from_xy(14.0, 5.5),
+        10.0,
+        stops,
+        spread,
+        Transform::identity(),
+      ).unwrap()
+      check_shader(rsh, Source, 1.0, false)
+      check_shader(rsh, SourceOver, 1.0, false)
+      check_shader(rsh, Source, 0.51, true)
+      check_shader(rsh, SourceOver, 0.79, true)
+    }
+  }
+}

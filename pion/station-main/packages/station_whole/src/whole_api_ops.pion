@@ -41,6 +41,10 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_drive_roots_changed : Option[(String, Array[String]) -> Unit]
   pub mut on_mcp_reload : Option[(Option[String]) -> Unit]
   pub mut on_s3_test : Option[(station_replica::NormalizedS3Target) -> Result[Unit, String]]
+  pub mut on_updates_op : Option[(String, base_codec::Json, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut is_update_override_present : Option[() -> Bool]
+  pub mut on_profile_live_op : Option[(String, Array[String], base_codec::Json, station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut overview_for : Option[(station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
   pub mut drive_for_ws : Option[(String) -> station_screens::Drive]
   pub mut on_session_retry : Option[(String, Int64, Int64) -> Result[Unit, station_api::ApiError]]
@@ -65,6 +69,10 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_drive_roots_changed: None,
     on_mcp_reload: None,
     on_s3_test: None,
+    on_updates_op: None,
+    is_update_override_present: None,
+    on_profile_live_op: None,
+    overview_for: None,
     on_screens_browser_open: None,
     drive_for_ws: None,
     on_session_retry: None,
@@ -1384,8 +1392,12 @@ fn dispatch_updates_op(
     return None
   }
   let ops_lang = api_lang_to_ops(req.lang)
-  if op == "updates.check" || op == "updates.wait" || op == "updates.install" {
-    return Some(Err(err_not_implemented(op)))
+  if op == "updates.check" {
+    let ov_present = match hooks.is_update_override_present {
+      Some(f) => f()
+      None => false
+    }
+    return dispatch_live_updates_op(op, req, body, updates, cfg_opt, cfg_open_err, hooks, now_ms, override_present=ov_present)
   }
   if !req.viewer.manages_station() {
     return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage station updates")))

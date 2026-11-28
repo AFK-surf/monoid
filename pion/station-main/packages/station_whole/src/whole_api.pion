@@ -183,12 +183,97 @@ pub fn handle_hub_session_create_with(
   }
 }
 
+/// Pure-Pion overview builder (zero SQLite FFI; populates real `profiles` from `config.json` with
+/// workspace visibility filtering and `sanitize_profiles` key redaction).
+pub fn build_overview_with_counts(
+  station_id_str : String,
+  home_ws_str : String,
+  viewer_drive_roots : Array[String],
+  cfg_opt : Option[station_ops::ConfigFile],
+  disabled_runtimes : Array[String],
+  total_sess : Int,
+  running_sess : Int,
+  warm_sess : Int,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+) -> base_codec::Json {
+  let raw_cfg = read_config_raw(cfg_opt)
+  let raw_profiles = read_profiles_array(raw_cfg)
+  let profile_inputs : Array[station_api::ProfileOverviewInput] = []
+  for pi in 0..<raw_profiles.length() {
+    let pe = raw_profiles[pi]
+    if !live_profile_visible_in_ws(pe, viewer.workspace) {
+      continue
+    }
+    let pid = match json_field_str(pe, "id") { Some(s) => s, None => "" }
+    if pid.length() == 0 {
+      continue
+    }
+    let prt = match json_field_str(pe, "runtime") { Some(s) => s, None => "" }
+    let plabel = match json_field_str(pe, "name") { Some(s) if s.length() > 0 => s, _ => pid }
+    let api_key_opt : Option[String] = match base_codec::json_get(pe, "access") {
+      Some(acc) => match json_field_str(acc, "key") {
+        Some(k) if k.length() > 0 => Some(k)
+        _ => None
+      }
+      None => None
+    }
+    profile_inputs.push(station_api::ProfileOverviewInput::{
+      id: pid,
+      runtime: prt,
+      label: plabel,
+      status: "ok",
+      models: [],
+      api_key: api_key_opt,
+      refresh_token: None,
+    })
+  }
+  let base_in = station_api::OverviewInput::minimal()
+  let input = station_api::OverviewInput::{
+    cloud: Some(station_api::StatusCloudState::{
+      origin: None,
+      workspace: Some(viewer.workspace),
+      workspace_name: Some(viewer.workspace),
+      station: Some(station_id_str),
+      removed_at: None,
+    }),
+    reached: true,
+    built_at: base_in.built_at,
+    connects: base_in.connects,
+    profiles: profile_inputs,
+    mcp_servers: base_in.mcp_servers,
+    backup_s3: base_in.backup_s3,
+    agent_env: base_in.agent_env,
+    total_sessions: total_sess,
+    running_sessions: running_sess,
+    warm_sessions: warm_sess,
+    auto_archive_days: base_in.auto_archive_days,
+    slack_archive_days: base_in.slack_archive_days,
+    auto_archive_reviewed: base_in.auto_archive_reviewed,
+    accept_auto_chats: base_in.accept_auto_chats,
+    disabled_runtimes: disabled_runtimes,
+    disk_free_bytes: base_in.disk_free_bytes,
+    disk_total_bytes: base_in.disk_total_bytes,
+    afresh_when_cold: base_in.afresh_when_cold,
+    afresh_above: base_in.afresh_above,
+    diagnostics_logs: base_in.diagnostics_logs,
+    search_personal: base_in.search_personal,
+    has_spotlight: base_in.has_spotlight,
+    drive_roots: viewer_drive_roots,
+    drive_home: base_in.drive_home,
+  }
+  let _ = home_ws_str
+  station_api::build_overview(input, viewer, lang)
+}
+
 fn build_whole_overview(
   whole_store : WholeStore,
   agents : WholeAgents,
   station_id_str : String,
   home_ws_str : String,
   viewer_drive_roots : Array[String],
+  cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
 ) -> Result[base_codec::Json, station_api::ApiError] {
@@ -218,41 +303,19 @@ fn build_whole_overview(
     }
     Err(_) => ()
   }
-  let base_in = station_api::OverviewInput::minimal()
-  let input = station_api::OverviewInput::{
-    cloud: Some(station_api::StatusCloudState::{
-      origin: None,
-      workspace: Some(viewer.workspace),
-      workspace_name: Some(viewer.workspace),
-      station: Some(station_id_str),
-      removed_at: None,
-    }),
-    reached: true,
-    built_at: base_in.built_at,
-    connects: base_in.connects,
-    profiles: base_in.profiles,
-    mcp_servers: base_in.mcp_servers,
-    backup_s3: base_in.backup_s3,
-    agent_env: base_in.agent_env,
-    total_sessions: total_sess,
-    running_sessions: running_sess,
-    warm_sessions: warm_sess,
-    auto_archive_days: base_in.auto_archive_days,
-    slack_archive_days: base_in.slack_archive_days,
-    auto_archive_reviewed: base_in.auto_archive_reviewed,
-    accept_auto_chats: base_in.accept_auto_chats,
-    disabled_runtimes: agents.disabled_runtimes,
-    disk_free_bytes: base_in.disk_free_bytes,
-    disk_total_bytes: base_in.disk_total_bytes,
-    afresh_when_cold: base_in.afresh_when_cold,
-    afresh_above: base_in.afresh_above,
-    diagnostics_logs: base_in.diagnostics_logs,
-    search_personal: base_in.search_personal,
-    has_spotlight: base_in.has_spotlight,
-    drive_roots: viewer_drive_roots,
-    drive_home: base_in.drive_home,
-  }
-  Ok(station_api::build_overview(input, viewer, lang))
+  let _ = hooks
+  Ok(build_overview_with_counts(
+    station_id_str,
+    home_ws_str,
+    viewer_drive_roots,
+    cfg_opt,
+    agents.disabled_runtimes,
+    total_sess,
+    running_sess,
+    warm_sess,
+    viewer,
+    lang,
+  ))
 }
 
 /// Authenticated caller identity established by the transport/mesh layer.
@@ -272,6 +335,19 @@ pub struct PeerAuthPolicy {
   pub allowed_workspaces : Array[String]
   /// Optional `station_rules_bridge::shell_verifier` callback (`libcrux`); `None` uses pure-Pion crypto.
   pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+}
+
+/// Dynamically admit a newly joined workspace into `allowed_workspaces` without restarting the station.
+pub fn PeerAuthPolicy::add_workspace(self : PeerAuthPolicy, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  for i in 0..<self.allowed_workspaces.length() {
+    if self.allowed_workspaces[i] == ws {
+      return
+    }
+  }
+  self.allowed_workspaces.push(ws)
 }
 
 fn ws_allowed(allowed : Array[String], ws : String) -> Bool {
@@ -1749,7 +1825,7 @@ pub fn WholeApi::new(
         req.viewer,
         req.lang,
         fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, v, l)
+          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, config_file, hooks, v, l)
         },
       )
     }
@@ -1805,7 +1881,7 @@ pub fn WholeApi::new(
       Some(r) => r
       None => []
     }
-    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, viewer, lang)
+    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, config_file, hooks, viewer, lang)
   }
 
   let host_sample_fn = fn(_lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
