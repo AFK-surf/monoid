@@ -2235,7 +2235,11 @@ async function main(argv: string[]) {
         if (!needRemote) {
           for (const [p, t] of wanted) {
             const k = key(p, t);
-            if (complete(cached(p, t, k), p, t)) console.log(`${p} ${t} ${k}: cached (0 s)`);
+            if (complete(cached(p, t, k), p, t)) {
+              // Go through get() so cache locking and noteUse() mark cached parts as used before workers run trimCache().
+              await get(p, t, "any");
+              console.log(`${p} ${t} ${k}: cached (0 s)`);
+            }
           }
         }
         const queue = needRemote ? [...wanted] : [...todo];
