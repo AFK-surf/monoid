@@ -254,7 +254,7 @@ test "w17e3a-5: Codex compact:<seq> JSON-RPC error, runner disconnect, and timeo
   }
 }
 
-test "w17e3a-6: Claude empty runtimeSessionId returns station.context.empty; cold Codex returns 409" {
+test "w17e3a-6: Claude empty runtimeSessionId returns station.context.empty; cold Claude allowed; cold Codex returns 409" {
   // Claude with empty runtimeSessionId -> 409 station.context.empty
   match validate_compact_candidate(false, false, false, "claude", "", false) {
     Err(e) => {
@@ -264,6 +264,11 @@ test "w17e3a-6: Claude empty runtimeSessionId returns station.context.empty; col
       }
     }
     Ok(_) => panic("Claude with empty runtimeSessionId must fail with station.context.empty")
+  }
+  // Cold Claude with non-empty runtimeSessionId -> ALLOWED (P2-3: spawns fresh --resume runner & compacts!)
+  match validate_compact_candidate(false, false, false, "claude", "rs-cold-claude-1", false) {
+    Ok(_) => ()
+    Err(e) => panic("cold Claude with valid runtimeSessionId must be allowed, got " + e.status.to_string() + ": " + e.message)
   }
   // Cold Codex (valid runtimeSessionId, has_ready_runner=false) -> 409 (never sends literal "/compact"!)
   match validate_compact_candidate(false, false, false, "codex", "th-cold-1", false) {
@@ -279,5 +284,57 @@ test "w17e3a-6: Claude empty runtimeSessionId returns station.context.empty; col
   match validate_compact_candidate(false, false, false, "agy", "sid-1", true) {
     Err(e) => if e.status != 409 { panic("agy compact must return 409") }
     Ok(_) => panic("agy compact must return 409")
+  }
+}
+
+test "w17e3a-r2: localized station notices, Codex thread/turn correlation, cap_paused is_active vs queue, and Resume preservation" {
+  // P1-1 & P2-1: station notice ts format and localized zh/en notice text
+  let nts = make_station_notice_ts(1795857971123L, 42L)
+  if !nts.contains(".") || !nts.contains("1795857971") {
+    panic("unexpected notice ts: " + nts)
+  }
+  let en_cut = live_runner_retry_notice_text(station_ops::Lang::En, "aborted", Some("other: cut off by restart"))
+  let zh_cut = live_runner_retry_notice_text(station_ops::Lang::Zh, "aborted", Some("other: cut off by restart"))
+  if en_cut.length() == 0 || zh_cut.length() == 0 || en_cut == zh_cut {
+    panic("expected distinct en/zh cutOffByRestart notices")
+  }
+  let en_cap = live_runner_retry_notice_text(station_ops::Lang::En, "failed", Some("other: session_cap"))
+  if en_cap.length() == 0 {
+    panic("expected non-empty cap_paused notice")
+  }
+
+  // P1-2: Codex turn/completed threadId & turn.id correlation guard
+  let codex_line = "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"th-A\",\"turn\":{\"id\":\"turn-1\",\"status\":\"completed\"}}}"
+  let (ev_tid, ev_turn_id) = extract_codex_turn_ids(codex_line)
+  if ev_tid != Some("th-A") || ev_turn_id != Some("turn-1") {
+    panic("extract_codex_turn_ids failed")
+  }
+  if !codex_turn_event_matches_session(Some("th-A"), Some("turn-1"), Some("th-A"), Some("turn-1")) {
+    panic("matching thread/turn must pass")
+  }
+  if codex_turn_event_matches_session(Some("th-A"), Some("turn-1"), Some("th-B"), Some("turn-1")) {
+    panic("mismatched threadId from stale/other runner must be rejected")
+  }
+  if codex_turn_event_matches_session(Some("th-A"), Some("turn-1"), Some("th-A"), Some("turn-2")) {
+    panic("mismatched turn.id from stale compaction must be rejected")
+  }
+
+  // P1-5: SessionActor::is_active() distinguishes queued work from active execution
+  let cap_actor = station_sessions::SessionActor::new("s-cap-1", "claude")
+  cap_actor.queue.push(station_sessions::ActorWork::Prompt("queued while cap_paused"))
+  if cap_actor.is_active() {
+    panic("idle actor with queued prompt must NOT be is_active()")
+  }
+  if !cap_actor.is_busy() {
+    panic("idle actor with queued prompt must still be is_busy()")
+  }
+  // P2-2: ActorWork::Resume preserves kind="resume" and internal=true when pumped from queue
+  let res_actor = station_sessions::SessionActor::new("s-res-1", "claude")
+  res_actor.queue.push(station_sessions::ActorWork::Resume(station_drivers::GO_ON_AFTER_FAILED))
+  res_actor.pump_next_prompt()
+  if res_actor.started_prompts.length() != 1
+  || !res_actor.started_prompts_internal[0]
+  || res_actor.started_prompts_kind[0] != "resume" {
+    panic("ActorWork::Resume must preserve internal=true and kind=resume across requeue")
   }
 }

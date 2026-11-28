@@ -3156,3 +3156,146 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
 });
+
+test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary notice + cutOffByRestart + cap_paused message/letter + auth 409) & compact gates", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17e3a-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17e3a";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17e3a daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e3a mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  const db = new DatabaseSync(join(data, "stillfail.db"));
+  const now = Date.now();
+  const sessKey = "chat:w17e3a-retry-1";
+  const threadId = 701;
+
+  // Seed a real session, thread, thread_sessions, 2 consecutive failed turns + ordinary station notice
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-1', ?, ?, ?, 0, ?)`)
+    .run(sessKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Test', ?)`)
+    .run(threadId, `${threadId}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(threadId, sessKey, now);
+  // Entry 1: old failure notice, Entry 2: latest failure notice (atomically bound), Entry 3: ordinary station notice
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 1, 'message', 'station', 'station', 'old failure', ?, '1795857000.000001')`).run(threadId, now - 3000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 2, 'message', 'station', 'station', 'latest failure', ?, '1795857000.000002')`).run(threadId, now - 2000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 3, 'message', 'station', 'station', 'ordinary notice', ?, '1795857000.000003')`).run(threadId, now - 1000);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-fail-1', ?, 'turn', ?, ?, 'failed', 'model: 500', 'default', ?, ?, 1, '1795857000.000001')`)
+    .run(sessKey, now - 3100, now - 3000, threadId, threadId);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-fail-2', ?, 'turn', ?, ?, 'failed', 'model: 502', 'default', ?, ?, 2, '1795857000.000002')`)
+    .run(sessKey, now - 2100, now - 2000, threadId, threadId);
+
+  // 1. Verify GET /chats sees our seeded thread
+  const chatsResp = await adminCall(conn, "GET", "/chats");
+  assert.equal(chatsResp.status, 200, chatsResp.body.toString());
+  const chatsJson = JSON.parse(chatsResp.body.toString("utf8"));
+  const foundChat = (chatsJson.chats ?? []).find((c: any) => c.id === threadId);
+  assert.ok(foundChat, `expected seeded chat ${threadId} in GET /chats: ${chatsResp.body.toString()}`);
+
+  // 2. Stale failure (seq=1) and ordinary notice (seq=3) MUST return 409
+  const staleRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 1 })));
+  assert.equal(staleRetry.status, 409, `stale failure seq=1 must be 409, got ${staleRetry.status}: ${staleRetry.body.toString()}`);
+  const ordRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 3 })));
+  assert.equal(ordRetry.status, 409, `ordinary notice seq=3 must be 409, got ${ordRetry.status}: ${ordRetry.body.toString()}`);
+
+  // 3. Non-retryable `auth:` / `quota:` / `refused:` MUST return 409 even on exact seq=2
+  db.prepare(`UPDATE turns SET detail = 'auth: token expired' WHERE id = 't-fail-2'`).run();
+  const authRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 2 })));
+  assert.equal(authRetry.status, 409, `auth: failure must be 409, got ${authRetry.status}`);
+
+  // 4. Exact bound `cutOffByRestart` (`outcome='aborted', detail='other: cut off by restart'`) MUST succeed (200)
+  //    AND when the resulting resume turn fails before spawn (no claude binary), production `insert_retry_about_notice_in_tx`
+  //    writes a real `author_kind='station', author='station'` entry + `turns.(about_thread, about_n, about_ts)`!
+  db.prepare(`UPDATE turns SET outcome = 'aborted', detail = 'other: cut off by restart' WHERE id = 't-fail-2'`).run();
+  const cutRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 2 })));
+  assert.equal(cutRetry.status, 200, `cutOffByRestart seq=2 must be 200, got ${cutRetry.status}: ${cutRetry.body.toString()}`);
+  const newTurn = await until("production insert_retry_about_notice_in_tx wrote new resume turn", () => {
+    const r = db.prepare(`SELECT id, kind, outcome, about_thread, about_n, about_ts FROM turns WHERE session_key = ? AND id != 't-fail-1' AND id != 't-fail-2' ORDER BY started_at DESC LIMIT 1`).get(sessKey) as any;
+    return r && r.about_n != null ? r : null;
+  }, 5_000);
+  assert.equal(newTurn.kind, "resume", `retry must record kind='resume', got ${JSON.stringify(newTurn)}`);
+  assert.equal(newTurn.about_thread, threadId);
+  assert.ok(typeof newTurn.about_ts === "string" && newTurn.about_ts.includes("."), `about_ts must be real station ts, got ${newTurn.about_ts}`);
+  const noticeEntry = db.prepare(`SELECT kind, author, author_kind, ts FROM entries WHERE thread = ? AND n = ?`).get(threadId, newTurn.about_n) as any;
+  assert.equal(noticeEntry.kind, "message");
+  assert.equal(noticeEntry.author, "station");
+  assert.equal(noticeEntry.author_kind, "station");
+  assert.equal(noticeEntry.ts, newTurn.about_ts);
+
+  // 5. P1-5: `cap_paused` (`other: session_cap`) with pending SQLite `deliveries` message AND `letter_deliveries` letter
+  const capKey = "chat:w17e3a-cap-1";
+  const capThread = 702;
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-cap', ?, ?, ?, 0, ?)`)
+    .run(capKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Cap', ?)`)
+    .run(capThread, `${capThread}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(capThread, capKey, now);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 1, 'message', 'station', 'station', 'cap paused', ?, '1795857001.000001')`).run(capThread, now - 2000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 2, 'message', 'owner@example.com', 'person', 'pending human msg', ?, '1795857001.000002')`).run(capThread, now - 1000);
+  db.prepare(`INSERT INTO deliveries (thread, n, session, delivered_at) VALUES (?, 2, ?, NULL)`).run(capThread, capKey);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-cap-1', ?, 'turn', ?, ?, 'failed', 'other: session_cap', 'default', ?, ?, 1, '1795857001.000001')`)
+    .run(capKey, now - 2100, now - 2000, capThread, capThread);
+
+  const capMsgRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(capKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: capThread, seq: 1 })));
+  assert.equal(capMsgRetry.status, 200, `cap_paused with pending delivery must be 200, got ${capMsgRetry.status}: ${capMsgRetry.body.toString()}`);
+  const delivRow = db.prepare(`SELECT delivered_at FROM deliveries WHERE thread = ? AND n = 2 AND session = ?`).get(capThread, capKey) as any;
+  assert.ok(delivRow.delivered_at != null, "cap_paused retry must dequeue & mark SQLite delivery delivered_at");
+
+  // Also test `cap_paused` with pending `letter_deliveries`
+  const capLetterKey = "chat:w17e3a-cap-letter";
+  const capLetterThread = 703;
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-cap-l', ?, ?, ?, 0, ?)`)
+    .run(capLetterKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Cap Letter', ?)`)
+    .run(capLetterThread, `${capLetterThread}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(capLetterThread, capLetterKey, now);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 1, 'message', 'station', 'station', 'cap paused letter', ?, '1795857002.000001')`).run(capLetterThread, now - 2000);
+  db.prepare(`INSERT INTO letters (thread, n, ts, author_kind, author, text, at, letter) VALUES (?, 1, '1795857002.000002', 'agent', 'other-chat', 'pending letter body', ?, '{}')`).run(capLetterThread, now - 1000);
+  db.prepare(`INSERT INTO letter_deliveries (thread, n, session, delivered_at) VALUES (?, 1, ?, NULL)`).run(capLetterThread, capLetterKey);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-cap-l-1', ?, 'turn', ?, ?, 'failed', 'other: session_cap', 'default', ?, ?, 1, '1795857002.000001')`)
+    .run(capLetterKey, now - 2100, now - 2000, capLetterThread, capLetterThread);
+
+  const capLetterRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(capLetterKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: capLetterThread, seq: 1 })));
+  assert.equal(capLetterRetry.status, 200, `cap_paused with pending letter_delivery must be 200, got ${capLetterRetry.status}: ${capLetterRetry.body.toString()}`);
+  const letterDelivRow = db.prepare(`SELECT delivered_at FROM letter_deliveries WHERE thread = ? AND n = 1 AND session = ?`).get(capLetterThread, capLetterKey) as any;
+  assert.ok(letterDelivRow.delivered_at != null, "cap_paused retry must dequeue & mark SQLite letter_deliveries delivered_at");
+
+  // 6. Compact gates: Claude empty runtime_session_id -> 409 `No context yet`; cold Codex -> 409
+  const compactEmpty = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactEmpty.status, 409, `Claude empty runtime_session_id must be 409, got ${compactEmpty.status}: ${compactEmpty.body.toString()}`);
+  assert.ok(compactEmpty.body.toString().includes("No context yet"), `expected 'No context yet', got ${compactEmpty.body.toString()}`);
+
+  const codexKey = "chat:w17e3a-codex-cold";
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, runtime_session_id, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'codex', 'default', ?, 'tok-cx', ?, 'th-cold-1', ?, ?, 0, ?)`)
+    .run(codexKey, drive, drive, now, now, ws);
+  const compactCodexCold = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(codexKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactCodexCold.status, 409, `cold Codex compact must be 409, got ${compactCodexCold.status}: ${compactCodexCold.body.toString()}`);
+
+  db.close();
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});

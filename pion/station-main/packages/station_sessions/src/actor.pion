@@ -341,15 +341,26 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
   }
 }
 
-/// Returns true if the actor is currently busy (compacting, starting, running, stopping, or has queued work).
-pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
-  if self.compacting || self.pending_compaction is Some(_) {
+/// Returns true if the actor is actively executing work (compacting, starting, running, or stopping),
+/// excluding merely queued work (so `cap_paused` retry can distinguish active execution from queued work).
+pub fn SessionActor::is_active(self : SessionActor) -> Bool {
+  if self.compacting || self.pending_compaction is Some(_) || self.in_flight_start {
     return true
   }
   match self.phase {
-    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start
-    ActorPhase::Closed => false
+    ActorPhase::Idle | ActorPhase::Closed => false
     _ => true
+  }
+}
+
+/// Returns true if the actor is currently busy (compacting, starting, running, stopping, or has queued work).
+pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
+  if self.is_active() {
+    return true
+  }
+  match self.phase {
+    ActorPhase::Idle => self.queue.length() > 0
+    _ => false
   }
 }
 
