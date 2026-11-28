@@ -7998,7 +7998,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               }
               // P1-5: Settle any open turns whose runner could NOT be adopted (e.g. crash or host restart)
               // with `aborted` + `other: cut off by restart` + bound station notice (aligned with actor_run.mbt:724-749).
-              st.live_runners.recover_orphan_open_turns_on_startup(ctx, st.core, adopt_wall_ms)
+              let _ = st.live_runners.recover_orphan_open_turns_on_startup(ctx, st.core, adopt_wall_ms)
+              // R4 Item 2: Re-submit any queued inputs carried across `SIGUSR2` handover from interrupted compactions!
+              st.live_runners.restore_carried_pending_prompts(ctx, st.core, adopt_cfg, adopt_now_ms, adopt_wall_ms)
               // R14 Invariant 2: Do NOT single-scan prune `draining_stopping_ids` at startup;
               // `LiveRunnerManager::tick()` safely sweeps dead exact `instance_id`s via OS liveness
               // checks and expires `Spawning` `"rid:<id>@<before_ms>"` markers after 30s while
@@ -9439,7 +9441,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           // R11 P1-1: Freeze `pre_delivery` prompts immediately, best-effort commit all pending
           // end-turns/draining entries, and hand over any uncommitted entries + in-flight
           // `draining_stopping_ids` to the successor via `carry` + private handover file.
-          st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms)
+          match st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms) {
+            Ok(_) => ()
+            Err(e) => {
+              ctx.log("[whole-daemon] prepare_handover failed: " + e)
+              return Err(e)
+            }
+          }
           match st.core.export_handover(ho_wall_ms) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])

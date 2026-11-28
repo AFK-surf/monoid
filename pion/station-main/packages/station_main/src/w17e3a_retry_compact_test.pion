@@ -38,8 +38,8 @@ test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryab
   }
   // Exact bound latest failure (n=5) -> ACCEPTED with GO_ON_AFTER_FAILED + `kind = "resume"` internal turn
   match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("model: 500"), Some(10L), Some(5L), false, 10L, 5L) {
-    Ok((cap, words)) => {
-      if cap || words != station_drivers::GO_ON_AFTER_FAILED {
+    Ok(words) => {
+      if words != station_drivers::GO_ON_AFTER_FAILED {
         panic("expected GO_ON_AFTER_FAILED")
       }
       let actor = station_sessions::SessionActor::new("s-retry-1", "claude")
@@ -57,8 +57,8 @@ test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryab
 
   // cutOffByRestart exact match -> ACCEPTED with RESUME_AFTER_RESTART
   match validate_retry_candidate(false, false, true, false, true, Some("aborted"), None, Some("other: cut off by restart"), Some(10L), Some(7L), false, 10L, 7L) {
-    Ok((cap, words)) => {
-      if cap || words != station_drivers::RESUME_AFTER_RESTART {
+    Ok(words) => {
+      if words != station_drivers::RESUME_AFTER_RESTART {
         panic("expected RESUME_AFTER_RESTART for cutOffByRestart")
       }
     }
@@ -67,8 +67,8 @@ test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryab
 
   // givenUp -> ACCEPTED with GO_ON_AFTER_UNANSWERED
   match validate_retry_candidate(false, false, true, false, true, Some("completed"), None, None, Some(10L), Some(8L), false, 10L, 8L) {
-    Ok((cap, words)) => {
-      if cap || words != station_drivers::GO_ON_AFTER_UNANSWERED {
+    Ok(words) => {
+      if words != station_drivers::GO_ON_AFTER_UNANSWERED {
         panic("expected GO_ON_AFTER_UNANSWERED for givenUp")
       }
     }
@@ -83,9 +83,18 @@ test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryab
       Ok(_) => panic("must reject " + bad[i])
     }
   }
-  // Held, archived, non-member thread, busy, pending messages -> REJECTED
-  if validate_retry_candidate(true, false, true, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L).is_ok() {
-    panic("held must reject")
+  // Held, archived, non-member thread, busy, pending messages -> REJECTED (with localized busy/held!)
+  match validate_retry_candidate(true, false, true, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L, lang=station_ops::Lang::Zh) {
+    Err(e) => if e.status != 409 || e.message != station_ops::tr(station_ops::Lang::Zh, "station.context.held") {
+      panic("held must reject with localized zh message")
+    }
+    Ok(_) => panic("held must reject")
+  }
+  match validate_retry_candidate(false, false, true, true, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L, lang=station_ops::Lang::Zh) {
+    Err(e) => if e.status != 409 || e.message != station_ops::tr(station_ops::Lang::Zh, "station.context.busy") {
+      panic("busy must reject with localized zh message")
+    }
+    Ok(_) => panic("busy must reject")
   }
   if validate_retry_candidate(false, true, true, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L).is_ok() {
     panic("archived must reject")
@@ -94,10 +103,10 @@ test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryab
     Err(e) => if e.status != 404 { panic("non-member thread must return 404") }
     Ok(_) => panic("non-member thread must reject")
   }
-  // cap_paused allows retry even when has_pending == true!
+  // R4 Item 1: `other: session_cap` returns honest 501 until account concurrency cap runtime lands!
   match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("other: session_cap"), Some(10L), Some(9L), true, 10L, 9L) {
-    Ok((cap, _)) => if !cap { panic("expected cap_paused=true") }
-    Err(e) => panic("cap_paused with has_pending must succeed: " + e.message)
+    Err(e) => if e.status != 501 { panic("other: session_cap must return honest 501, got " + e.status.to_string()) }
+    Ok(_) => panic("other: session_cap must return honest 501")
   }
 }
 
@@ -394,5 +403,26 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
   let full_instr = station_drivers::session_instructions("/tmp/ws", None, "/tmp/repos", "/tmp/MEMORY.md", "", "", "st-1", true, true, "alice@example.com")
   if full_instr.length() == 0 {
     panic("cold Claude compact instructions must never be empty")
+  }
+
+  // R4 Item 2: Handover carry state round-trips queued prompts from an interrupted compaction
+  let mgr1 = LiveRunnerManager::new()
+  mgr1.pending_prompts.push(CarriedHandoverPrompt::{
+    session_key: "chat:compact-ho-1",
+    runtime: "claude",
+    text: "human message queued during compact before SIGUSR2",
+    is_internal: false,
+    kind: "prompt",
+  })
+  if !mgr1.has_handover_carry_state() {
+    panic("has_handover_carry_state must be true when pending_prompts is non-empty")
+  }
+  let exported = mgr1.export_handover_state_json()
+  let mgr2 = LiveRunnerManager::new()
+  mgr2.import_handover_state_json(exported)
+  if mgr2.pending_prompts.length() != 1
+  || mgr2.pending_prompts[0].session_key != "chat:compact-ho-1"
+  || mgr2.pending_prompts[0].text != "human message queued during compact before SIGUSR2" {
+    panic("pending_prompts did not round-trip across handover JSON")
   }
 }
