@@ -261,6 +261,7 @@ pub struct WholeAgents {
   pub codex_active_turns : Map[String, String]
   pub mut disabled_runtimes : Array[String]
   pub mut remote_system_port : Option[McpRemoteSystemPort]
+  pub mut on_session_archived : Option[(String) -> Unit]
   mut adopted_db : Option[sql_db::Db]
   mut adopted_db_closed : Bool
   job_fs : station_jobs::FsPort
@@ -301,6 +302,7 @@ pub fn WholeAgents::new_with_deps(
     codex_active_turns: Map::new(),
     disabled_runtimes: [],
     remote_system_port: None,
+    on_session_archived: None,
     adopted_db: None,
     adopted_db_closed: false,
     job_fs: fs,
@@ -851,6 +853,10 @@ pub fn WholeAgents::archive_session(
       Some(a) => {
         let _ = a.evict()
       }
+      None => ()
+    }
+    match self.on_session_archived {
+      Some(cb) => cb(sk)
       None => ()
     }
   }

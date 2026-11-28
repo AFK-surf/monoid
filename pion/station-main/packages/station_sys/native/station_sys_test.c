@@ -2590,6 +2590,48 @@ int main(void) {
 
         assert(sts_unlink_under_nofollow(rdir, "sub/final.txt") == 0);
         assert(sts_unlink_under_nofollow(rdir, "sub/existing.txt") == 0);
+
+        /* R4 P1-1: single-open streaming handles (open_ro_under_nofollow + create_excl_open + pwrite + async fsync_close) */
+        int32_t rw_err = 0;
+        int64_t rwh = sts_create_excl_open_under_nofollow(rdir, "sub/stream.part", 0600, &rw_err);
+        assert(rwh > 0 && rw_err == 0);
+        assert(sts_create_excl_open_under_nofollow(rdir, "sub/stream.part", 0600, &rw_err) == -1 && rw_err == -7);
+        assert(sts_create_excl_open_under_nofollow(rdir, "symdir/escape.part", 0600, &rw_err) == -1 && rw_err == -5);
+        assert(sts_file_pwrite(rwh, c1, 6, 0) == 0);
+        assert(sts_file_pwrite(rwh, c2, 5, 6) == 0);
+        uint64_t fsync_ev_id = 999101ULL;
+        assert(sts_file_fsync_close_async(fsync_ev_id, rwh) == 1);
+        /* Double-close after async handoff must be a safe no-op */
+        assert(sts_file_rw_close(rwh) == 0);
+        int got_fsync = 0;
+        int64_t fdl = sth_now_ms() + 3000;
+        while (!got_fsync && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    int32_t frc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                    assert(frc == 0);
+                    got_fsync = 1;
+                }
+                sth_free(ev);
+            }
+        }
+        assert(got_fsync == 1);
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/stream.part", "sub/streamed.txt") == 0);
+        int64_t ro_sz = 0;
+        int32_t ro_err = 0;
+        int64_t roh = sts_open_ro_under_nofollow(rdir, "sub/streamed.txt", &ro_sz, &ro_err);
+        assert(roh > 0 && ro_err == 0 && ro_sz == 11);
+        assert(sts_open_ro_under_nofollow(rdir, "symdir/streamed.txt", &ro_sz, &ro_err) == -1 && ro_err == -5);
+        int64_t pread_len = 0;
+        int32_t pread_err = 0;
+        char *pread_buf = (char *)sts_file_pread(roh, 0, 11, &pread_len, &pread_err);
+        assert(pread_buf != NULL && pread_err == 0 && pread_len == 11 && memcmp(pread_buf, "hello world", 11) == 0);
+        sts_free(pread_buf);
+        assert(sts_file_close(roh) == 1);
+        assert(sts_unlink_under_nofollow(rdir, "sub/streamed.txt") == 0);
+
         char subdir[256];
         snprintf(subdir, sizeof(subdir), "%s/sub", rdir);
         assert(rmdir(subdir) == 0);

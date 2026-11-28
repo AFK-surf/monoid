@@ -15,6 +15,7 @@ import "station_http"
 import "station_jobs"
 import "station_mesh"
 import "station_replica"
+import "station_store"
 import "station_sys"
 import "station_tools"
 import "station_whole"
@@ -51,6 +52,26 @@ fn dm_json_i64(j : base_codec::Json, key : String) -> Option[Int64] {
   }
 }
 
+/// Strictly parse a non-negative integer JSON number (rejects floats, scientific notation, negatives, and > 2^53-1).
+pub fn dm_json_nonneg_i64(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, raw)) => {
+      if raw.contains(".") || raw.contains("e") || raw.contains("E") || raw.starts_with("-") {
+        return None
+      }
+      if d < 0.0 || d > 9007199254740991.0 {
+        return None
+      }
+      let n = d.to_int64()
+      if n < 0L || n.to_double() != d {
+        return None
+      }
+      Some(n)
+    }
+    _ => None
+  }
+}
+
 fn dm_json_num(j : base_codec::Json, key : String) -> Option[Double] {
   match base_codec::json_get(j, key) {
     Some(base_codec::Json::Num(d, _)) => Some(d)
@@ -76,7 +97,10 @@ pub fn extract_mcp_rpc_id(req_body : String) -> Option[base_codec::Json] {
 /// - `start`: `method: "task.start"` with `spec: { name, command, requestedBy, screen, small }`
 /// - `release`: `method: "task.collected"` (NEVER `"task.release"`)
 /// - `get`/`log`/`stop`/`list`/`mirrors`/`clean`: `method: "task." + action`
-pub fn build_remote_task_rpc_payload(intent : station_whole::DeferredMcpIntent) -> base_codec::Json {
+pub fn build_remote_task_rpc_payload(
+  intent : station_whole::DeferredMcpIntent,
+  push_ref : String = "",
+) -> base_codec::Json {
   if intent.action == "release" {
     return base_codec::json_obj([
       ("method", base_codec::json_str("task.collected")),
@@ -101,13 +125,17 @@ pub fn build_remote_task_rpc_payload(intent : station_whole::DeferredMcpIntent) 
       }
       None => base_codec::json_obj([])
     }
-    return base_codec::json_obj([
+    let fields : Array[(String, base_codec::Json)] = [
       ("method", base_codec::json_str("task." + intent.action)),
       ("workspace", base_codec::json_str(intent.caller_ws)),
       ("session", base_codec::json_str(intent.session)),
       ("key", base_codec::json_str(intent.task_key)),
       ("spec", spec_obj),
-    ])
+    ]
+    if intent.action == "start" && push_ref.length() > 0 {
+      fields.push(("push", base_codec::json_str(push_ref)))
+    }
+    return base_codec::json_obj(fields)
   }
   let rpc_fields : Array[(String, base_codec::Json)] = [
     ("method", base_codec::json_str("task." + intent.action)),
@@ -468,7 +496,16 @@ fn ways_to_mcp_view(ctx : DaemonCtx, ways : station_mesh::WaysStore, ws : String
   }
 }
 
-/// Wire `core.agents.remote_system_port` with unified `DeferredMcpCapture` and zero fake successes.
+/// Build the wire peer RPC payload for `session.close` sent to remote peers when a session is archived.
+pub fn build_session_close_rpc_payload(workspace : String, session : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("method", base_codec::json_str("session.close")),
+    ("workspace", base_codec::json_str(workspace)),
+    ("session", base_codec::json_str(session)),
+  ])
+}
+
+/// Wire `core.agents.remote_system_port`, live `is_workspace_bound`, and `on_session_archived` (`session.close`).
 pub fn wire_daemon_mcp_remote_system(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
@@ -476,6 +513,7 @@ pub fn wire_daemon_mcp_remote_system(
   ways : station_mesh::WaysStore,
   move_sched : Option[station_replica::MoveScheduler],
   defer_capture : station_whole::DeferredMcpCapture,
+  remote_outbox : station_whole::RemoteTaskOutbox,
 ) -> Unit {
   let port = station_whole::McpRemoteSystemPort::{
     station_id: fn() -> String { ctx.station_key.id },
@@ -538,29 +576,45 @@ pub fn wire_daemon_mcp_remote_system(
     if ctx.cloud.removed() {
       return false
     }
-    let now_secs = (host_shim::wall_ms() / 1000L).to_double()
-    let caller_ws = match core.store.require_open() {
-      Ok(st) => {
-        match st.db.all("SELECT ws FROM sessions WHERE key = ?1 LIMIT 1", [base_codec::json_str(session)]) {
-          Ok(rows) => {
-            if rows.length() > 0 {
-              match rows[0].get("ws") {
-                Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { core.config.home_workspace }
-                _ => core.config.home_workspace
-              }
-            } else {
-              core.config.home_workspace
-            }
-          }
-          _ => core.config.home_workspace
-        }
-      }
-      Err(_) => core.config.home_workspace
+    let st = match core.store.require_open() {
+      Ok(s) => s
+      Err(_) => return false
     }
-    if caller_ws.length() == 0 {
+    let rows = match st.db.all("SELECT ws FROM sessions WHERE key = ?1 LIMIT 1", [base_codec::json_str(session)]) {
+      Ok(rs) => rs
+      Err(_) => return false
+    }
+    if rows.length() == 0 {
       return false
     }
-    ctx.cloud.membership(caller_ws, now_secs) is Some(_)
+    let caller_ws = match rows[0].get("ws") {
+      Some(base_codec::Json::Str(s)) => {
+        if s.length() > 0 {
+          s
+        } else {
+          match ctx.cloud.home() {
+            Some(h) => h
+            None => return false
+          }
+        }
+      }
+      _ => {
+        match ctx.cloud.home() {
+          Some(h) => h
+          None => return false
+        }
+      }
+    }
+    let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+    ctx.cloud.membership(caller_ws, now_secs) is Some(_) && ctx.cloud.rig_in(caller_ws) is None
+  })
+  core.agents.on_session_archived = Some(fn(session : String) -> Unit {
+    let used = remote_outbox.take_used_peers(session)
+    for i in 0..<used.length() {
+      let (ws, peer_id) = used[i]
+      let close_req = build_session_close_rpc_payload(ws, session)
+      let _ = ctx.ask_peer_rpc_cancellable(peer_id, ws, close_req, fn(_res : Result[base_codec::Json, String]) -> Unit { () })
+    }
   })
 }
 
@@ -698,11 +752,18 @@ fn dispatch_local_remote_task(
 // Disconnect / Timeout / Shutdown, and Streaming File Chunk Transfer
 // ---------------------------------------------------------------------------
 
-fn close_mcp_req_upload_fd(req : station_whole::McpPendingReq) -> Unit {
+fn close_mcp_req_handles(req : station_whole::McpPendingReq) -> Unit {
   match req.upload_fd {
     Some(h) => {
       req.upload_fd = None
       let _ = station_sys::ReadOnlyFile::{ handle: h, size: 0L }.close()
+    }
+    None => ()
+  }
+  match req.part_fd {
+    Some(h) => {
+      req.part_fd = None
+      let _ = station_sys::file_rw_close(h)
     }
     None => ()
   }
@@ -734,11 +795,11 @@ fn cleanup_aborted_mcp_req(
   if req.ask_id > 0L {
     let _ = ctx.cancel_peer_rpc(req.ask_id)
   }
-  close_mcp_req_upload_fd(req)
+  close_mcp_req_handles(req)
   cleanup_mcp_req_part(fs, req)
 }
 
-/// Handle HTTP client disconnect on `/mcp`: cancel mesh RPC, close upload FD, and remove any residual `.part` file.
+/// Handle HTTP client disconnect on `/mcp`: cancel mesh RPC, close upload/part FDs, and remove any residual `.part` file.
 pub fn on_mcp_conn_closed(
   ctx : DaemonCtx,
   fs : station_jobs::FsPort,
@@ -774,7 +835,7 @@ fn complete_deferred_mcp(
 ) -> Unit {
   match mcp_pending.take_if_active(conn_id, req_gen) {
     Some(p) => {
-      close_mcp_req_upload_fd(p)
+      close_mcp_req_handles(p)
       cleanup_mcp_req_part(fs, p)
       let body_str = station_whole::encode_mcp_tool_jsonrpc(p.rpc_id, reply)
       let resp = station_http::HttpResponse::json(200, body_str)
@@ -782,6 +843,184 @@ fn complete_deferred_mcp(
     }
     None => ()
   }
+}
+
+/// Handle async `SysEvent::FsyncDone(rc)` completion for a deferred `station_file` download:
+/// atomically publishes `.part` -> `local_rel` with no-replace if still active and `rc == 0`.
+pub fn on_mcp_fsync_done(
+  mcp_srv : station_http::HttpServer,
+  mcp_cb : station_http::ServerCallbacks,
+  mcp_pending : station_whole::McpPendingTable,
+  fs : station_jobs::FsPort,
+  ev_id : Int64,
+  rc : Int,
+) -> Bool {
+  let entry = match mcp_pending.take_fsync(ev_id) {
+    Some(e) => e
+    None => return false
+  }
+  if !mcp_pending.is_active(entry.conn_id, entry.req_gen) {
+    let _ = station_sys::unlink_under_nofollow(entry.ws_root, entry.part_rel)
+    return true
+  }
+  if rc != 0 {
+    complete_deferred_mcp(
+      mcp_srv,
+      mcp_cb,
+      mcp_pending,
+      fs,
+      entry.conn_id,
+      entry.req_gen,
+      station_tools::error_reply("failed to sync downloaded file"),
+    )
+    return true
+  }
+  match station_sys::publish_noreplace_under_nofollow(entry.ws_root, entry.part_rel, entry.local_rel) {
+    Ok(()) => {
+      mcp_pending.set_part_location(entry.conn_id, entry.req_gen, None, None)
+      let ok_json = base_codec::json_stringify(
+        base_codec::json_obj([
+          ("downloaded", base_codec::json_str(entry.local_path)),
+          ("bytes", base_codec::json_int64(entry.total_bytes)),
+        ]),
+      )
+      complete_deferred_mcp(
+        mcp_srv,
+        mcp_cb,
+        mcp_pending,
+        fs,
+        entry.conn_id,
+        entry.req_gen,
+        station_tools::text_reply(ok_json),
+      )
+    }
+    Err(prc) => {
+      let msg = if prc == -7 {
+        "local file already exists: downloads never overwrite an existing local file"
+      } else {
+        "failed to publish downloaded file"
+      }
+      complete_deferred_mcp(
+        mcp_srv,
+        mcp_cb,
+        mcp_pending,
+        fs,
+        entry.conn_id,
+        entry.req_gen,
+        station_tools::error_reply(msg),
+      )
+    }
+  }
+  true
+}
+
+/// Deliver a remote `station_task` completion notification to the originating session (SQLite + actor wakeup).
+pub fn deliver_remote_task_notice_to_session(
+  core : station_whole::WholeCore,
+  rec : station_whole::RemoteOutgoingTask,
+  notice_text : String,
+  now_ms : Int64,
+) -> Bool {
+  let st = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let srow = match st.get_session(rec.session) {
+    Ok(Some(r)) => r
+    _ => return false
+  }
+  if srow.archived_at is Some(_) {
+    return false
+  }
+  let tid = match st.db.all(
+    "SELECT thread FROM thread_sessions WHERE session = ?1 ORDER BY id DESC LIMIT 1",
+    [base_codec::json_str(rec.session)],
+  ) {
+    Ok(rows) => {
+      if rows.length() > 0 {
+        match rows[0].get("thread") {
+          Some(base_codec::Json::Num(d, _)) => d.to_int64()
+          _ => 0L
+        }
+      } else {
+        0L
+      }
+    }
+    Err(_) => 0L
+  }
+  if tid > 0L {
+    let msg = station_store::NewMessage::{
+      thread: tid,
+      ts: None,
+      author_kind: "station",
+      author: "station",
+      agent_identity: None,
+      text: Some(notice_text),
+      attachments: None,
+      quotes: None,
+      declared: None,
+      client: None,
+      card: None,
+      options: None,
+      proposal: None,
+      at: now_ms,
+    }
+    let _ = st.insert_message(msg, deliver_to=[rec.session])
+  }
+  let actor = core.agents.hub.ensure_actor(rec.session, srow.runtime)
+  let _ = actor.submit_input(notice_text)
+  true
+}
+
+/// Handle inbound `task.changed` peer RPC from a remote rig/station: verifies `(ws, peer_id, ref)`,
+/// fetches final task status via non-blocking `task.get`, and delivers the notice to the originating session.
+pub fn handle_inbound_task_changed(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  remote_outbox : station_whole::RemoteTaskOutbox,
+  peer_id : String,
+  ws : String,
+  req : base_codec::Json,
+  now_ms : Int64,
+) -> Bool {
+  let ref_id = dm_json_str(req, "ref")
+  if ref_id.length() == 0 {
+    return false
+  }
+  let rec = match remote_outbox.lookup_outgoing(ref_id) {
+    Some(r) => r
+    None => return false
+  }
+  if rec.workspace != ws || rec.peer_id != peer_id {
+    return false
+  }
+  let get_req = base_codec::json_obj([
+    ("method", base_codec::json_str("task.get")),
+    ("workspace", base_codec::json_str(rec.workspace)),
+    ("session", base_codec::json_str(rec.session)),
+    ("key", base_codec::json_str(rec.key)),
+  ])
+  let _ = ctx.ask_peer_rpc_cancellable(
+    rec.peer_id,
+    rec.workspace,
+    get_req,
+    fn(res : Result[base_codec::Json, String]) -> Unit {
+      match res {
+        Ok(ans) => {
+          let state = dm_json_str(ans, "state")
+          if state == "exited" || state == "failed" || state == "stopped" || state == "done" {
+            let exit_code = dm_json_int(ans, "exitCode")
+            let notice = station_whole::format_remote_task_changed_notice(rec, state, exit_code)
+            let _ = deliver_remote_task_notice_to_session(core, rec, notice, host_shim::wall_ms())
+            remote_outbox.unfollow(ref_id)
+          }
+        }
+        Err(_) => ()
+      }
+    },
+  )
+  let _ = now_ms
+  true
 }
 
 /// Complete any timed-out deferred `/mcp` requests using monotonic clock `now_mono_ms`,
@@ -813,6 +1052,7 @@ pub fn flush_deferred_mcp_starts(
   mcp_srv : station_http::HttpServer,
   mcp_cb : station_http::ServerCallbacks,
   mcp_pending : station_whole::McpPendingTable,
+  remote_outbox : station_whole::RemoteTaskOutbox,
 ) -> Unit {
   let intents = mcp_pending.drain_starts()
   if intents.length() == 0 {
@@ -830,15 +1070,57 @@ pub fn flush_deferred_mcp_starts(
         "station_task",
         now_mono,
       )
-      let rpc_req = build_remote_task_rpc_payload(intent)
+      if intent.action != "list" && intent.action != "mirrors" && intent.action != "clean" {
+        remote_outbox.record_use(intent.caller_ws, intent.session, intent.peer_id)
+      }
+      let push_ref = if intent.action == "start" {
+        let pref = match station_sys::random_bytes(32) {
+          Ok(b) => dm_bytes_to_hex(b)
+          Err(_) => ""
+        }
+        if pref.length() == 64 {
+          let tname = match intent.prepared_spec {
+            Some(sp) => sp.name
+            None => ""
+          }
+          remote_outbox.record_outgoing(
+            station_whole::RemoteOutgoingTask::{
+              push_ref: pref,
+              workspace: intent.caller_ws,
+              session: intent.session,
+              peer_id: intent.peer_id,
+              peer_name: intent.peer_name,
+              key: intent.task_key,
+              name: tname,
+            },
+          )
+        }
+        pref
+      } else {
+        ""
+      }
+      let rpc_req = build_remote_task_rpc_payload(intent, push_ref=push_ref)
       let aid = ctx.ask_peer_rpc_cancellable(
         intent.peer_id,
         intent.caller_ws,
         rpc_req,
         fn(res : Result[base_codec::Json, String]) -> Unit {
           let reply = match res {
-            Ok(v) => station_tools::text_reply(base_codec::json_stringify(v))
-            Err(e) => station_tools::error_reply(e)
+            Ok(v) => {
+              if push_ref.length() == 64 {
+                match base_codec::json_get(v, "push") {
+                  Some(base_codec::Json::Bool(true)) => ()
+                  _ => remote_outbox.unfollow(push_ref)
+                }
+              }
+              station_tools::text_reply(base_codec::json_stringify(v))
+            }
+            Err(e) => {
+              if push_ref.length() == 64 {
+                remote_outbox.unfollow(push_ref)
+              }
+              station_tools::error_reply(e)
+            }
           }
           complete_deferred_mcp(mcp_srv, mcp_cb, mcp_pending, fs, intent.conn_id, req_gen, reply)
         },
@@ -876,10 +1158,12 @@ pub fn flush_deferred_mcp_starts(
         intent.caller_ws,
         "station_file",
         now_mono,
-        timeout_ms=120000L,
+        timeout_ms=station_whole::MCP_FILE_CHUNK_IDLE_MS,
       )
+      remote_outbox.record_use(intent.caller_ws, intent.session, intent.peer_id)
       if intent.action == "upload" {
-        match station_sys::file_open_ro(intent.local_path) {
+        // Dirfd-anchored single-open read-only handle: eliminates check -> open parent symlink TOCTOU.
+        match station_sys::file_open_ro_under_nofollow(intent.ws_root, intent.local_rel) {
           Err(_) => {
             complete_deferred_mcp(
               mcp_srv,
@@ -932,7 +1216,8 @@ pub fn flush_deferred_mcp_starts(
           Err(_) => now_mono.to_string()
         }
         let part_rel = intent.local_rel + "." + rand_suffix + ".part"
-        match station_sys::create_excl_under_nofollow(intent.ws_root, part_rel, 384) {
+        // Exclusively create and keep ONE open writable handle owned by `McpPendingReq` until EOF fsync/close.
+        match station_sys::create_excl_open_under_nofollow(intent.ws_root, part_rel, 384) {
           Err(_) => {
             complete_deferred_mcp(
               mcp_srv,
@@ -944,28 +1229,33 @@ pub fn flush_deferred_mcp_starts(
               station_tools::error_reply("failed to create temporary download file"),
             )
           }
-          Ok(()) => {
-            mcp_pending.set_part_location(intent.conn_id, req_gen, Some(intent.ws_root), Some(part_rel))
-            pump_async_file_download_stream(
-              ctx,
-              mcp_srv,
-              mcp_cb,
-              mcp_pending,
-              fs,
-              intent.conn_id,
-              req_gen,
-              intent.peer_id,
-              intent.caller_ws,
-              intent.session,
-              intent.task_key,
-              intent.remote_path,
-              intent.ws_root,
-              intent.local_rel,
-              intent.local_path,
-              part_rel,
-              0L,
-              None,
-            )
+          Ok(part_fd) => {
+            if !mcp_pending.set_part_fd(intent.conn_id, req_gen, Some(part_fd)) {
+              let _ = station_sys::file_rw_close(part_fd)
+              let _ = station_sys::unlink_under_nofollow(intent.ws_root, part_rel)
+            } else {
+              mcp_pending.set_part_location(intent.conn_id, req_gen, Some(intent.ws_root), Some(part_rel))
+              pump_async_file_download_stream(
+                ctx,
+                mcp_srv,
+                mcp_cb,
+                mcp_pending,
+                fs,
+                intent.conn_id,
+                req_gen,
+                intent.peer_id,
+                intent.caller_ws,
+                intent.session,
+                intent.task_key,
+                intent.remote_path,
+                intent.ws_root,
+                intent.local_rel,
+                intent.local_path,
+                part_rel,
+                0L,
+                None,
+              )
+            }
           }
         }
       }
@@ -1070,6 +1360,8 @@ fn pump_async_file_upload_ro(
             )
             complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::text_reply(ok_json))
           } else {
+            // Renew per-chunk idle deadline so slow 1 GiB transfers never time out prematurely.
+            let _ = mcp_pending.touch(conn_id, req_gen, host_shim::now_ms() + station_whole::MCP_FILE_CHUNK_IDLE_MS)
             pump_async_file_upload_ro(
               ctx,
               mcp_srv,
@@ -1139,7 +1431,7 @@ fn pump_async_file_download_stream(
           complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::error_reply(e))
         }
         Ok(v) => {
-          let chunk_size = match dm_json_i64(v, "size") {
+          let chunk_size = match dm_json_nonneg_i64(v, "size") {
             Some(sz) => sz
             None => {
               complete_deferred_mcp(
@@ -1149,7 +1441,7 @@ fn pump_async_file_download_stream(
                 fs,
                 conn_id,
                 req_gen,
-                station_tools::error_reply("remote file.get reply missing size field"),
+                station_tools::error_reply("remote file.get reply missing valid non-negative integer size field"),
               )
               return
             }
@@ -1274,9 +1566,13 @@ fn pump_async_file_download_stream(
             )
             return
           }
-          // Stream chunk directly to dirfd-anchored `.part` on disk (O_NOFOLLOW; fsync on explicit EOF with return check).
-          if decoded.length() > 0 || is_eof {
-            match station_sys::write_at_under_nofollow(ws_root, part_rel, offset, decoded, is_eof) {
+          // Stream chunk directly to the single open `.part` handle owned by `McpPendingReq` (no per-chunk reopen).
+          if decoded.length() > 0 {
+            let pfd = match mcp_pending.get_part_fd(conn_id, req_gen) {
+              Some(h) => h
+              None => return
+            }
+            match station_sys::file_pwrite(pfd, offset, decoded) {
               Ok(()) => ()
               Err(_) => {
                 complete_deferred_mcp(
@@ -1286,7 +1582,7 @@ fn pump_async_file_download_stream(
                   fs,
                   conn_id,
                   req_gen,
-                  station_tools::error_reply("failed to write or sync downloaded chunk to temp file"),
+                  station_tools::error_reply("failed to write downloaded chunk to temp file"),
                 )
                 return
               }
@@ -1305,32 +1601,40 @@ fn pump_async_file_download_stream(
               )
               return
             }
-            // Re-verify generation BEFORE atomic no-replace publish so a cancelled/timed-out request never publishes.
-            if !mcp_pending.is_active(conn_id, req_gen) {
-              return
+            // Re-verify generation and hand off `.part` handle to bounded async fsync+close worker (non-blocking!).
+            let pfd = match mcp_pending.take_part_fd(conn_id, req_gen) {
+              Some(h) => h
+              None => return
             }
-            // True atomic no-replace publish anchored under `ws_root` (POSIX linkat+unlinkat / Win32 MoveFileExW(0)).
-            match station_sys::publish_noreplace_under_nofollow(ws_root, part_rel, local_rel) {
-              Ok(()) => {
-                mcp_pending.set_part_location(conn_id, req_gen, None, None)
-                let ok_json = base_codec::json_stringify(
-                  base_codec::json_obj([
-                    ("downloaded", base_codec::json_str(local_path)),
-                    ("bytes", base_codec::json_int64(next_off)),
-                  ]),
-                )
-                complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::text_reply(ok_json))
-              }
-              Err(rc) => {
-                let msg = if rc == -7 {
-                  "local file already exists: downloads never overwrite an existing local file"
-                } else {
-                  "failed to publish downloaded file"
-                }
-                complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::error_reply(msg))
-              }
+            let _ = mcp_pending.touch(conn_id, req_gen, host_shim::now_ms() + station_whole::MCP_FILE_CHUNK_IDLE_MS)
+            let ev_id = mcp_pending.alloc_fsync_event_id()
+            mcp_pending.register_fsync(
+              ev_id,
+              station_whole::PendingFsyncEntry::{
+                conn_id: conn_id,
+                req_gen: req_gen,
+                ws_root: ws_root,
+                part_rel: part_rel,
+                local_rel: local_rel,
+                local_path: local_path,
+                total_bytes: next_off,
+              },
+            )
+            if !station_sys::file_fsync_close_async(ev_id, pfd) {
+              let _ = mcp_pending.take_fsync(ev_id)
+              complete_deferred_mcp(
+                mcp_srv,
+                cb,
+                mcp_pending,
+                fs,
+                conn_id,
+                req_gen,
+                station_tools::error_reply("failed to schedule async fsync for downloaded file"),
+              )
             }
           } else {
+            // Renew per-chunk idle deadline so slow 1 GiB transfers never time out prematurely.
+            let _ = mcp_pending.touch(conn_id, req_gen, host_shim::now_ms() + station_whole::MCP_FILE_CHUNK_IDLE_MS)
             pump_async_file_download_stream(
               ctx,
               mcp_srv,

@@ -1381,6 +1381,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let front_out_by_stream : Map[Int64, Int64] = Map::new()
   let front_out_by_sock : Map[Int64, Int64] = Map::new()
   let front_early_out_socks : Map[Int64, Int64] = Map::new()
+  let front_cancelled_out_streams : Map[Int64, Bool] = Map::new()
 
   // Single process-wide `EdgeMuxHub` owning `host_shim::wait`, driving all four non-overlapping
   // tagged `ShellMux` instances via `edge_hub.as_mux_transport()` with zero `HostEvent::Sys` loss.
@@ -1507,9 +1508,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     if ob.cancelled {
       return
     }
-    // PR #9132: never auto-retry outbound `connect.call` RPCs after payload has been written (prevents duplicate posts),
-    // while still allowing pre-send connection/dial failures to retry.
-    if ob.method == "connect.call" && ob.sent {
+    // PR #9132 / #9184: never auto-retry outbound `connect.call` or `login.call` RPCs after payload has been written
+    // (prevents duplicate chat posts or duplicate login processes on the target), while still allowing pre-send failures to retry.
+    if (ob.method == "connect.call" || ob.method == "login.call") && ob.sent {
       match ob.on_ask_done {
         Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed after send (no auto-retry)"))
         None => ()
@@ -2471,6 +2472,69 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
   }
 
+  let front_close_sock = fn(sock_id : Int64) -> Unit {
+    let _ = mux_mesh.call_async_raw(
+      builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+      "tcp.close",
+      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+      None,
+    )
+  }
+
+  let front_close_cancelled_outbound = fn(
+    oid : Int64,
+    ob : ActiveOutbound,
+    fsid_opt : Option[Int64],
+    sock_opt : Option[Int64],
+  ) -> Unit {
+    match sock_opt {
+      Some(s) => {
+        front_out_by_sock.remove(s)
+        front_close_sock(s)
+      }
+      None => ()
+    }
+    match fsid_opt {
+      Some(fsid) => {
+        front_out_by_stream.remove(fsid)
+        match front_early_out_socks.get(fsid) {
+          Some(early_sock) => {
+            front_early_out_socks.remove(fsid)
+            front_close_sock(early_sock)
+          }
+          None => if sock_opt is None { front_cancelled_out_streams.set(fsid, true) }
+        }
+      }
+      None => ()
+    }
+    match ob.conn_id {
+      Some(fconn) => {
+        if fconn >= 0L {
+          front_send_ask("conn.close", [("conn", base_codec::json_int64(fconn))], "out_close", 0L)
+        }
+      }
+      None => ()
+    }
+    active_outbounds.remove(oid)
+  }
+
+  let front_send_or_cancel_outbound = fn(oid : Int64, ob : ActiveOutbound, fsid : Int64, sock_id : Int64) -> Unit {
+    if ob.cancelled {
+      front_close_cancelled_outbound(oid, ob, Some(fsid), Some(sock_id))
+      return
+    }
+    front_out_by_sock.set(sock_id, oid)
+    ob.sock_id = Some(sock_id)
+    ob.sent = true
+    let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
+    let _ = mux_mesh.call_async_raw(
+      builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
+      "tcp.write",
+      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+      Some(framed),
+    )
+  }
+
   let dispatch_peer_rpc_stream = fn(
     sid : Int64,
     line : String,
@@ -2564,6 +2628,10 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     let eos = front_early_out_socks.keys()
     for i in 0..<eos.length() {
       front_early_out_socks.remove(eos[i])
+    }
+    let fcs = front_cancelled_out_streams.keys()
+    for i in 0..<fcs.length() {
+      front_cancelled_out_streams.remove(fcs[i])
     }
     let fos = front_out_by_stream.keys()
     for i in 0..<fos.length() {
@@ -4057,7 +4125,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                       }
                                       if fconn >= 0L {
                                         if ob.cancelled {
-                                          front_send_ask("close", [("conn", base_codec::json_int64(fconn))], "out_close", 0L)
+                                          front_send_ask("conn.close", [("conn", base_codec::json_int64(fconn))], "out_close", 0L)
                                           active_outbounds.remove(oid)
                                         } else {
                                           ob.conn_id = Some(fconn)
@@ -4090,34 +4158,13 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                       }
                                       if fsid >= 0L {
                                         if ob.cancelled {
-                                          match front_early_out_socks.get(fsid) {
-                                            Some(early_sock) => {
-                                              front_early_out_socks.remove(fsid)
-                                              let _ = mux_mesh.call_async_raw(
-                                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, early_sock),
-                                                "tcp.close",
-                                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
-                                                None,
-                                              )
-                                            }
-                                            None => ()
-                                          }
-                                          active_outbounds.remove(oid)
+                                          front_close_cancelled_outbound(oid, ob, Some(fsid), None)
                                         } else {
                                           ob.stream_id = Some(fsid)
                                           match front_early_out_socks.get(fsid) {
                                             Some(early_sock) => {
                                               front_early_out_socks.remove(fsid)
-                                              front_out_by_sock.set(early_sock, oid)
-                                              ob.sock_id = Some(early_sock)
-                                              ob.sent = true
-                                              let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
-                                              let _ = mux_mesh.call_async_raw(
-                                                builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
-                                                "tcp.write",
-                                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
-                                                Some(framed),
-                                              )
+                                              front_send_or_cancel_outbound(oid, ob, fsid, early_sock)
                                             }
                                             None => front_out_by_stream.set(fsid, oid)
                                           }
@@ -4308,23 +4355,21 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                 return
                               }
                               if fs.kind == 1 {
+                                if front_cancelled_out_streams.contains(fs.stream_id) {
+                                  front_cancelled_out_streams.remove(fs.stream_id)
+                                  front_streams.remove(sock_id)
+                                  front_close_sock(sock_id)
+                                  return
+                                }
                                 match front_out_by_stream.get(fs.stream_id) {
                                   Some(oid) => {
                                     front_out_by_stream.remove(fs.stream_id)
-                                    front_out_by_sock.set(sock_id, oid)
                                     match active_outbounds.get(oid) {
-                                      Some(ob) => {
-                                        ob.sock_id = Some(sock_id)
-                                        ob.sent = true
-                                        let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
-                                        let _ = mux_mesh.call_async_raw(
-                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
-                                          "tcp.write",
-                                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
-                                          Some(framed),
-                                        )
+                                      Some(ob) => front_send_or_cancel_outbound(oid, ob, fs.stream_id, sock_id)
+                                      None => {
+                                        front_streams.remove(sock_id)
+                                        front_close_sock(sock_id)
                                       }
-                                      None => ()
                                     }
                                   }
                                   None => front_early_out_socks.set(fs.stream_id, sock_id)

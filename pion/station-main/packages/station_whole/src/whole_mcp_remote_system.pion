@@ -33,6 +33,10 @@ pub let WORKSPACE_LIMIT_MAX_GIB : Int = 8388607
 pub let MOVE_PAGE_DEFAULT : Int = 50
 pub let MOVE_PAGE_MAX : Int = 200
 pub let MCP_DEFERRED_DEFAULT_TIMEOUT_MS : Int64 = 30000L
+/// Per-chunk idle deadline for `station_file` streaming transfers (supports slow 1 GiB transfers without total-time timeout).
+pub let MCP_FILE_CHUNK_IDLE_MS : Int64 = 120000L
+/// Disjoint event_id base for async file fsync+close workers (`9L << 32`).
+pub let MCP_FSYNC_EVENT_BASE : Int64 = 9L << 32
 /// Cap JSON-RPC tool reply text at 3 MiB so HTTP responses stay well under the 4 MiB frame limit.
 pub let MCP_MAX_REPLY_BYTES : Int = 3145728
 
@@ -308,6 +312,16 @@ pub fn default_mcp_remote_system_port(
 //    mesh ask_id cancellation, .part temp file cleanup, ready-start queue)
 // ---------------------------------------------------------------------------
 
+pub struct PendingFsyncEntry {
+  pub conn_id : Int
+  pub req_gen : Int64
+  pub ws_root : String
+  pub part_rel : String
+  pub local_rel : String
+  pub local_path : String
+  pub total_bytes : Int64
+}
+
 pub struct McpPendingReq {
   pub conn_id : Int
   pub req_gen : Int64
@@ -316,9 +330,10 @@ pub struct McpPendingReq {
   pub caller_ws : String
   pub tool : String
   pub created_at_mono_ms : Int64
-  pub deadline_mono_ms : Int64
+  pub mut deadline_mono_ms : Int64
   pub mut ask_id : Int64
   pub mut upload_fd : Option[Int64]
+  pub mut part_fd : Option[Int64]
   pub mut part_root : Option[String]
   pub mut part_rel : Option[String]
   pub mut part_path : Option[String]
@@ -326,12 +341,40 @@ pub struct McpPendingReq {
 
 pub struct McpPendingTable {
   mut next_gen : Int64
+  mut next_fsync_seq : Int64
   by_conn : Map[Int, McpPendingReq]
   ready_starts : Array[DeferredMcpIntent]
+  fsync_pending : Map[Int64, PendingFsyncEntry]
 }
 
 pub fn McpPendingTable::new() -> McpPendingTable {
-  McpPendingTable::{ next_gen: 1L, by_conn: Map::new(), ready_starts: [] }
+  McpPendingTable::{
+    next_gen: 1L,
+    next_fsync_seq: 1L,
+    by_conn: Map::new(),
+    ready_starts: [],
+    fsync_pending: Map::new(),
+  }
+}
+
+pub fn McpPendingTable::alloc_fsync_event_id(self : McpPendingTable) -> Int64 {
+  let seq = self.next_fsync_seq
+  self.next_fsync_seq = seq + 1L
+  MCP_FSYNC_EVENT_BASE + seq
+}
+
+pub fn McpPendingTable::register_fsync(self : McpPendingTable, ev_id : Int64, entry : PendingFsyncEntry) -> Unit {
+  self.fsync_pending.set(ev_id, entry)
+}
+
+pub fn McpPendingTable::take_fsync(self : McpPendingTable, ev_id : Int64) -> Option[PendingFsyncEntry] {
+  match self.fsync_pending.get(ev_id) {
+    Some(e) => {
+      let _ = self.fsync_pending.remove(ev_id)
+      Some(e)
+    }
+    None => None
+  }
 }
 
 pub fn McpPendingTable::count(self : McpPendingTable) -> Int {
@@ -380,12 +423,75 @@ pub fn McpPendingTable::register(
       deadline_mono_ms: now_mono_ms + eff_timeout,
       ask_id: 0L,
       upload_fd: None,
+      part_fd: None,
       part_root: None,
       part_rel: None,
       part_path: None,
     },
   )
   g
+}
+
+pub fn McpPendingTable::touch(
+  self : McpPendingTable,
+  conn_id : Int,
+  req_gen : Int64,
+  new_deadline_mono_ms : Int64,
+) -> Bool {
+  match self.by_conn.get(conn_id) {
+    Some(r) => {
+      if r.req_gen == req_gen {
+        if new_deadline_mono_ms > r.deadline_mono_ms {
+          r.deadline_mono_ms = new_deadline_mono_ms
+        }
+        true
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn McpPendingTable::set_part_fd(
+  self : McpPendingTable,
+  conn_id : Int,
+  req_gen : Int64,
+  fd : Option[Int64],
+) -> Bool {
+  match self.by_conn.get(conn_id) {
+    Some(r) => {
+      if r.req_gen == req_gen {
+        r.part_fd = fd
+        true
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn McpPendingTable::get_part_fd(self : McpPendingTable, conn_id : Int, req_gen : Int64) -> Option[Int64] {
+  match self.by_conn.get(conn_id) {
+    Some(r) => if r.req_gen == req_gen { r.part_fd } else { None }
+    None => None
+  }
+}
+
+pub fn McpPendingTable::take_part_fd(self : McpPendingTable, conn_id : Int, req_gen : Int64) -> Option[Int64] {
+  match self.by_conn.get(conn_id) {
+    Some(r) => {
+      if r.req_gen == req_gen {
+        let h = r.part_fd
+        r.part_fd = None
+        h
+      } else {
+        None
+      }
+    }
+    None => None
+  }
 }
 
 pub fn McpPendingTable::set_ask_id(self : McpPendingTable, conn_id : Int, req_gen : Int64, ask_id : Int64) -> Unit {
@@ -2569,4 +2675,201 @@ fn rs_join(parts : Array[String], sep : String) -> String {
     sb.write_string(parts[i])
   }
   sb.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 6. Remote Task Outgoing Tracking (`push` ref + `task.changed` + `record_use` -> `session.close`)
+// ---------------------------------------------------------------------------
+
+pub struct RemoteOutgoingTask {
+  pub push_ref : String
+  pub workspace : String
+  pub session : String
+  pub peer_id : String
+  pub peer_name : String
+  pub key : String
+  pub name : String
+}
+
+/// Tracks outgoing remote tasks (by 64-hex `push_ref`) and per-session remote peer usage
+/// (for `session.close` on archive), persisted under `<data>/remote/{outgoing,used}/` via `FsPort`.
+pub struct RemoteTaskOutbox {
+  data_dir : String
+  fs : station_jobs::FsPort
+  outgoing : Map[String, RemoteOutgoingTask]
+  used_peers : Map[String, Array[(String, String)]]
+}
+
+pub fn RemoteTaskOutbox::new(data_dir : String, fs : station_jobs::FsPort) -> RemoteTaskOutbox {
+  RemoteTaskOutbox::{
+    data_dir: data_dir,
+    fs: fs,
+    outgoing: Map::new(),
+    used_peers: Map::new(),
+  }
+}
+
+fn outbox_outgoing_path(self : RemoteTaskOutbox, push_ref : String) -> String {
+  nodepath::join(self.fs.sep, [self.data_dir, "remote", "outgoing", push_ref + ".json"])
+}
+
+fn outbox_used_path(self : RemoteTaskOutbox, session : String) -> String {
+  let h = crypto::sha256_hex(session.to_bytes())
+  nodepath::join(self.fs.sep, [self.data_dir, "remote", "used", h + ".json"])
+}
+
+pub fn RemoteTaskOutbox::record_outgoing(self : RemoteTaskOutbox, rec : RemoteOutgoingTask) -> Unit {
+  if rec.push_ref.length() == 0 {
+    return
+  }
+  self.outgoing.set(rec.push_ref, rec)
+  if self.data_dir.length() > 0 {
+    let dir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "outgoing"])
+    let _ = (self.fs.mkdir_p)(dir)
+    let body = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("push_ref", base_codec::json_str(rec.push_ref)),
+        ("workspace", base_codec::json_str(rec.workspace)),
+        ("session", base_codec::json_str(rec.session)),
+        ("peer_id", base_codec::json_str(rec.peer_id)),
+        ("peer_name", base_codec::json_str(rec.peer_name)),
+        ("key", base_codec::json_str(rec.key)),
+        ("name", base_codec::json_str(rec.name)),
+      ]),
+    )
+    let _ = (self.fs.write_bytes)(outbox_outgoing_path(self, rec.push_ref), body.to_bytes())
+  }
+}
+
+pub fn RemoteTaskOutbox::lookup_outgoing(self : RemoteTaskOutbox, push_ref : String) -> Option[RemoteOutgoingTask] {
+  match self.outgoing.get(push_ref) {
+    Some(r) => return Some(r)
+    None => ()
+  }
+  if self.data_dir.length() == 0 || !station_jobs::is_hex64(push_ref) {
+    return None
+  }
+  match (self.fs.read_bytes)(outbox_outgoing_path(self, push_ref)) {
+    Some(raw) => {
+      match base_codec::json_parse(raw.to_string()) {
+        base_codec::JsonParseResult::Ok(j) => {
+          let ws = rs_arg_trim(j, "workspace")
+          let sess = rs_arg_trim(j, "session")
+          let pid = rs_arg_trim(j, "peer_id")
+          let pname = rs_arg_trim(j, "peer_name")
+          let key = rs_arg_trim(j, "key")
+          let name = rs_arg_trim(j, "name")
+          if ws.length() > 0 && sess.length() > 0 && pid.length() > 0 && key.length() > 0 {
+            let rec = RemoteOutgoingTask::{
+              push_ref: push_ref,
+              workspace: ws,
+              session: sess,
+              peer_id: pid,
+              peer_name: if pname.length() > 0 { pname } else { pid },
+              key: key,
+              name: name,
+            }
+            self.outgoing.set(push_ref, rec)
+            Some(rec)
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn RemoteTaskOutbox::unfollow(self : RemoteTaskOutbox, push_ref : String) -> Unit {
+  let _ = self.outgoing.remove(push_ref)
+  if self.data_dir.length() > 0 && station_jobs::is_hex64(push_ref) {
+    let _ = (self.fs.remove_file)(outbox_outgoing_path(self, push_ref))
+  }
+}
+
+pub fn RemoteTaskOutbox::record_use(self : RemoteTaskOutbox, workspace : String, session : String, peer_id : String) -> Unit {
+  if workspace.length() == 0 || session.length() == 0 || peer_id.length() == 0 {
+    return
+  }
+  let cur = match self.used_peers.get(session) {
+    Some(xs) => xs
+    None => []
+  }
+  for i in 0..<cur.length() {
+    let (w, p) = cur[i]
+    if w == workspace && p == peer_id {
+      return
+    }
+  }
+  cur.push((workspace, peer_id))
+  self.used_peers.set(session, cur)
+  if self.data_dir.length() > 0 {
+    let dir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "used"])
+    let _ = (self.fs.mkdir_p)(dir)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<cur.length() {
+      let (w, p) = cur[i]
+      arr.push(base_codec::json_obj([("workspace", base_codec::json_str(w)), ("peer", base_codec::json_str(p))]))
+    }
+    let _ = (self.fs.write_bytes)(outbox_used_path(self, session), base_codec::json_stringify(base_codec::json_arr(arr)).to_bytes())
+  }
+}
+
+pub fn RemoteTaskOutbox::take_used_peers(self : RemoteTaskOutbox, session : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let seen : Map[String, Bool] = Map::new()
+  match self.used_peers.get(session) {
+    Some(xs) => {
+      let _ = self.used_peers.remove(session)
+      for i in 0..<xs.length() {
+        let (w, p) = xs[i]
+        let k = w + "\n" + p
+        if !seen.contains(k) {
+          seen.set(k, true)
+          out.push((w, p))
+        }
+      }
+    }
+    None => ()
+  }
+  if self.data_dir.length() > 0 {
+    let pth = outbox_used_path(self, session)
+    match (self.fs.read_bytes)(pth) {
+      Some(raw) => {
+        match base_codec::json_parse(raw.to_string()) {
+          base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => {
+            for i in 0..<items.length() {
+              let w = rs_arg_trim(items[i], "workspace")
+              let p = rs_arg_trim(items[i], "peer")
+              let k = w + "\n" + p
+              if w.length() > 0 && p.length() > 0 && !seen.contains(k) {
+                seen.set(k, true)
+                out.push((w, p))
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    let _ = (self.fs.remove_file)(pth)
+  }
+  out
+}
+
+/// Format the session notification delivered when a remote `station_task` finishes (`task.changed`).
+pub fn format_remote_task_changed_notice(
+  rec : RemoteOutgoingTask,
+  state : String,
+  exit_code : Option[Int],
+) -> String {
+  let label = if rec.name.length() > 0 { rec.name + " (" + rec.key + ")" } else { rec.key }
+  let detail = match exit_code {
+    Some(c) => state + " (exit " + c.to_string() + ")"
+    None => state
+  }
+  "Remote task " + label + " on " + rec.peer_name + " " + detail + "."
 }

@@ -289,3 +289,135 @@ test "w17e2a_r3 McpPendingTable owns upload_fd and dirfd part_location across ab
   let exp = tbl.sweep_expired(160L)
   r2_assert(exp.length() == 1 && exp[0].part_root == Some("/tmp/ws") && exp[0].part_rel == Some("sub/a.part"), "expired returns part_location")
 }
+
+test "w17e2a_r4 dm_json_nonneg_i64 rejects floats, scientific notation, and negatives" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => panic("bad json")
+    }
+  }
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":0}"), "size") == Some(0L), "0 valid")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":1048576}"), "size") == Some(1048576L), "int valid")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":5.5}"), "size") is None, "float 5.5 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":5.0}"), "size") is None, "float 5.0 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":1e3}"), "size") is None, "scientific 1e3 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":-1}"), "size") is None, "negative -1 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":\"5\"}"), "size") is None, "string must be rejected")
+}
+
+test "w17e2a_r4 virtual-clock chunk idle renewal: >120s total succeeds; >120s mid-stall times out with part_fd cleanup" {
+  let tbl = station_whole::McpPendingTable::new()
+  let idle = station_whole::MCP_FILE_CHUNK_IDLE_MS // 120_000 ms
+
+  // (a) 3 slow chunks totaling 240s (> 120s) where each chunk takes 80s (< 120s): MUST succeed.
+  let g_ok = tbl.register(20, base_codec::json_int(1), "s1", "ws1", "station_file", 0L, timeout_ms=idle)
+  r2_assert(tbl.set_part_fd(20, g_ok, Some(55L)), "set part_fd")
+  r2_assert(tbl.sweep_expired(80000L).length() == 0, "alive at 80s")
+  r2_assert(tbl.touch(20, g_ok, 80000L + idle), "chunk 1 renews deadline to 200s")
+  r2_assert(tbl.sweep_expired(160000L).length() == 0, "alive at 160s (>120s total)")
+  r2_assert(tbl.touch(20, g_ok, 160000L + idle), "chunk 2 renews deadline to 280s")
+  r2_assert(tbl.sweep_expired(240000L).length() == 0, "alive at 240s (>2x idle total)")
+  r2_assert(tbl.take_part_fd(20, g_ok) == Some(55L), "EOF hands off part_fd to async fsync")
+  r2_assert(tbl.take_if_active(20, g_ok) is Some(_), "completes cleanly at 240s")
+
+  // (b) Mid-stream stall > 120s after chunk 1: MUST expire and return part_fd + part_location for cleanup.
+  let g_stall = tbl.register(21, base_codec::json_int(2), "s1", "ws1", "station_file", 0L, timeout_ms=idle)
+  r2_assert(tbl.set_part_fd(21, g_stall, Some(77L)), "set stalled part_fd")
+  tbl.set_part_location(21, g_stall, Some("/tmp/ws"), Some("sub/stall.part"))
+  r2_assert(tbl.touch(21, g_stall, 80000L + idle), "chunk 1 renews to 200s")
+  r2_assert(tbl.sweep_expired(199999L).length() == 0, "still alive just before 200s")
+  let expired = tbl.sweep_expired(205000L)
+  r2_assert(expired.length() == 1, "stalled chunk must expire after 120s idle")
+  r2_assert(expired[0].part_fd == Some(77L), "expired entry returns part_fd for close")
+  r2_assert(expired[0].part_root == Some("/tmp/ws") && expired[0].part_rel == Some("sub/stall.part"), "expired entry returns .part for unlink")
+}
+
+test "w17e2a_r4 remote task push ref, task.changed notice, session.close on archive, and dual-path task.prepare" {
+  let fs = station_whole::mem_job_fs_port(fn() -> Int64 { 1000L })
+  let outbox = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  let push_ref = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  // 1. task.start payload carries 64-hex `push` ref
+  let base_intent = station_whole::DeferredMcpIntent::{
+    conn_id: 1,
+    rpc_id: base_codec::json_int(1),
+    caller_ws: "ws-1",
+    session: "sess-r4",
+    tool: "station_task",
+    peer_id: "rig-1",
+    peer_name: "gpu-rig",
+    action: "start",
+    args: base_codec::json_obj([]),
+    ws_root: "",
+    local_rel: "",
+    local_path: "",
+    file_size: 0L,
+    remote_path: "",
+    task_key: "build-job",
+    starter_email: "alice@example.com",
+    starter_name: "alice@example.com",
+    chat_title: None,
+    prepared_spec: Some(station_whole::PreparedTaskSpec::{
+      key: "build-job",
+      name: "compile",
+      command: "make test",
+      screen: false,
+      small: true,
+    }),
+  }
+  let start_s = base_codec::json_stringify(build_remote_task_rpc_payload(base_intent, push_ref=push_ref))
+  r2_assert(start_s.contains("\"method\":\"task.start\"") && start_s.contains("\"push\":\"" + push_ref + "\""), "task.start must carry push ref")
+
+  // 2. Outbox persists outgoing record + formats task.changed notice + unfollows
+  let rec = station_whole::RemoteOutgoingTask::{
+    push_ref: push_ref,
+    workspace: "ws-1",
+    session: "sess-r4",
+    peer_id: "rig-1",
+    peer_name: "gpu-rig",
+    key: "build-job",
+    name: "compile",
+  }
+  outbox.record_outgoing(rec)
+  outbox.record_use("ws-1", "sess-r4", "rig-1")
+  let outbox_reload = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  match outbox_reload.lookup_outgoing(push_ref) {
+    Some(found) => {
+      let notice = station_whole::format_remote_task_changed_notice(found, "exited", Some(0))
+      r2_assert(notice.contains("compile (build-job)") && notice.contains("gpu-rig") && notice.contains("exit 0"), "task.changed notice format")
+    }
+    None => panic("expected persisted outgoing task lookup")
+  }
+  outbox_reload.unfollow(push_ref)
+  r2_assert(outbox_reload.lookup_outgoing(push_ref) is None, "unfollowed task removed")
+
+  // 3. Archive triggers `session.close` for every recorded remote peer
+  let used = outbox_reload.take_used_peers("sess-r4")
+  r2_assert(used.length() == 1 && used[0].0 == "ws-1" && used[0].1 == "rig-1", "take_used_peers returns recorded peer")
+  let close_s = base_codec::json_stringify(build_session_close_rpc_payload(used[0].0, "sess-r4"))
+  r2_assert(close_s.contains("\"method\":\"session.close\"") && close_s.contains("\"session\":\"sess-r4\""), "session.close wire payload")
+
+  // 4. Dual-path `task.prepare`:
+  // (a) Supported target: prepare -> upload -> start succeeds cleanly
+  let prep_intent = station_whole::DeferredMcpIntent::{ ..base_intent, action: "prepare" }
+  let prep_s = base_codec::json_stringify(build_remote_task_rpc_payload(prep_intent))
+  r2_assert(prep_s.contains("\"method\":\"task.prepare\"") && prep_s.contains("\"spec\":{"), "supported target receives task.prepare + spec")
+  match parse_peer_ask_reply("{\"result\":{\"key\":\"build-job\",\"prepared\":true}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "prepared") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected prepared:true")
+      }
+    }
+    Err(e) => panic("supported target prepare failed: " + e)
+  }
+  // (b) Pion whole target: unsupported `task.prepare` error is propagated honestly (zero fake success)
+  match parse_peer_ask_reply("{\"error\":\"rig rpc method not wired in WholeCore: task.prepare\"}") {
+    Err(e) => {
+      let err_body = station_whole::encode_mcp_tool_jsonrpc(base_codec::json_int(9), station_tools::error_reply(e))
+      r2_assert(err_body.contains("\"isError\":true") && err_body.contains("task.prepare"), "whole target error must propagate honestly")
+    }
+    Ok(_) => panic("expected Err from unsupported Pion whole target")
+  }
+}

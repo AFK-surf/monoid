@@ -78,6 +78,10 @@ extern "C" {
 //   STS_EV_DNS_RESOLVED: [60][rc:i32 le][ip_utf8...]                             (control)
 #define STS_EV_DNS_RESOLVED 60u
 
+// Async file fsync+close events (pushed via sth_push_sys):
+//   STS_EV_FSYNC_DONE:   [61][rc:i32 le]                                        (control)
+#define STS_EV_FSYNC_DONE   61u
+
 // Spawn flags for `sts_proc_spawn` and `sts_pty_spawn`.
 #define STS_PROC_NEW_PGID        (1u << 0)
 #define STS_PROC_STRIP_MALLOC_SE (1u << 1)
@@ -350,6 +354,18 @@ int32_t sts_resolve_host_for_tunnel_async(
 int32_t sts_resolve_host_all_async(
     uint64_t event_id,
     const char *host);
+
+// Dirfd-anchored single-open streaming file handles (eliminates check->open parent TOCTOU):
+// - `sts_open_ro_under_nofollow`: opens an existing regular file under `root` for `sts_file_pread`/`sts_file_close`.
+// - `sts_create_excl_open_under_nofollow`: exclusively creates a new file under `root` (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`)
+//   returning a writable handle for `sts_file_pwrite` / `sts_file_rw_close` / `sts_file_fsync_close_async`.
+// - `sts_file_fsync_close_async`: takes ownership of the writable handle, runs `fsync`/`FlushFileBuffers` + close on a
+//   bounded detached worker thread, and emits `STS_EV_FSYNC_DONE` (`[61][rc:i32 le]`, rc=0 ok, -1 error).
+int64_t sts_open_ro_under_nofollow(const char *root, const char *rel, int64_t *out_size, int32_t *out_err);
+int64_t sts_create_excl_open_under_nofollow(const char *root, const char *rel, int32_t mode, int32_t *out_err);
+int32_t sts_file_pwrite(int64_t handle, const uint8_t *data, int64_t len, int64_t offset);
+int32_t sts_file_rw_close(int64_t handle);
+int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle);
 
 // Replace the current process in-place:
 // - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).

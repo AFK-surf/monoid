@@ -1853,6 +1853,7 @@ struct WholeRuntimeState {
   mcp_srv : station_http::HttpServer
   mcp_cb : station_http::ServerCallbacks
   mcp_pending : station_whole::McpPendingTable
+  remote_outbox : station_whole::RemoteTaskOutbox
   serve : station_mesh::ServeEndpoint
   admin_conns : Map[Int64, AdminConnState]
   seen_members : Map[String, Map[String, Map[String, SeenMember]]]
@@ -7255,6 +7256,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_pending = station_whole::McpPendingTable::new()
+      let remote_outbox = station_whole::RemoteTaskOutbox::new(ctx.data, core.agents.jobs.fs)
       let mcp_defer_capture = station_whole::DeferredMcpCapture::new()
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
       mcp_srv.set_conn_closed_hook(
@@ -7696,7 +7698,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let ways_store = build_daemon_ways_store(ctx)
       let move_sched = build_daemon_move_scheduler(core)
-      wire_daemon_mcp_remote_system(ctx, core, logins, ways_store, move_sched, mcp_defer_capture)
+      wire_daemon_mcp_remote_system(ctx, core, logins, ways_store, move_sched, mcp_defer_capture, remote_outbox)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7717,6 +7719,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         mcp_srv: mcp_srv,
         mcp_cb: mcp_cb,
         mcp_pending: mcp_pending,
+        remote_outbox: remote_outbox,
         serve: station_mesh::ServeEndpoint::new(),
         admin_conns: Map::new(),
         seen_members: seen_members,
@@ -8387,6 +8390,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             return
           }
 
+          // Remote `station_task` completion push (`task.changed`): fetch status and notify originating session.
+          if method == "task.changed" {
+            let _ = handle_inbound_task_changed(ctx, st.core, st.remote_outbox, auth.remote_id, ws, req, now_w)
+            let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+            ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+            return
+          }
+
           // Standard `WholeCore::handle_peer_rpc` (full-station `describe` + isolated `MixedRig` RPCs).
           let params_form = station_rules_bridge::base_to_form(req)
           match st.core.handle_peer_rpc(auth.remote_id, ws, method, params_form, now_w) {
@@ -8967,6 +8978,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             return
           }
           match sev {
+            station_sys::SysEvent::FsyncDone(rc) => {
+              if on_mcp_fsync_done(st.mcp_srv, st.mcp_cb, st.mcp_pending, st.core.agents.jobs.fs, ev_id, rc) {
+                return
+              }
+            }
             station_sys::SysEvent::DnsResolved(rc, ip) => {
               match st.dns_streams.get(ev_id) {
                 Some(sid) => {
@@ -9107,7 +9123,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             DaemonExtraEvent::SysEvent(_, _) => ()
             DaemonExtraEvent::DoorDone(tok, d) => {
               let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
-              flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending)
+              flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
             }
             DaemonExtraEvent::RoleDone(tok, d) => {
               handle_proxy_role_done(ctx, st, tok, d)
@@ -9192,7 +9208,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.devices.adb_runner.tick(now)
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
-          flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending)
+          flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
           sweep_expired_mcp_pending(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, now)
           let _ = st.browser.tick(now)
           let _ = st.connects.tick(now)
