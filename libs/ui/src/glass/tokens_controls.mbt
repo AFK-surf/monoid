@@ -454,10 +454,10 @@ pub fn liquid_tab_bar_menu_glass(
 }
 
 ///|
-/// How far a lifted bottom bar's lens bends and disperses what crosses its rim (a role 4 glass's `chroma`): over 0.04
-/// the renderers match iOS 27 native UITabBar lifted lens optics (`rimS` in each host's droplet shader, whole at 0.16):
-/// outward normal refraction around the full rim (shrinking the bar container cleanly inside the lens) with 5-tap
-/// spectral dispersion (R/Y/G/C/B) and subtle rim darkening; tab icons draw above the lens so glyphs never distort.
+/// How far a lifted bottom bar's lens parts the colours of what crosses its lip (a role 4 glass's `chroma`): over 0.04
+/// the renderers draw the rim of the system's lifted lens (iOS 27.0's, measured: `rimS` in each host's droplet shader,
+/// whole at 0.16), its outer 8 pt showing the ground seven times over along the edge, parted into the colours; where
+/// `liquid_tab_lens_glass`'s 0.04 is a hair's fringe.
 pub let tab_lens_dispersion : Double = 0.16
 
 ///|
