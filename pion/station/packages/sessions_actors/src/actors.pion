@@ -120,6 +120,16 @@ pub struct ActorTask {
   pub settlement : TaskSettlement
 }
 
+pub struct SteeredUnread {
+  pub seq : Int
+  pub handed : base_codec::Json
+}
+
+pub struct SteeredNotice {
+  pub seq : Int
+  pub text : String
+}
+
 pub struct Actor {
   pub key : String
   pub gen_epoch : Int
@@ -205,6 +215,10 @@ pub struct Actor {
   pub mut steered_for : Array[Working]
   pub mut unread : Array[base_codec::Json]
   pub mut unread_preparing : Int
+  pub mut steered_seq : Int
+  pub mut steered_unread : Array[SteeredUnread]
+  pub mut steered_unread_preparing : Int
+  pub mut steered_notices : Array[SteeredNotice]
   pub mut delivery_interruptions : Int
   pub mut recoveries : Int
   pub mut recovery_deferred : Bool
@@ -748,6 +762,10 @@ pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Act
         steered_for: [],
         unread: [],
         unread_preparing: 0,
+        steered_seq: 0,
+        steered_unread: [],
+        steered_unread_preparing: 0,
+        steered_notices: [],
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,

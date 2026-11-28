@@ -78,42 +78,42 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|sheet opened by nothing:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,555 38x5 841819172
+    #|rect 166,546 58x4 606546752
     #|rect 22,654 346x168 606546701
     #|rect 279,686 63x28 2021161011
     #|rect 281,688 37x24 4294967295
     #|rect 279,762 63x28 3428463871
     #|rect 303,764 37x24 4294967295
     #|words 打开@180,45 30x22 a1
-    #|words 一组@179,578 32x24 a1
+    #|words 一组@178,567 34x22 a1
     #|words 它说的话@30,612 330x18 a1
     #|words 第一个开关@46,689 221x22 a1
     #|words 第二个开关@46,765 221x22 a1
     #|sheet opened by a press:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,565 38x5 841819172
+    #|rect 166,556 58x4 606546752
     #|rect 22,654 346x168 606546701
     #|rect 279,686 63x28 2021161011
     #|rect 281,688 37x24 4294967295
     #|rect 279,762 63x28 3428463871
     #|rect 303,764 37x24 4294967295
     #|words 打开@180,45 30x22 a1
-    #|words 一组@179,588 32x24 a1
+    #|words 一组@178,577 34x22 a1
     #|words 它说的话@30,622 330x18 a1
     #|words 第一个开关@46,689 221x22 a1
     #|words 第二个开关@46,765 221x22 a1
     #|sheet opened by a press, with a mouse:
     #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
-    #|rect 176,581 38x5 841819172
+    #|rect 166,572 58x4 606546752
     #|rect 22,670 346x152 606546701
     #|rect 279,698 63x28 2021161011
     #|rect 281,700 37x24 4294967295
     #|rect 279,766 63x28 3428463871
     #|rect 303,768 37x24 4294967295
     #|words 打开@182,46 26x20 a1
-    #|words 一组@179,604 32x24 a1
+    #|words 一组@178,593 34x22 a1
     #|words 它说的话@30,638 330x18 a1
     #|words 第一个开关@46,701 221x22 a1
     #|words 第二个开关@46,769 221x22 a1
@@ -138,10 +138,12 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 568,372 50x22 3428463871
     #|rect 586.635,374 29.365x18 4294967295
     #|words 打开@387,46 26x20 a1
-    #|words 一组@164,188 44x30 a1
+    #|words 一组@164,192 34x22 a1
     #|words 它说的话@164,243 472x18 a1
     #|words 第一个开关@180,317 372x20 a1
     #|words 第二个开关@180,373 372x20 a1
+
+
 
 
 

@@ -1,0 +1,775 @@
+// Wave 17D-3: Interactive `call_op` handlers:
+// 1. `links.preview` (strict SSRF defense across literal hosts, all-IP DNS, multi-hop redirects,
+//    proxy env fail-closed, byte/timeout bounds, HTML `<head>` title/description/site extraction)
+// 2. `feedback.report` (failure notice verification, real CHANNEL resolution, whitelisted scrubbed
+//    structured diagnostic report via `station_api::build_notice_report`, cloud response parsing)
+
+import "base_codec"
+import "sql_db"
+import "station_api"
+import "station_ops"
+import "station_sys"
+
+// ============================================================================
+// 4. `links.preview` (Strict SSRF Defense + HTML `<head>` Extraction)
+// ============================================================================
+
+pub let LINK_PREVIEW_MAX_URL_LEN : Int = 4096
+pub let LINK_PREVIEW_MAX_HOPS : Int = 4
+pub let LINK_PREVIEW_MAX_BYTES : Int = 262144
+pub let LINK_PREVIEW_TIMEOUT_MS : Int64 = 6000L
+
+/// Fail-closed check: returns `true` when any outbound HTTP/HTTPS/ALL proxy environment variable
+/// is set (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, lowercase variants), because `client/shell`'s
+/// reqwest client inherits env proxies which would bypass `EntryResolver` IP pinning.
+pub fn link_preview_proxy_blocked(env_get : (String) -> Option[String]) -> Bool {
+  let keys : Array[String] = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+  for i in 0..<keys.length() {
+    match env_get(keys[i]) {
+      Some(v) if v.trim().length() > 0 => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+/// Validates a URL for `links.preview`: strictly `http://` or `https://`, <= 4096 bytes,
+/// no userinfo (`@`), no control chars/backslashes, and not a private/loopback/link-local/
+/// metadata/multicast/reserved literal host or IP.
+pub fn validate_link_preview_url(raw_url : String) -> Result[ParsedAuthorityUrl, String] {
+  let u = raw_url.trim()
+  if u.length() == 0 || u.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+    return Err("an http(s) url is required")
+  }
+  let parsed = match parse_strict_url(u) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if parsed.scheme != "http" && parsed.scheme != "https" {
+    return Err("an http(s) url is required")
+  }
+  if parsed.has_userinfo {
+    return Err("url userinfo is not allowed")
+  }
+  if brw_is_private_or_reserved_host(parsed.host) {
+    return Err("blocked private or reserved host: " + parsed.host)
+  }
+  Ok(parsed)
+}
+
+/// Returns true iff `ip` is a valid public IPv4 or IPv6 literal (not private/loopback/
+/// link-local/metadata/multicast/reserved). Fails closed on invalid strings.
+pub fn is_public_link_preview_ip(ip : String) -> Bool {
+  let trimmed = ip.trim()
+  if trimmed.length() == 0 {
+    return false
+  }
+  let clean = if trimmed.starts_with("[") && trimmed.ends_with("]") && trimmed.length() > 2 {
+    trimmed.slice(1, trimmed.length() - 1)
+  } else {
+    trimmed
+  }
+  if clean.contains(":") {
+    return !brw_is_private_or_reserved_host(clean)
+  }
+  match brw_parse_ipv4(clean) {
+    Some(_) => !brw_is_private_or_reserved_host(clean)
+    None => false
+  }
+}
+
+/// Resolves a `Location` redirect header against `base_url`.
+pub fn resolve_redirect_url(base_url : String, location : String) -> Option[String] {
+  let loc = location.trim()
+  if loc.length() == 0 {
+    return None
+  }
+  let low = ro_ascii_lower(loc)
+  if low.starts_with("http://") || low.starts_with("https://") {
+    return Some(loc)
+  }
+  if loc.contains("://") || low.starts_with("javascript:") || low.starts_with("data:") || low.starts_with("file:") {
+    return None
+  }
+  let base = match parse_strict_url(base_url) {
+    Ok(b) => b
+    Err(_) => return None
+  }
+  if loc.starts_with("//") {
+    return Some(base.scheme + ":" + loc)
+  }
+  let host_part = if base.host.contains(":") { "[" + base.host + "]" } else { base.host }
+  let port_part = match base.port {
+    Some(p) => ":" + p.to_string()
+    None => ""
+  }
+  let origin = base.scheme + "://" + host_part + port_part
+  if loc.starts_with("/") {
+    return Some(origin + loc)
+  }
+  let base_path = if base.path.length() == 0 { "/" } else { base.path }
+  let q_idx = base_path.index_of("?")
+  let clean_path = if q_idx >= 0 { base_path.slice(0, q_idx) } else { base_path }
+  let mut last_slash = -1
+  let pb = clean_path.to_bytes()
+  for i in 0..<pb.length() {
+    if (pb[i].to_int() & 0xFF) == 47 {
+      last_slash = i
+    }
+  }
+  let dir = if last_slash >= 0 { clean_path.slice(0, last_slash + 1) } else { "/" }
+  Some(origin + dir + loc)
+}
+
+fn lp_collapse_ws(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_ws = true
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      if !in_ws {
+        sb.write_char(' ')
+        in_ws = true
+      }
+    } else {
+      sb.write_byte(b[i])
+      in_ws = false
+    }
+  }
+  sb.to_string().trim()
+}
+
+/// Decodes common HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`, `&#...;`, `&#x...;`)
+/// and collapses whitespace.
+pub fn decode_html_entities(raw : String) -> String {
+  let mut out = raw
+  .replace("&amp;", "&")
+  .replace("&lt;", "<")
+  .replace("&gt;", ">")
+  .replace("&quot;", "\"")
+  .replace("&#34;", "\"")
+  .replace("&apos;", "'")
+  .replace("&#39;", "'")
+  .replace("&#x27;", "'")
+  .replace("&nbsp;", " ")
+  out = lp_collapse_ws(out)
+  out
+}
+
+fn lp_truncate(s : String, max_len : Int) -> String {
+  if s.length() <= max_len {
+    return s
+  }
+  s.slice(0, max_len) + "…"
+}
+
+fn lp_find_ci(haystack_lower : String, needle_lower : String, start : Int) -> Int {
+  if start >= haystack_lower.length() {
+    return -1
+  }
+  let rest = haystack_lower.slice(start, haystack_lower.length())
+  let idx = rest.index_of(needle_lower)
+  if idx < 0 { -1 } else { start + idx }
+}
+
+fn lp_extract_attr(tag : String, attr_name_lower : String) -> Option[String] {
+  let tag_low = ro_ascii_lower(tag)
+  let mut pos = 0
+  let nlen = attr_name_lower.length()
+  while pos < tag_low.length() {
+    let idx = lp_find_ci(tag_low, attr_name_lower, pos)
+    if idx < 0 {
+      return None
+    }
+    let prev_ok = if idx == 0 {
+      true
+    } else {
+      let pc = tag_low.code_unit_at(idx - 1)
+      pc == 32 || pc == 9 || pc == 10 || pc == 13 || pc == 60
+    }
+    let after = idx + nlen
+    if !prev_ok || after >= tag.length() {
+      pos = idx + 1
+      continue
+    }
+    let mut i = after
+    while i < tag.length() && (tag.code_unit_at(i) == 32 || tag.code_unit_at(i) == 9 || tag.code_unit_at(i) == 10 || tag.code_unit_at(i) == 13) {
+      i = i + 1
+    }
+    if i >= tag.length() || tag.code_unit_at(i) != 61 {
+      pos = idx + 1
+      continue
+    }
+    i = i + 1
+    while i < tag.length() && (tag.code_unit_at(i) == 32 || tag.code_unit_at(i) == 9 || tag.code_unit_at(i) == 10 || tag.code_unit_at(i) == 13) {
+      i = i + 1
+    }
+    if i >= tag.length() {
+      return None
+    }
+    let q = tag.code_unit_at(i)
+    if q == 34 || q == 39 {
+      let start_val = i + 1
+      let mut end_val = start_val
+      while end_val < tag.length() && tag.code_unit_at(end_val) != q {
+        end_val = end_val + 1
+      }
+      return Some(tag.slice(start_val, end_val))
+    } else {
+      let start_val = i
+      let mut end_val = start_val
+      while end_val < tag.length() {
+        let c = tag.code_unit_at(end_val)
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 62 {
+          break
+        }
+        end_val = end_val + 1
+      }
+      return Some(tag.slice(start_val, end_val))
+    }
+  }
+  None
+}
+
+/// Extracts `{ kind: "page", url, title, description?, site?, image? }` from an HTML document's
+/// `<head>` (or `{ kind: "none" }` when no title is found).
+pub fn parse_link_preview_html(html : String, final_url : String) -> base_codec::Json {
+  let low = ro_ascii_lower(html)
+  let head_end = low.index_of("</head>")
+  let head = if head_end >= 0 { html.slice(0, head_end) } else { html }
+  let head_low = if head_end >= 0 { low.slice(0, head_end) } else { low }
+
+  let metas : Array[(String, String)] = []
+  let mut pos = 0
+  while pos < head_low.length() {
+    let mstart = lp_find_ci(head_low, "<meta", pos)
+    if mstart < 0 {
+      break
+    }
+    let mend = lp_find_ci(head_low, ">", mstart + 5)
+    if mend < 0 {
+      break
+    }
+    let tag = head.slice(mstart, mend + 1)
+    let key_opt = match lp_extract_attr(tag, "property") {
+      Some(p) => Some(ro_ascii_lower(p.trim()))
+      None => match lp_extract_attr(tag, "name") {
+        Some(n) => Some(ro_ascii_lower(n.trim()))
+        None => None
+      }
+    }
+    match (key_opt, lp_extract_attr(tag, "content")) {
+      (Some(k), Some(v)) => {
+        let dec = decode_html_entities(v)
+        if k.length() > 0 && dec.length() > 0 {
+          metas.push((k, dec))
+        }
+      }
+      _ => ()
+    }
+    pos = mend + 1
+  }
+
+  let find_meta = fn(keys : Array[String]) -> Option[String] {
+    for ki in 0..<keys.length() {
+      let target = keys[ki]
+      for mi in 0..<metas.length() {
+        if metas[mi].0 == target {
+          return Some(metas[mi].1)
+        }
+      }
+    }
+    None
+  }
+
+  let mut title_opt = find_meta(["og:title", "twitter:title"])
+  if title_opt is None {
+    let tstart = lp_find_ci(head_low, "<title", 0)
+    if tstart >= 0 {
+      let tclose_open = lp_find_ci(head_low, ">", tstart + 6)
+      if tclose_open >= 0 {
+        let tend = lp_find_ci(head_low, "</title>", tclose_open + 1)
+        if tend > tclose_open {
+          let t = decode_html_entities(head.slice(tclose_open + 1, tend))
+          if t.length() > 0 {
+            title_opt = Some(t)
+          }
+        }
+      }
+    }
+  }
+
+  let title = match title_opt {
+    Some(t) => lp_truncate(t, 200)
+    None => return base_codec::json_obj([("kind", base_codec::json_str("none"))])
+  }
+  let desc_opt = find_meta(["og:description", "description", "twitter:description"])
+  let site_opt = find_meta(["og:site_name"])
+
+  // Never echo raw third-party remote `image` URLs directly (would leak client IP to third-party servers).
+  let fields : Array[(String, base_codec::Json)] = [
+    ("kind", base_codec::json_str("page")),
+    ("url", base_codec::json_str(final_url)),
+    ("title", base_codec::json_str(title)),
+  ]
+  match desc_opt { Some(d) => fields.push(("description", base_codec::json_str(lp_truncate(d, 300)))), None => () }
+  match site_opt { Some(s) => fields.push(("site", base_codec::json_str(lp_truncate(s, 60)))), None => () }
+  base_codec::json_obj(fields)
+}
+
+pub struct LinkPreviewHopResponse {
+  pub status : Int
+  pub content_type : String
+  pub content_encoding : String
+  pub location : Option[String]
+  pub body : String
+}
+
+/// Deterministic multi-hop SSRF-verified link preview engine (for unit tests and injected transports).
+/// Verifies scheme, literal host, DNS-resolved IPs, and every redirect hop (max 4 hops).
+pub fn fetch_link_preview_with_ports(
+  raw_url : String,
+  resolve_host : (String) -> Array[String],
+  fetch_hop : (String, Array[String]) -> Option[LinkPreviewHopResponse],
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let trimmed = raw_url.trim()
+  if trimmed.length() == 0 || trimmed.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+    return Err(station_api::ApiError::new(400, "an http(s) url is required"))
+  }
+  let low0 = ro_ascii_lower(trimmed)
+  if !low0.starts_with("http://") && !low0.starts_with("https://") {
+    return Err(station_api::ApiError::new(400, "an http(s) url is required"))
+  }
+  let mut cur_url = trimmed
+  let mut hop = 0
+  while hop < LINK_PREVIEW_MAX_HOPS {
+    let parsed = match validate_link_preview_url(cur_url) {
+      Ok(p) => p
+      Err(_) => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let ips = resolve_host(parsed.host)
+    if ips.length() == 0 {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    for i in 0..<ips.length() {
+      if !is_public_link_preview_ip(ips[i]) {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+      }
+    }
+    let resp = match fetch_hop(cur_url, ips) {
+      Some(r) => r
+      None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let enc = ro_ascii_lower(resp.content_encoding.trim())
+    if enc.length() > 0 && enc != "identity" {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    if resp.status >= 300 && resp.status < 400 {
+      match resp.location {
+        Some(loc) => match resolve_redirect_url(cur_url, loc) {
+          Some(next_url) => {
+            cur_url = next_url
+            hop = hop + 1
+            continue
+          }
+          None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+        }
+        None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+      }
+    }
+    if resp.status < 200 || resp.status >= 300 {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let ct = ro_ascii_lower(resp.content_type)
+    if !ct.contains("text/html") && !ct.contains("application/xhtml") {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let capped = if resp.body.length() > LINK_PREVIEW_MAX_BYTES {
+      resp.body.slice(0, LINK_PREVIEW_MAX_BYTES)
+    } else {
+      resp.body
+    }
+    return Ok(parse_link_preview_html(capped, cur_url))
+  }
+  Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+}
+
+// ============================================================================
+// 5. `feedback.report`
+// ============================================================================
+
+/// Resolves the effective update channel matching `station/src/updates/versions.ts:48-64`:
+/// `config.updateChannel` (trimmed `"stable"` | `"beta"`) ?? installed `<app>/CHANNEL` ?? `"stable"`.
+pub fn resolve_feedback_channel(cfg_raw : base_codec::Json, installed_channel : Option[String]) -> String {
+  match json_field_str(cfg_raw, "updateChannel") {
+    Some(raw) => {
+      let ch = raw.trim()
+      if ch == "stable" || ch == "beta" {
+        return ch
+      }
+    }
+    None => ()
+  }
+  match installed_channel {
+    Some(raw) => {
+      let ch = raw.trim()
+      if ch == "stable" || ch == "beta" {
+        return ch
+      }
+    }
+    None => ()
+  }
+  "stable"
+}
+
+fn classify_feedback_detail(detail : String) -> String {
+  let low = ro_ascii_lower(detail.trim())
+  if low.starts_with("network:") {
+    "network"
+  } else if low.starts_with("model:") {
+    "model"
+  } else if low.starts_with("exited:") {
+    "exited"
+  } else if low.starts_with("auth:") {
+    "auth"
+  } else if low.starts_with("quota:") || low.starts_with("spent:") {
+    "quota"
+  } else if low.starts_with("refused:") {
+    "refused"
+  } else if low.starts_with("interrupted:") || low.starts_with("restart") {
+    "restart"
+  } else if low.starts_with("other:") {
+    "other"
+  } else {
+    "unknown"
+  }
+}
+
+fn normalize_feedback_runtime(rt : String) -> String {
+  let low = ro_ascii_lower(rt.trim())
+  if low == "claude" || low == "codex" || low == "acp" {
+    low
+  } else {
+    "unknown"
+  }
+}
+
+/// Validates the thread and failure notice entry in SQLite and builds a strictly whitelisted
+/// structured feedback report payload via `station_api::build_notice_report`.
+/// NEVER emits raw `entries.text`, raw `turns.detail`, or raw log free text outbound.
+pub fn prepare_feedback_notice_report(
+  whole_store : WholeStore,
+  thread_id : Int,
+  entry_n : Int,
+  viewer : station_api::Viewer,
+  os_name : String,
+  arch_name : String,
+  home_dir : String,
+  _log_tail : Option[String],
+) -> Result[(base_codec::Json, Option[String]), station_api::ApiError] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(station_api::ApiError::new(503, e))
+  }
+  let (t_channel, t_ts) = match st.db.first(
+    "SELECT channel, thread_ts FROM threads WHERE id = ?1 LIMIT 1",
+    [base_codec::json_int(thread_id)],
+  ) {
+    Ok(Some(row)) => (
+      match row.get("channel") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("thread_ts") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+    )
+    Ok(None) => return Err(station_api::ApiError::new(404, "unknown thread " + thread_id.to_string()))
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+  let (author_kind, entry_text, entry_at) = match st.db.first(
+    "SELECT author_kind, text, at FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
+    [base_codec::json_int(thread_id), base_codec::json_int(entry_n)],
+  ) {
+    Ok(Some(row)) => (
+      match row.get("author_kind") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("at") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L },
+    )
+    Ok(None) => return Err(station_api::ApiError::new(404, "station.feedback.notAFailure"))
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+  if !station_api::is_failure_notice_entry(author_kind, entry_text) {
+    return Err(station_api::ApiError::new(404, "station.feedback.notAFailure"))
+  }
+
+  let mut sess_key : Option[String] = None
+  let mut sess_ws : Option[String] = None
+  let mut sess_rt : Option[String] = None
+  let mut failure_category = "unknown"
+  let mut turn_outcome = "unknown"
+  let mut turn_id_opt : Option[String] = None
+
+  let fallback_ws = if viewer.home { viewer.workspace } else { "" }
+  match st.db.first(
+    "SELECT s.key, s.ws, s.runtime FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = ?1 AND ts.left_at IS NULL AND COALESCE(s.ws, ?2) = ?3 ORDER BY ts.joined_at ASC LIMIT 1",
+    [base_codec::json_int(thread_id), base_codec::json_str(fallback_ws), base_codec::json_str(viewer.workspace)],
+  ) {
+    Ok(Some(srow)) => {
+      let sk = match srow.get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      if sk.length() > 0 {
+        sess_key = Some(sk)
+        sess_ws = match srow.get("ws") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
+        sess_rt = match srow.get("runtime") { Some(base_codec::Json::Str(s)) => Some(normalize_feedback_runtime(s)), _ => None }
+        match st.db.first(
+          "SELECT id, outcome, detail FROM turns WHERE session_key = ?1 AND outcome = 'failed' AND ended_at >= ?2 AND ended_at <= ?3 ORDER BY ABS(ended_at - ?4) ASC LIMIT 1",
+          [
+            base_codec::json_str(sk),
+            sql_db::int64_to_json(entry_at - 600000L),
+            sql_db::int64_to_json(entry_at + 5000L),
+            sql_db::int64_to_json(entry_at),
+          ],
+        ) {
+          Ok(Some(trow)) => {
+            match trow.get("id") {
+              Some(base_codec::Json::Str(id_s)) if id_s.length() > 0 => turn_id_opt = Some(id_s)
+              _ => ()
+            }
+            match trow.get("outcome") {
+              Some(base_codec::Json::Str(o)) if o == "failed" || o == "completed" => turn_outcome = o
+              _ => ()
+            }
+            match trow.get("detail") {
+              Some(base_codec::Json::Str(d)) => failure_category = classify_feedback_detail(d)
+              _ => ()
+            }
+          }
+          Ok(None) => ()
+          Err(e) => return Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+
+  // Strictly whitelisted static title & body (NEVER transmit raw `entries.text`, `turns.detail`, or logs).
+  let static_summary = "station failure notice (outcome=" + turn_outcome + ", category=" + failure_category + ")"
+  let mut report = station_api::build_notice_report(station_api::NoticeReportInput::{
+    thread_id: thread_id,
+    thread_channel: t_channel,
+    thread_ts: t_ts,
+    entry_n: entry_n,
+    entry_text: static_summary,
+    entry_at_ms: entry_at,
+    session_key: sess_key,
+    session_ws: sess_ws,
+    session_runtime: sess_rt,
+    session_profile: None,
+    session_model: None,
+    turn_detail: Some(static_summary),
+    viewer_name: viewer.name,
+    viewer_email: viewer.email,
+    os: os_name,
+    arch: arch_name,
+    log_tail: None,
+    home: home_dir,
+  })
+  // Attach whitelisted structured diagnostic metadata to `context`.
+  match base_codec::json_get(report, "context") {
+    Some(base_codec::Json::Obj(ctx_fs)) => {
+      let next_ctx : Array[(String, base_codec::Json)] = []
+      for i in 0..<ctx_fs.length() {
+        next_ctx.push(ctx_fs[i])
+      }
+      next_ctx.push(("outcome", base_codec::json_str(turn_outcome)))
+      next_ctx.push(("category", base_codec::json_str(failure_category)))
+      match turn_id_opt {
+        Some(tid_s) => next_ctx.push(("turnId", base_codec::json_str(tid_s)))
+        None => ()
+      }
+      report = json_obj_set(report, "context", Some(base_codec::json_obj(next_ctx)))
+    }
+    _ => ()
+  }
+  Ok((report, sess_ws))
+}
+
+/// Parses cloud `/v1/feedback` response into `{ number, duplicate? }` or a structured 502 error.
+pub fn parse_feedback_cloud_response(
+  status : Int,
+  body_text : String,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  if status < 200 || status >= 300 {
+    let msg = "feedback upstream returned HTTP " + status.to_string()
+    return Err(station_api::ApiError::json(
+      502,
+      base_codec::json_obj([
+        ("error", base_codec::json_str(msg)),
+        ("code", base_codec::json_str("feedback_not_sent")),
+        ("upstreamStatus", base_codec::json_int(status)),
+      ]),
+    ))
+  }
+  let parsed = match base_codec::json_parse(body_text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => {
+      return Err(station_api::ApiError::json(
+        502,
+        base_codec::json_obj([
+          ("error", base_codec::json_str("invalid feedback response JSON")),
+          ("code", base_codec::json_str("feedback_not_sent")),
+        ]),
+      ))
+    }
+  }
+  let num = match ro_json_int_field(parsed, "number") {
+    Some(n) if n >= 0 => n
+    _ => {
+      return Err(station_api::ApiError::json(
+        502,
+        base_codec::json_obj([
+          ("error", base_codec::json_str("missing feedback report number")),
+          ("code", base_codec::json_str("feedback_not_sent")),
+        ]),
+      ))
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = [("number", base_codec::json_int(num))]
+  match json_field_bool(parsed, "duplicate") {
+    Some(true) => out.push(("duplicate", base_codec::json_bool(true)))
+    _ => ()
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+// ============================================================================
+// 6. Dispatch entry point called from `whole_api_readops.pion`
+// ============================================================================
+
+pub fn dispatch_interactive_call_op(
+  op : String,
+  req : station_api::ApiRequest,
+  params : Array[String],
+  body : base_codec::Json,
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op == "links.preview" {
+    match hooks.on_links_preview {
+      Some(f) => {
+        let url = match req.param("url") { Some(u) => u.trim(), None => "" }
+        let low = ro_ascii_lower(url)
+        if (!low.starts_with("http://") && !low.starts_with("https://")) || url.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+          return Some(Err(station_api::ApiError::new(400, "an http(s) url is required")))
+        }
+        return Some(f(url))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  if op == "feedback.report" {
+    match hooks.on_feedback_report {
+      Some(f) => {
+        let tid_str = if params.length() > 0 { params[0] } else { "" }
+        let tid = match station_api::parse_uint_str(tid_str) {
+          Some(v) if v >= 1 => v
+          _ => return Some(Err(station_api::ApiError::new(400, "invalid thread id")))
+        }
+        let entry_n = match ro_json_int_field(body, "n") {
+          Some(n) if n >= 1 => n
+          _ => return Some(Err(station_api::ApiError::new(400, "n must be a positive integer")))
+        }
+        return Some(f(req, tid, entry_n))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  None
+}
+
+// ============================================================================
+// 7. Real SQLite + Real FS Selftest for Wave 17D-3 (called by `--smoke-w17c3a-sqlite`)
+// ============================================================================
+
+pub fn run_w17d3_sqlite_selftest(root_tmp : String) -> Result[Unit, String] {
+  let d_root = root_tmp + "/w17d3"
+  let _ = station_sys::mkdir_p(d_root)
+  let store = WholeStore::new_pre_handover_with_sep(d_root, "/")
+  match store.open_primary_after_predecessor_gone(true, fn(_d) { Ok(()) }) {
+    Ok(_) => ()
+    Err(e) => return Err("w17d3 open_primary failed: " + e)
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err("w17d3 require_open failed: " + e)
+  }
+  let _ = st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES ('s1', 'chat', 'chat', '/tmp/w', 'tok1', 'claude', 'default', 0, 100, 100, 'ws-main')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO threads (id, surface, channel, thread_ts, created_at, home, project) VALUES (1, 'stillfail', 'CHAT', '1', 100, 's1', 'Alpha')",
+    [],
+  )
+  let _ = st.db.run("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's1', 'chat', 100)", [])
+  let _ = st.db.run("INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (1, 1, 'message', 'station', 'station', '⚠️ Turn failed: CUSTOM_SENSITIVE_ENTRY_SECRET_999', 200)", [])
+  let _ = st.db.run("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile) VALUES ('t-smoke-1', 's1', 'prompt', 150, 195, 'failed', 'network: CUSTOM_SENSITIVE_DETAIL_SECRET_888', 'default')", [])
+
+  // 1. Real SQLite `feedback.report`: strictly whitelisted structured metadata ONLY (zero raw entry/detail free text!)
+  let viewer = station_api::Viewer::{
+    email: "alice@example.com", sub: "u1", name: "Alice", workspace: "ws-main", home: true, role: "member", device: None, lock_base: None, lock_proof: None,
+  }
+  match prepare_feedback_notice_report(store, 1, 1, viewer, "linux", "x64", "/home/alice", None) {
+    Ok((rep, _)) => {
+      let rs = base_codec::json_stringify(rep)
+      if rs.contains("CUSTOM_SENSITIVE_ENTRY_SECRET_999") || rs.contains("CUSTOM_SENSITIVE_DETAIL_SECRET_888") {
+        return Err("feedback report leaked raw free text into outbound payload")
+      }
+      if !rs.contains("\"category\":\"network\"") || !rs.contains("\"outcome\":\"failed\"") {
+        return Err("feedback report missing whitelisted structured category/outcome")
+      }
+    }
+    Err(e) => return Err("feedback prepare failed: " + e.message)
+  }
+
+  // 1b. Regression: a thread whose ONLY `thread_sessions` row belongs to another workspace with `left_at IS NOT NULL`
+  // (after `chat_leave`) MUST NOT be visible to home workspace viewers, and DB errors MUST fail-closed!
+  let _ = st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES ('s-other', 'chat', 'chat', '/tmp/w2', 'tok2', 'claude', 'default', 0, 100, 100, 'ws-other')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO threads (id, surface, channel, thread_ts, created_at, home, project) VALUES (2, 'stillfail', 'CHAT', '2', 100, 's-other', 'Beta')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO thread_sessions (thread, session, connect, joined_at, left_at) VALUES (2, 's-other', 'chat', 100, 150)",
+    [],
+  )
+  let real_seen = build_real_seen_store(store)
+  if station_api::thread_seen(real_seen, viewer, 2) {
+    return Err("home viewer must NOT see thread with only left_at!=NULL foreign workspace session")
+  }
+  let other_viewer = station_api::Viewer::{
+    email: "bob@example.com", sub: "u2", name: "Bob", workspace: "ws-other", home: false, role: "member", device: None, lock_base: None, lock_proof: None,
+  }
+  if !station_api::thread_seen(real_seen, other_viewer, 2) {
+    return Err("foreign workspace viewer should still see its own left_at!=NULL thread")
+  }
+  let closed_store = WholeStore::new_pre_handover_with_sep(d_root + "/unopened", "/")
+  let closed_seen = build_real_seen_store(closed_store)
+  if station_api::thread_seen(closed_seen, viewer, 1) {
+    return Err("thread_seen must fail-closed on store/DB error instead of falling back to home workspace")
+  }
+
+  // 2. PR #9161 P2: `station_sys::utimes_now`, `utimes_dir_children_now`, and `cleanup_stale_tar_extracts_dir`
+  let uf = d_root + "/utimes-probe"
+  let tmpd = d_root + "/tmp"
+  let _ = station_sys::mkdir_p(tmpd)
+  let tf = tmpd + "/tar-extract-smoke.bin"
+  if !station_sys::write_file_atomic(uf, "ok".to_bytes(), 420) || !station_sys::utimes_now(uf) || !station_sys::utimes_dir_children_now(d_root) {
+    return Err("station_sys::utimes_dir_children_now selftest failed")
+  }
+  if !station_sys::write_file_atomic(tf, "ok".to_bytes(), 420) || station_sys::cleanup_stale_tar_extracts_dir(tmpd, 2000000000000L, 0L) != 1 {
+    return Err("station_sys::cleanup_stale_tar_extracts_dir selftest failed")
+  }
+  Ok(())
+}

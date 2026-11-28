@@ -160,7 +160,7 @@ fn make_mem_whole_api_fixture_full(
       }
     },
     overview: fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-      Ok(build_overview_with_counts("st-w17c2", "ws-main", [], Some(cfg_file), agents.disabled_runtimes, 0, 0, 0, v, l, profile_login_for=hooks.profile_login_for))
+      Ok(build_overview_with_counts("st-w17c2", "ws-main", [], Some(cfg_file), agents.disabled_runtimes, 0, 0, 0, v, l))
     },
     host_sample: fn(_l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
       Ok(base_codec::json_obj([]))
@@ -215,6 +215,9 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "accounts.profiles.pace",
     "accounts.profiles.resetQuota",
     "accounts.profiles.quota",
+    "accounts.profiles.login",
+    "accounts.profiles.login.get",
+    "accounts.profiles.login.delete",
     "mcpServers.reloadAll",
     "mcpServers.reloadOne",
     "screens.browser.open",

@@ -105,9 +105,10 @@ fn mark_button(t : @ui.Tester, label : String) -> (Double, Double, Double, Doubl
 ///|
 /// The grid's cells shown now (a button as wide as it is tall, wider than a colour's), from the first.
 fn mark_cells(t : @ui.Tester) -> Array[@ui.SemNode] {
+  let close_lbl = @sf.t("common.close")
   t
   .all(Button)
-  .filter(fn(b) { !b.hidden && b.rect.2 > 40.0 && b.rect.2 < 90.0 && (b.rect.2 - b.rect.3).abs() < 0.5 })
+  .filter(fn(b) { !b.hidden && b.label != close_lbl && b.rect.2 > 40.0 && b.rect.2 < 90.0 && (b.rect.2 - b.rect.3).abs() < 0.5 })
 }
 
 ///|

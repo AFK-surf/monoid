@@ -164,12 +164,13 @@ test "小屏: a sheet that grows whose body is nodes: dragged up, its grabber ta
   })
   debug_inspect(grows_trace(t), content=(
     #|[
-    #|  633,
+    #|  624,
     #|  50.6400000000001,
     #|  379.79999999999995,
     #|  169.79999999999995,
     #|  50.6400000000001,
     #|]
+
   ))
 }
 
@@ -209,16 +210,16 @@ test "小屏: a sheet whose body is nodes rising and sinking away: over the time
   // (and let go as it has sunk away and its scrim faded: its layer held by its sinking, View::moved_by)
   debug_inspect(rise_trace(t), content=(
     #|[
-    #|  833,
-    #|  757.5,
-    #|  719.5,
-    #|  704,
+    #|  838.5,
+    #|  760,
+    #|  720.5,
+    #|  704.5,
     #|  698,
     #|  696,
     #|  696,
     #|  696,
     #|  696,
-    #|  770,
+    #|  773.5,
     #|  -1,
     #|  -1,
     #|  -1,
@@ -228,6 +229,7 @@ test "小屏: a sheet whose body is nodes rising and sinking away: over the time
     #|  -1,
     #|  -1,
     #|]
+
   ))
   t.run_for(sheet_way_ms(t))
   assert_false(@sf.presenter_visible(), msg="let go")
@@ -252,7 +254,8 @@ test "小屏: a sheet a share of the window tall whose body is nodes: as tall as
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(rested(), content=(
-    #|(168.79999999999995, (0, 231.8, 40, 36), (310, 784, 60, 36))
+    #|(168.79999999999995, (0, 240.8, 40, 36), (310, 784, 60, 36))
+
   ))
   @sf.panel_nodes("面板", from=Unanchored, tall=sheet_share, grows=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
@@ -299,9 +302,10 @@ test "小屏: a sheet whose title is as it is now (`live`) and whose body is nod
   debug_inspect(made, content=(
     #|[
     #|  ((0, 193.8, 40, 36), None),
-    #|  ((0, 231.8, 40, 36), Some((195, 209.79999999999995))),
+    #|  ((0, 240.8, 40, 36), Some((195, 206.79999999999995))),
     #|  ((0, 193.8, 40, 36), None),
     #|]
+
   ))
 }
 
@@ -544,7 +548,13 @@ test "小屏对话页底抽屉打开时，底部输入框与浮动玻璃胶囊�
   t.run_for(sheet_way_ms(t))
   assert_true(@sf.presenting(), msg="sheet open")
   let lower_open = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 422.0 && g.4 == 6 })
-  assert_eq(lower_open.length(), 1, msg="only sheet glass in lower half while open: \{Repr(lower_open)}")
+  let sheet_glasses = lower_open.filter(fn(g) { g.2 > 100.0 && g.3 > 100.0 })
+  assert_eq(sheet_glasses.length(), 1, msg="only sheet glass in lower half while open: \{Repr(lower_open)}")
+  let sg = sheet_glasses[0]
+  assert_true(
+    lower_open.iter().all(fn(g) { g.0 >= sg.0 - 0.5 && g.1 >= sg.1 - 0.5 && g.0 + g.2 <= sg.0 + sg.2 + 0.5 && g.1 + g.3 <= sg.1 + sg.3 + 0.5 }),
+    msg="all lower-half glass must belong to sheet chrome while open: \{Repr(lower_open)}",
+  )
   assert_eq(t.audit(), [], msg="open audit")
   t.key(@ui.key_escape)
   t.run_for(sheet_way_ms(t))

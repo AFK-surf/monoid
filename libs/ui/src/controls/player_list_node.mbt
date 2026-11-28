@@ -334,7 +334,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     stage_scroll: None,
     stage_bg: None,
     above: None,
-    heads_itself: true,
+    heads_itself: false,
     side: Bottom,
     along: Start,
     offset: panel_offset,
@@ -344,22 +344,10 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     nodes: {
       body: fn(col, _) {
         col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        col.box(fn(head) {
-          style_node(head, fn() { layout_sheet_head })
-          head.box(fn(w) {
-            w
-            .grow(Is(1.0))
-            .words(By(fn() { t("web-pages.drive.player.list") }))
-            .words_look(By(fn() { @view.WordsLook::{ ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
-            .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
-            |> ignore
-          })
-          |> ignore
-          head.show(fn() { pn.pl.which() != "" }, fn(n) {
-            words_node(n, fn() { pn.pl.which() }, fn() { desk_panel_note.then(@ui.text_style(color=Data(theme().p.muted))) }) |> ignore
-          })
+        col.show(fn() { pn.pl.which() != "" }, fn(n) {
+          style_node(n, fn() { sheet_subnote_row })
+          words_node(n, fn() { pn.pl.which() }, fn() { desk_panel_note.then(@ui.text_style(color=Data(theme().p.muted))) }) |> ignore
         })
-        |> ignore
         col.box(fn(b) {
           b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           play_list_rows_node(b, pn, ink, close)
@@ -371,7 +359,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
       hugs_centred: false,
       hugs_wide: false,
       steps: false,
-      sheet_heads: true,
+      sheet_heads: false,
       heads: false,
       top: 0.0,
       most: None,

@@ -388,13 +388,20 @@ fn live_format_wait_condition(c : base_codec::Json) -> String {
 }
 
 /// Build the `SoftwareVersion[]` JSON view 1:1 with `station/src/updates/updates.ts` `get()`.
+/// When `resolved_channel` is supplied (from `config.updateChannel ?? <app>/CHANNEL ?? "stable"`),
+/// it takes precedence over `raw_cfg` so beta installations without explicit `config.updateChannel`
+/// accurately report `channel: "beta"`.
 pub fn updates_view_json(
   updates : station_drivers::RuntimeUpdatesManager,
   raw_cfg : base_codec::Json,
+  resolved_channel : Option[String] = None,
 ) -> base_codec::Json {
-  let channel = match json_field_str(raw_cfg, "updateChannel") {
+  let channel = match resolved_channel {
     Some(ch) if ch == "stable" || ch == "beta" => ch
-    _ => "stable"
+    _ => match json_field_str(raw_cfg, "updateChannel") {
+      Some(ch) if ch == "stable" || ch == "beta" => ch
+      _ => "stable"
+    }
   }
   // 1:1 with `station/src/updates/updates.ts:448` & `station_cli/src/update.pion:1020`:
   // default `autoUpdate` when omitted is `false` (never silently force `true`).
@@ -948,68 +955,9 @@ pub fn dispatch_live_accounts_op(
     }
   }
 
-  // 3-5. `accounts.profiles.login` / `login.get` / `login.delete` (strict ws + read-only isolation;
-  // `login-code` and `login-browser` remain honest 501 until Wave 17E interactive paste state machine lands).
-  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete") && params.length() >= 1 {
-    let id = params[0]
-    let read_only = admin_is_read_only(req.viewer)
-    if (op == "accounts.profiles.login" || op == "accounts.profiles.login.delete") && read_only {
-      return Some(Err(station_api::ApiError::new(403, "read-only members cannot start or cancel profile logins")))
-    }
-    let cur = read_profiles_array(read_config_raw(cfg_opt))
-    let idx = find_profile_index(cur, id)
-    if idx < 0 || !live_profile_visible_in_ws(cur[idx], req.viewer.workspace) {
-      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
-    }
-    let entry = cur[idx]
-    let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
-    let prof_home = match json_field_str(entry, "home") { Some(s) => s, None => "" }
-    if op == "accounts.profiles.login" {
-      let kind = live_profile_access_kind(entry)
-      if kind != "subscription" {
-        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
-      }
-      if json_field_bool(entry, "machine") == Some(true) {
-        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginOnMachine"))))
-      }
-      if is_borrowed_profile(entry) {
-        return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
-      }
-      if !live_supports_cli_login(rt) {
-        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
-      }
-    }
-    match hooks.on_profile_live_op {
-      Some(f) => {
-        let enriched = json_obj_set(
-          json_obj_set(
-            json_obj_set(
-              json_obj_set(body, "_viewerReadOnly", Some(base_codec::json_bool(read_only))),
-              "_viewerWorkspace",
-              Some(base_codec::json_str(req.viewer.workspace)),
-            ),
-            "_profileRuntime",
-            Some(base_codec::json_str(rt)),
-          ),
-          "_profileHome",
-          Some(base_codec::json_str(prof_home)),
-        )
-        let res = f(op, [id], enriched, req.viewer, req.lang)
-        if op == "accounts.profiles.login.get" && read_only {
-          match res {
-            Ok(v) => {
-              let redacted = json_obj_set(json_obj_set(v, "url", None), "code", None)
-              return Some(Ok(redacted))
-            }
-            Err(e) => return Some(Err(e))
-          }
-        }
-        return Some(res)
-      }
-      None => return Some(Err(err_not_implemented(op)))
-    }
-  }
-
+  // `accounts.profiles.login` / `login.get` / `login.delete` / `login-code` / `login-browser`
+  // remain honest 501 until Wave 17E lands the dedicated `LoginJob` state machine & role-partitioned SSE cache.
+  let _ = params
   None
 }
 

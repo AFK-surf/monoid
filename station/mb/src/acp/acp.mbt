@@ -1102,6 +1102,14 @@ pub fn Session::injected(self : Session, id : String, take_over : Bool, text : S
     add(id)
   }
   self.user(text, true, events)
+  // (taken over, the prompt is read now: the turn is with the model again, said even where it already was, so the
+  // actor counts what it steered as read and a death after it does not hand it again)
+  if take_over {
+    self.live.phase = None
+    for e in self.live.prompted() {
+      events.push(live(e))
+    }
+  }
   events
 }
 

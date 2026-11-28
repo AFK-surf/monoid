@@ -330,7 +330,7 @@ fn step_page_node(
       if k != 0 || keyed.under is Some(_) {
         line.box(fn(key) {
           style_node(key, fn() {
-            dialog_back_at(drop=head_line_drop(key, Heading, h=dialog_corner_key_side, row=dialog_corner_key_side))
+            dialog_back_at(drop=head_line_drop(key, Xl2, leading=L7, h=dialog_corner_key_side, row=dialog_corner_key_side))
           }, in_row=true)
           dialog_step_back_node(key, back) |> ignore
         })
@@ -339,7 +339,7 @@ fn step_page_node(
       line.box(fn(l) {
         style_node(l, fn() {
           let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
-          let drop = head_line_drop(l, Heading, row=dialog_corner_key_side)
+          let drop = head_line_drop(l, Xl2, leading=L7, row=dialog_corner_key_side)
           dialog_title_line.then(@ui.style(mt=room(d - dialog_pad + drop)))
         }, in_row=true)
         l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

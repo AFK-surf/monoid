@@ -600,3 +600,59 @@ test "wave17c3b R2: hot handover restart rejects Windows (501) and non-launcher 
     None => panic("missing ws-1 after pruning")
   }
 }
+
+test "w17d3 R5: feedback signed_post_headers matches independent Cloud Ed25519 + Unix-seconds contract" {
+  // Independent Cloud-side verification matching `cloud/src/tracing.ts:190-196` (does NOT call `signed_post_signature` to self-verify).
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 7).to_byte()
+  }
+  let sk = match station_cloud::StationKey::from_seed(seed) {
+    Ok(k) => k
+    Err(e) => panic("StationKey::from_seed failed: " + e)
+  }
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(p) => p
+    Err(_) => panic("Ed25519KeyPair::from_seed failed")
+  }
+  let origin = "https://api.still.fail"
+  let station_id = sk.id
+  let wall_ms = 1795850000123L
+  let ts_secs = wall_ms / 1000L
+  let body = "{\"thread\":1,\"notice\":\"boom\"}"
+  let hdrs = match station_cloud::signed_post_headers(
+    origin,
+    station_id,
+    "stillfail-station-feedback-v1",
+    body,
+    ts_secs,
+    sk,
+  ) {
+    Ok(h) => h
+    Err(e) => panic("signed_post_headers failed: " + e)
+  }
+  let mut got_ts = ""
+  let mut got_sig = ""
+  let mut got_st = ""
+  for i in 0..<hdrs.length() {
+    if hdrs[i].0 == "x-stillfail-ts" { got_ts = hdrs[i].1 }
+    if hdrs[i].0 == "x-stillfail-signature" { got_sig = hdrs[i].1 }
+    if hdrs[i].0 == "x-stillfail-station" { got_st = hdrs[i].1 }
+  }
+  if got_st != station_id {
+    panic("x-stillfail-station mismatch")
+  }
+  if got_ts != "1795850000" {
+    panic("x-stillfail-ts must be Unix seconds (1795850000), got: " + got_ts)
+  }
+  // Independently reconstruct Cloud's signed message and verify with Ed25519 public key.
+  let body_sha = crypto::sha256_hex(body.to_bytes())
+  let expected_msg = "stillfail-station-feedback-v1:" + origin + ":" + station_id + ":" + got_ts + ":" + body_sha
+  let sig_bytes = match crypto::hex_to_bytes(got_sig) {
+    Some(b) => b
+    None => panic("x-stillfail-signature is not valid hex")
+  }
+  if !crypto::ed25519_verify(kp.public_key(), expected_msg.to_bytes(), sig_bytes) {
+    panic("independent Ed25519 verification of feedback signature failed")
+  }
+}

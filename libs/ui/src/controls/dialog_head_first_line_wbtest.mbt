@@ -292,8 +292,9 @@ test "a stepped centred dialog's back key matches its close button's 36pt Liquid
         w=1200.0,
         h=800.0,
         platform=0,
-        // At 1.8x/2.0x Heading line height (43-48pt) exceeds the 36pt circle, so head_line_drop shifts both corner
-        // buttons down to stay centred on line 1 (matching the explicit design rule over top-corner concentricity).
+        // At 1.8x/2.0x modal_title_size (17/22pt) line height (39.6-44pt) exceeds the 36pt circle, so head_line_drop
+        // shifts both corner buttons down to stay centred on line 1 (matching the explicit design rule over top-corner
+        // concentricity).
         corners_held=scale <= 1.3,
       )
       tt.check_looks(false)
@@ -536,4 +537,215 @@ test "confirm verification facts card renders concentrically in wide dialog, sma
   assert_true(t_menu.find("Production API Gateway Config") is Some(_), msg="inline menu confirm shows preset name in facts card")
   assert_eq(t_menu.audit(), [])
   assert_eq(t_menu.corner_faults(), [])
+}
+
+///|
+test "small sheet grabber and modal titles match real iOS 27 geometry and contrast in light and dark" {
+  // Verify 58x4pt grabber at y=6..10pt (25% light / 35% dark fg alpha, 40%/50% under more contrast),
+  // root sheet title vertically aligned to step_row (both y_mid = 38pt), and wide modal/confirm 17/22pt titles.
+  defer {
+    set_dark(None)
+    presenters_reset()
+  }
+  assert_true(sheet_grabber_style(false, true).base.bg == sheet_grabber_more.base.bg)
+  assert_true(sheet_grabber_style(true, true).base.bg == sheet_grabber_dark_more.base.bg)
+  let close_lbl = t("common.close")
+  let back_lbl = t("common.back")
+  for dark in [false, true] {
+    presenters_reset()
+    let t = @ui.Tester::new(
+      fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+      tree=fn(root) {
+        @ui.set_tree_theme(ui_theme_now)
+        root.box(fn(bg) { bg.over(Is(true)).ground(By(fn() { theme().p.bg })) |> ignore }) |> ignore
+        presented_nodes(root)
+      },
+      w=390.0,
+      h=844.0,
+      dark~,
+      platform=1,
+    )
+    // Tester::new sets @ui's dark flag; set_dark drives controls' dark_set signal
+    set_dark(Some(dark))
+    t.draw()
+    confirm("全部迁移", "9 项 · 1 项无法迁移", "全部迁移", fn() {  })
+    t.run_for(@ui.move_most_ms)
+    let sheets = t.all(Dialog, label="全部迁移")
+    let titles = t.words().filter(fn(w) { w.0 == "全部迁移" && w.2 < 750.0 })
+    guard sheets.length() == 1 && titles.length() >= 1 else {
+      @halt.saying("dark=\{dark}: missing sheet/title")
+    }
+    let (sx, sy, sw, _) = sheets[0].rect
+    let (_, tx, ty, tw, th, _) = titles[0]
+    let root_title_mid = ty + th / 2.0 - sy
+    // Root sheet title horizontally centered and vertically centered at y_mid = 38.0pt (matches step_row & iOS 27)
+    assert_true(((tx + tw / 2.0) - (sx + sw / 2.0)).abs() <= 1.0, msg="dark=\{dark}: title x centered")
+    assert_eq(root_title_mid.round(), 38.0, msg="dark=\{dark}: root sheet title mid \{root_title_mid}pt")
+    assert_eq(th.round(), 22.0, msg="dark=\{dark}: sheet title line height \{th}pt")
+    // Root titled sheet has a concentric 44x44pt Liquid Glass close key at (sx + sw - 60, sy + 16)
+    let closes = t.all(Button, label=close_lbl)
+    assert_eq(closes.length(), 1, msg="dark=\{dark}: expected 44pt close button on root sheet")
+    let (cx, cy, cw, ch) = closes[0].rect
+    assert_true((cw - 44.0).abs() <= 0.5 && (ch - 44.0).abs() <= 0.5, msg="dark=\{dark}: close size \{cw}x\{ch}")
+    assert_true((cx - (sx + sw - 60.0)).abs() <= 0.5, msg="dark=\{dark}: close x \{cx} vs \{sx + sw - 60.0}")
+    assert_true((cy - (sy + 16.0)).abs() <= 0.5, msg="dark=\{dark}: close y \{cy} vs \{sy + 16.0}")
+    // Grabber pill: 58x4pt at y = 6..10pt from sheet top with exact iOS 27 light/dark opacity (25% / 35%)
+    let grabbers = t.drawn_rect_corners().filter(fn(r) {
+      (r.2 - 58.0).abs() <= 0.5 && (r.3 - 4.0).abs() <= 0.5 && (r.1 - sy - 6.0).abs() <= 0.5
+    })
+    assert_eq(grabbers.length(), 1, msg="dark=\{dark}: expected 58x4pt grabber at y=6..10pt")
+    let alpha_byte = grabbers[0].4 & 0xFFL
+    if dark {
+      assert_true(alpha_byte >= 87L && alpha_byte <= 91L, msg="dark grabber alpha \{alpha_byte} expected ~89 (35%)")
+    } else {
+      assert_true(alpha_byte >= 62L && alpha_byte <= 66L, msg="light grabber alpha \{alpha_byte} expected ~64 (25%)")
+    }
+    assert_eq(t.audit(), [], msg="dark=\{dark}: audit")
+    assert_eq(t.corner_faults(), [], msg="dark=\{dark}: corners")
+    // Tapping the 44pt close button dismisses the sheet cleanly
+    t.tap(cx + cw / 2.0, cy + ch / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.all(Dialog, label="全部迁移").length(), 0, msg="dark=\{dark}: close button dismissed sheet")
+  }
+  // Restore light mode after the dark loop before running light-mode testers below
+  set_dark(None)
+  // Untitled menu sheet has neither back nor close button
+  presenters_reset()
+  let tm = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bg) { bg.over(Is(true)).ground(By(fn() { theme().p.bg })) |> ignore }) |> ignore
+      presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    platform=1,
+  )
+  tm.draw()
+  menu([Some(menu_item_of("编辑", fn() {  }))], from=At(200.0, 700.0, 20.0, 20.0))
+  tm.run_for(@ui.move_most_ms)
+  assert_eq(tm.all(Button, label=close_lbl).length(), 0, msg="untitled menu sheet must not show close button")
+  assert_eq(tm.all(Button, label=back_lbl).length(), 0, msg="untitled menu sheet must not show back button")
+  // Step sheet has BOTH 44pt concentric `<` at (16, 16) and 44pt concentric `×` at (sw - 60, 16), matching iOS 27,
+  // and shares exact 38.0pt title vertical midpoint with root sheet title (zero jump on push/pop)
+  presenters_reset()
+  let ts = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bg) { bg.over(Is(true)).ground(By(fn() { theme().p.bg })) |> ignore }) |> ignore
+      presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    platform=1,
+  )
+  ts.draw()
+  panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
+    v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+  })
+  panel_go_nodes("申请钥匙", fn(v, _) {
+    v.box(fn(b) { words_node(b, fn() { "下一步" }, fn() { dialog_lead }) |> ignore }) |> ignore
+  })
+  ts.run_for(@ui.move_most_ms)
+  let ss = ts.all(Dialog, label="申请钥匙")
+  let st = ts.words().filter(fn(w) { w.0 == "申请钥匙" })
+  guard ss.length() == 1 && st.length() == 1 else { @halt.saying("step sheet missing dialog/title") }
+  let (ssx, ssy, ssw, _) = ss[0].rect
+  let step_title_mid = st[0].2 + st[0].4 / 2.0 - ssy
+  assert_eq(step_title_mid.round(), 38.0, msg="step sheet title mid \{step_title_mid}pt")
+  let step_backs = ts.all(Button, label=back_lbl)
+  let step_closes = ts.all(Button, label=close_lbl)
+  assert_eq(step_backs.length(), 1, msg="step sheet back button")
+  assert_eq(step_closes.length(), 1, msg="step sheet close button")
+  assert_true((step_backs[0].rect.0 - (ssx + 16.0)).abs() <= 0.5 && (step_backs[0].rect.1 - (ssy + 16.0)).abs() <= 0.5, msg="step back at (16, 16)")
+  assert_true((step_closes[0].rect.0 - (ssx + ssw - 60.0)).abs() <= 0.5 && (step_closes[0].rect.1 - (ssy + 16.0)).abs() <= 0.5, msg="step close at (sw - 60, 16)")
+  let step_audit = ts.audit()
+  assert_eq(step_audit, [], msg="step sheet audit: \{Repr(step_audit)}")
+  assert_eq(ts.corner_faults(), [], msg="step sheet corners")
+  // Tapping `×` on step 2 closes the whole sheet at once
+  ts.tap(step_closes[0].rect.0 + 22.0, step_closes[0].rect.1 + 22.0)
+  ts.run_for(@ui.move_most_ms)
+  assert_eq(ts.all(Dialog, label="申请钥匙").length(), 0, msg="step close button dismissed whole sheet")
+  assert_eq(ts.all(Dialog, label="第一步").length(), 0, msg="step close button did not leave root step open")
+  // Long stepped title + step counter ("2 / 3") on a narrow 360pt sheet: stays strictly between `<` and `×` with zero overlap
+  presenters_reset()
+  let tl = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bg) { bg.over(Is(true)).ground(By(fn() { theme().p.bg })) |> ignore }) |> ignore
+      presented_nodes(root)
+    },
+    w=360.0,
+    h=740.0,
+    platform=1,
+  )
+  tl.draw()
+  panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
+    v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+  })
+  panel_go_nodes("加入工作区群聊服务器配置向导", live=fn() { ("加入工作区群聊服务器配置向导", "2 / 3", "") }, fn(v, _) {
+    v.box(fn(b) { words_node(b, fn() { "下一步" }, fn() { dialog_lead }) |> ignore }) |> ignore
+  })
+  tl.run_for(@ui.move_most_ms)
+  let lb = tl.all(Button, label=back_lbl)
+  let lc = tl.all(Button, label=close_lbl)
+  let ls = tl.words().filter(fn(w) { w.0 == "2 / 3" })
+  let lt = tl.words().filter(fn(w) { w.0.has_prefix("加入工作区") })
+  assert_eq(lb.length(), 1, msg="360pt stepped back button")
+  assert_eq(lc.length(), 1, msg="360pt stepped close button")
+  assert_eq(ls.length(), 1, msg="360pt stepped counter visible")
+  assert_eq(lt.length(), 1, msg="360pt stepped title visible")
+  assert_true(lt[0].1 >= lb[0].rect.0 + lb[0].rect.2, msg="360pt title clears back key")
+  assert_true(ls[0].1 + ls[0].3 <= lc[0].rect.0, msg="360pt step counter clears close key")
+  assert_eq(tl.audit(), [], msg="360pt long stepped sheet audit")
+  assert_eq(tl.corner_faults(), [], msg="360pt long stepped sheet corners")
+  // Wide confirm and ask dialogs both use unified 17/22pt titles with concentric 36pt Liquid Glass close keys on line 1
+  presenters_reset()
+  let tw = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bg) { bg.over(Is(true)).ground(By(fn() { theme().p.bg })) |> ignore }) |> ignore
+      presented_nodes(root)
+    },
+    w=960.0,
+    h=680.0,
+    platform=0,
+  )
+  tw.draw()
+  confirm("全部迁移", "9 项 · 1 项无法迁移", "确定", fn() {  })
+  tw.run_for(@ui.move_most_ms)
+  let wd = tw.all(Dialog, label="全部迁移")
+  let wt = tw.words().filter(fn(w) { w.0 == "全部迁移" })
+  let wc = tw.all(Button, label=close_lbl)
+  guard wd.length() == 1 && wt.length() == 1 && wc.length() == 1 else {
+    @halt.saying("wide confirm missing dialog/title/close")
+  }
+  assert_eq((wt[0].2 + wt[0].4 / 2.0 - wd[0].rect.1).round(), 38.0, msg="wide confirm title mid aligned to 36pt close at 38pt")
+  assert_eq(wt[0].4.round(), 22.0, msg="wide confirm title line expected 22pt")
+  assert_true((wc[0].rect.2 - 36.0).abs() <= 0.5 && (wc[0].rect.3 - 36.0).abs() <= 0.5, msg="wide confirm close 36x36pt")
+  assert_true((wc[0].rect.0 - (wd[0].rect.0 + wd[0].rect.2 - 56.0)).abs() <= 0.5 && (wc[0].rect.1 - (wd[0].rect.1 + 20.0)).abs() <= 0.5, msg="wide confirm close concentric at (dw - 56, 20)")
+  assert_eq(tw.audit(), [])
+  assert_eq(tw.corner_faults(), [])
+  tw.tap(wc[0].rect.0 + 18.0, wc[0].rect.1 + 18.0)
+  tw.run_for(@ui.move_most_ms)
+  assert_eq(tw.all(Dialog, label="全部迁移").length(), 0, msg="wide confirm close dismissed dialog")
+  ask("重命名对话", "保存", fn(_) {  })
+  tw.run_for(@ui.move_most_ms)
+  let ad = tw.all(Dialog, label="重命名对话")
+  let at_w = tw.words().filter(fn(w) { w.0 == "重命名对话" })
+  let ac = tw.all(Button, label=close_lbl)
+  guard ad.length() == 1 && at_w.length() == 1 && ac.length() == 1 else {
+    @halt.saying("wide ask missing dialog/title/close")
+  }
+  assert_eq(at_w[0].4.round(), 22.0, msg="wide ask title line expected 22pt")
+  assert_true((ac[0].rect.2 - 36.0).abs() <= 0.5 && (ac[0].rect.3 - 36.0).abs() <= 0.5, msg="wide ask close 36x36pt")
+  assert_eq(tw.audit(), [])
+  assert_eq(tw.corner_faults(), [])
+  tw.tap(ac[0].rect.0 + 18.0, ac[0].rect.1 + 18.0)
+  tw.run_for(@ui.move_most_ms)
+  assert_eq(tw.all(Dialog, label="重命名对话").length(), 0, msg="wide ask close dismissed dialog")
 }

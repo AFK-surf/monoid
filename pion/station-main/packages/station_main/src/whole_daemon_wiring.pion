@@ -731,7 +731,6 @@ pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
-  profile_logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
 ) -> Unit {
@@ -834,22 +833,17 @@ pub fn wire_whole_core_runtime_hooks(
   core.api.hooks.on_workspace_join = None
   core.api.hooks.on_updates_op = None
 
-  // Wave 17D-2 R2: Live `accounts.profiles.{createMachine,login,login.get,login.delete}` executor:
-  // - Machine login validation: parses real credential JSON (rejects empty/corrupt files), distinguishes
-  //   `notSignedIn` vs `keychain`, extracts real email (including Codex JWT id_token), and links Codex `auth.json`.
-  // - Profile logins: strictly scoped per `(ws, profile_id)` via `logins.start_login_isolated` (zero cross-profile
-  //   command-dedup collisions), resolves `profile.home`, sets exact runtime env vars (`CLAUDE_CONFIG_DIR`,
-  //   `CODEX_HOME`, `GROK_HOME`, `XDG_DATA_HOME`, `AGY_CLI_FORCE_FILE_TOKEN_STORAGE`+`SSH_CLIENT`+`HOME`), and
-  //   redacts sensitive URL/code fields for read-only viewers!
-  let profile_login_ids : Map[String, String] = Map::new()
+  // Wave 17D-2 R6: Live `accounts.profiles.createMachine` executor:
+  // parses real credential JSON (rejects empty/corrupt files), distinguishes `notSignedIn` vs `keychain`,
+  // extracts real email (including Codex JWT id_token), and symlinks Codex `auth.json`.
+  // (`accounts.profiles.login*` remain honest 501 until Wave 17E lands the dedicated `LoginJob` runtime.)
   core.api.hooks.on_profile_live_op = Some(fn(
     op : String,
-    params : Array[String],
+    _params : Array[String],
     body : base_codec::Json,
-    viewer : station_api::Viewer,
+    _viewer : station_api::Viewer,
     _lang : station_api::Lang,
   ) -> Result[base_codec::Json, station_api::ApiError] {
-    let id = if params.length() > 0 { params[0] } else { "" }
     if op == "accounts.profiles.createMachine" {
       let rt = match base_codec::json_get(body, "runtime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
       let home = match station_sys::env_get("HOME") {
@@ -990,125 +984,7 @@ pub fn wire_whole_core_runtime_hooks(
       }
       return Err(station_api::ApiError::new(400, "unsupported machine login runtime " + rt))
     }
-
-    let ws_scope = match base_codec::json_get(body, "_viewerWorkspace") {
-      Some(base_codec::Json::Str(s)) if s.length() > 0 => s
-      _ => viewer.workspace
-    }
-    let scope_key = ws_scope + "\x00" + id
-    let read_only = match base_codec::json_get(body, "_viewerReadOnly") {
-      Some(base_codec::Json::Bool(true)) => true
-      _ => false
-    }
-
-    if op == "accounts.profiles.login" {
-      // Deduplicate active login per `(ws, profile_id)` across ALL active LoginState variants
-      // (`starting`, `browser`, `code`, `input`, `verifying`): reuse existing active job!
-      match profile_login_ids.get(scope_key) {
-        Some(existing_lid) => match profile_logins.manager.get(existing_lid) {
-          Some(existing_view) => {
-            let is_active = match existing_view.state {
-              station_devices::LoginState::Done
-              | station_devices::LoginState::Failed
-              | station_devices::LoginState::Cancelled => false
-              _ => true
-            }
-            if is_active {
-              return Ok(base_codec::json_obj([("job", login_view_to_json(existing_view, false))]))
-            }
-          }
-          None => ()
-        }
-        None => ()
-      }
-      let rt = match base_codec::json_get(body, "_profileRuntime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      let raw_home = match base_codec::json_get(body, "_profileHome") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
-      let home_dir = if raw_home.length() == 0 {
-        nodepath::join(ctx.sep, [ctx.data, "homes", id])
-      } else if raw_home.starts_with("/") || raw_home.starts_with("\\") || (raw_home.length() >= 2 && raw_home.code_unit_at(1) == 58) {
-        raw_home
-      } else {
-        nodepath::join(ctx.sep, [ctx.data, raw_home])
-      }
-      if (ctx.ops_fs.mkdir_p)(home_dir) is Err(_) {
-        return Err(station_api::ApiError::new(500, "failed to create profile home directory"))
-      }
-      // 1:1 with `station/src/accounts/profiles.ts:170-179` & `agents/agy.ts:37`
-      let (cmd, env_pairs) : (String, Array[(String, String)]) = if rt == "claude" {
-        ("claude auth login", [("CLAUDE_CONFIG_DIR", home_dir)])
-      } else if rt == "codex" {
-        ("codex login", [("CODEX_HOME", home_dir)])
-      } else if rt == "grok" {
-        let ghome = nodepath::join(ctx.sep, [home_dir, "grok"])
-        if (ctx.ops_fs.mkdir_p)(ghome) is Err(_) {
-          return Err(station_api::ApiError::new(500, "failed to create grok home directory"))
-        }
-        ("grok login --device-auth", [("GROK_HOME", ghome)])
-      } else if rt == "devin" {
-        let dhome = nodepath::join(ctx.sep, [home_dir, "xdg-data"])
-        if (ctx.ops_fs.mkdir_p)(dhome) is Err(_) {
-          return Err(station_api::ApiError::new(500, "failed to create devin home directory"))
-        }
-        ("devin auth login --force-manual-token-flow", [("XDG_DATA_HOME", dhome)])
-      } else if rt == "agy" {
-        let ahome = nodepath::join(ctx.sep, [home_dir, "agy"])
-        if (ctx.ops_fs.mkdir_p)(ahome) is Err(_) {
-          return Err(station_api::ApiError::new(500, "failed to create agy home directory"))
-        }
-        ("agy", [("AGY_CLI_FORCE_FILE_TOKEN_STORAGE", "1"), ("SSH_CLIENT", "127.0.0.1 0 22"), ("HOME", ahome)])
-      } else {
-        return Err(station_api::ApiError::new(400, "runtime " + rt + " does not support CLI login"))
-      }
-      let starter = station_devices::LoginStarter::{
-        by: station_devices::LoginPerson::{ email: viewer.email, name: viewer.name },
-        workspace: Some(ws_scope),
-        chat: None,
-        chat_title: None,
-      }
-      match profile_logins.start_login_isolated(cmd, starter, home_dir, env_pairs, host_shim::now_ms()) {
-        Ok(view) => {
-          profile_login_ids.set(scope_key, view.id)
-          return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
-        }
-        Err(msg) => return Err(station_api::ApiError::new(409, msg))
-      }
-    }
-    if op == "accounts.profiles.login.get" {
-      match profile_login_ids.get(scope_key) {
-        Some(lid) => match profile_logins.manager.get(lid) {
-          Some(view) => return Ok(base_codec::json_obj([("job", login_view_to_json(view, read_only))]))
-          None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
-        }
-        None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
-      }
-    }
-    if op == "accounts.profiles.login.delete" {
-      match profile_login_ids.get(scope_key) {
-        Some(lid) => {
-          let who = Some(station_devices::LoginPerson::{ email: viewer.email, name: viewer.name })
-          let _ = profile_logins.cancel_login(lid, who, host_shim::now_ms())
-          let job_j = match profile_logins.manager.get(lid) {
-            Some(view) => login_view_to_json(view, false)
-            None => base_codec::json_null()
-          }
-          return Ok(base_codec::json_obj([("job", job_j)]))
-        }
-        None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
-      }
-    }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
-  })
-  // Project active `(ws, profile_id)` login state from isolated `profile_logins` into `overview.profiles[].login`
-  // (read-only members receive `login_limited` projection; aligns with `apps/mbui/src/sfpages/accounts.mbt:764`).
-  core.api.hooks.profile_login_for = Some(fn(ws : String, pid : String, ro : Bool) -> Option[base_codec::Json] {
-    let sk = ws + "\x00" + pid
-    match profile_login_ids.get(sk) {
-      Some(lid) => match profile_logins.manager.get(lid) {
-        Some(view) => Some(login_view_to_json(view, ro))
-        None => None
-      }
-      None => None
-    }
   })
 }
 
@@ -1350,10 +1226,15 @@ pub fn AsyncUpkeepRunner::tick(
   if clones_active {
     return
   }
-  // 2. Schedule periodic discovery pass
+  // 2. Schedule periodic discovery pass & dirfd-safe stale tar-extract cleanup
   if self.pending_repos.length() == 0 && now_ms >= self.next_pass_ms {
     // timer: periodic async shared-clone pack upkeep interval (1h)
     self.next_pass_ms = now_ms + ASYNC_UPKEEP_INTERVAL_MS
+    let _ = station_sys::cleanup_stale_tar_extracts_dir(
+      nodepath::join(self.sep, [self.data_dir, "tmp"]),
+      host_shim::wall_ms(),
+      3600000L,
+    )
     let _ = self.discover_repos(false)
   }
   // 3. Pop next repo and spawn async `git gc --auto --quiet`

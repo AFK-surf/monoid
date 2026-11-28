@@ -748,6 +748,64 @@ pub fn try_intercept_async_admin_op(
   None
 }
 
+/// Pure testable helper for applying an `updates.check` fetch result to `RuntimeUpdatesManager`:
+/// - Drops stale cross-channel completions (`req_channel != current_channel`) without mutating
+///   `updates.station` (prevents an old-channel check from overwriting the active channel's state).
+/// - Clears stale `latest`/`updatable` on fetch/HTTP/parse/signature failure.
+/// - Returns `true` if `updates.station` was updated, `false` if discarded as stale.
+pub fn apply_updates_check_result(
+  updates : station_drivers::RuntimeUpdatesManager,
+  req_channel : String,
+  current_channel : String,
+  fetch_res : Result[(Int, Bytes), String],
+  trusted : Map[String, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  if req_channel != current_channel {
+    return false
+  }
+  match fetch_res {
+    Err(e) => {
+      // Clear stale `latest`/`updatable` on fetch failure so UI never sees an outdated update prompt!
+      updates.station.latest = None
+      updates.station.updatable = false
+      updates.station.failed_text = Some("failed to fetch release feed: " + e)
+    }
+    Ok((status, body_b)) => {
+      if status < 200 || status >= 300 {
+        updates.station.latest = None
+        updates.station.updatable = false
+        updates.station.failed_text = Some("release feed HTTP " + status.to_string())
+      } else {
+        match base_codec::json_parse(body_b.to_string()) {
+          base_codec::JsonParseResult::Ok(feed_j) => {
+            match station_cli::verify_feed(feed_j, trusted, verify_fn=verify_fn) {
+              Ok(rel) => {
+                updates.station.latest = Some(rel.version)
+                let cur_v = match updates.station.version { Some(v) => v, None => "" }
+                updates.station.updatable = live_version_newer(cur_v, rel.version)
+                updates.station.failed_text = None
+              }
+              Err(ve) => {
+                // Verification failed -> MUST clear stale `latest`/`updatable`!
+                updates.station.latest = None
+                updates.station.updatable = false
+                updates.station.failed_text = Some("release signature verification failed: " + ve)
+              }
+            }
+          }
+          base_codec::JsonParseResult::Err(pe) => {
+            updates.station.latest = None
+            updates.station.updatable = false
+            updates.station.failed_text = Some("invalid release feed JSON: " + pe)
+          }
+        }
+      }
+    }
+  }
+  true
+}
+
 /// Complete an async admin HTTP op once the response body (or error) has arrived.
 fn complete_async_admin_op(
   ctx : DaemonCtx,
@@ -757,53 +815,25 @@ fn complete_async_admin_op(
 ) -> station_http::HttpResponse {
   let ops_lang = match state.lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
   let resp = match state.op {
-    AsyncAdminOpKind::UpdatesCheck(_ch) => {
+    AsyncAdminOpKind::UpdatesCheck(req_ch) => {
       if !live_viewer_still_manager(st, state) {
         return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
       }
       refresh_runtime_install_paths(st.core.updates, ctx.ops_fs, ctx.sep)
-      match fetch_res {
-        Err(e) => {
-          // Clear stale `latest`/`updatable` on fetch failure so UI never sees an outdated update prompt!
-          st.core.updates.station.latest = None
-          st.core.updates.station.updatable = false
-          st.core.updates.station.failed_text = Some("failed to fetch release feed: " + e)
-        }
-        Ok((status, body_b)) => {
-          if status < 200 || status >= 300 {
-            st.core.updates.station.latest = None
-            st.core.updates.station.updatable = false
-            st.core.updates.station.failed_text = Some("release feed HTTP " + status.to_string())
-          } else {
-            match base_codec::json_parse(body_b.to_string()) {
-              base_codec::JsonParseResult::Ok(feed_j) => {
-                let trusted = live_trusted_release_keys()
-                match station_cli::verify_feed(feed_j, trusted, verify_fn=st.core.api.auth_policy.verify_fn) {
-                  Ok(rel) => {
-                    st.core.updates.station.latest = Some(rel.version)
-                    let cur_v = match st.core.updates.station.version { Some(v) => v, None => "" }
-                    st.core.updates.station.updatable = live_version_newer(cur_v, rel.version)
-                    st.core.updates.station.failed_text = None
-                  }
-                  Err(ve) => {
-                    // Verification failed -> MUST clear stale `latest`/`updatable`!
-                    st.core.updates.station.latest = None
-                    st.core.updates.station.updatable = false
-                    st.core.updates.station.failed_text = Some("release signature verification failed: " + ve)
-                  }
-                }
-              }
-              base_codec::JsonParseResult::Err(pe) => {
-                st.core.updates.station.latest = None
-                st.core.updates.station.updatable = false
-                st.core.updates.station.failed_text = Some("invalid release feed JSON: " + pe)
-              }
-            }
-          }
-        }
+      let raw_cfg = ctx.config_file.raw()
+      let cur_ch = resolve_station_update_channel(raw_cfg, ctx.ops_fs, ctx.args.app, ctx.sep)
+      let applied = apply_updates_check_result(
+        st.core.updates,
+        req_ch,
+        cur_ch,
+        fetch_res,
+        live_trusted_release_keys(),
+        st.core.api.auth_policy.verify_fn,
+      )
+      if applied {
+        st.core.api.events.overview_changed("updates")
       }
-      st.core.api.events.overview_changed("updates")
-      station_api::json_ok(station_whole::updates_view_json(st.core.updates, ctx.config_file.raw()))
+      station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
     }
 
     AsyncAdminOpKind::CopiesS3Test(target) => {

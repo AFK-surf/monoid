@@ -211,6 +211,10 @@ void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err)
 // On POSIX: `mode < 0` opens with 0666 and respects process umask (no fchmod); `mode >= 0` enforces `mode & 0777`.
 int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode);
 int32_t sts_rename(const char *old_path, const char *new_path);
+// Update a file or directory's access & modification timestamps to current wall time (1 on success, 0 on error).
+int32_t sts_utimes_now(const char *path);
+int32_t sts_utimes_dir_children_now(const char *dir_path);
+int32_t sts_cleanup_stale_tar_extracts_dir(const char *tmp_dir, int64_t now_ms, int64_t min_age_ms);
 int32_t sts_random_bytes(uint8_t *buf, int64_t len);
 
 // 6. Unix domain socket peer identity (JSON `{"pid":N,"auditToken":...|null}` or NULL).
@@ -322,6 +326,12 @@ int32_t sts_resolve_host_for_tunnel_async(
     uint64_t event_id,
     const char *host,
     int32_t reject_loopback_or_unspec);
+
+// Non-blocking async DNS resolution returning ALL A/AAAA addresses separated by '\n'
+// via `STS_EV_DNS_RESOLVED` (`[60][rc:i32 le][ip1\nip2...]`, rc=1 ok, -1 error).
+int32_t sts_resolve_host_all_async(
+    uint64_t event_id,
+    const char *host);
 
 // Replace the current process in-place:
 // - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).

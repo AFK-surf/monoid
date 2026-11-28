@@ -48,10 +48,15 @@ test "wave17d2 r4: updates.check (403/501/200) and updates.wait / updates.instal
     Ok(_) => panic("unhooked updates.check returned fake 200")
   }
   hooks.on_updates_op = Some(fn(_op : String, _body : base_codec::Json, _lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-    Ok(updates_view_json(updates, base_codec::json_obj([])))
+    Ok(updates_view_json(updates, base_codec::json_obj([]), resolved_channel=Some("beta")))
   })
   match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", owner), [], base_codec::json_obj([])) {
-    Ok(_) => ()
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("\"channel\":\"beta\"") {
+        panic("updates_view_json with resolved_channel=Some(\"beta\") must report channel beta, got: " + s)
+      }
+    }
     Err(e) => panic("hooked updates.check failed: " + e.message)
   }
 }
@@ -178,60 +183,20 @@ test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore nam
     Err(e) => panic("hooked createMachine failed: " + e.message)
   }
 
-  // 6. `login` / `login.get` / `login.delete`: withheld 404, read-only 403/redaction, borrowed 409, keyed 400
-  let seed = "{\"profiles\":[{\"id\":\"sub-claude\",\"name\":\"Claude Sub\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"}},{\"id\":\"withheld-p\",\"name\":\"Hidden\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"withheld\":[\"ws-main\"]},{\"id\":\"bor-claude\",\"name\":\"Borrowed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"sharedFrom\":\"st-other\"},{\"id\":\"keyed-p\",\"name\":\"Keyed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"anthropic-api\",\"key\":\"sk-ant-1\"}}]}"
-  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
-  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/withheld-p/login", owner), ["withheld-p"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 404 { panic("withheld profile login must return 404") }
-    Ok(_) => panic("expected 404 for withheld profile")
-  }
-  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/sub-claude/login", ro), ["sub-claude"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 403 { panic("read-only login POST must return 403") }
-    Ok(_) => panic("expected 403")
-  }
-  match (api.admin.host.call)("accounts.profiles.login.get", make_test_api_req_as("GET", "/profiles/sub-claude/login", ro), ["sub-claude"], base_codec::json_obj([])) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if s.contains("secret-token") || s.contains("ABCD-1234") {
-        panic("read-only login.get MUST redact url/code: " + s)
-      }
-    }
-    Err(e) => panic("read-only login.get failed: " + e.message)
-  }
-  // `accounts.profiles.login-code` and `login-browser` return honest 501 until Wave 17E interactive paste state machine lands
-  for op in ["accounts.profiles.login-code", "accounts.profiles.login-browser"] {
-    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
+  // 6. All profile login ops (`login`, `login.get`, `login.delete`, `login-code`, `login-browser`) return honest 501 until Wave 17E
+  let _ = mem_fs
+  let _ = ro
+  for op in [
+    "accounts.profiles.login",
+    "accounts.profiles.login.get",
+    "accounts.profiles.login.delete",
+    "accounts.profiles.login-code",
+    "accounts.profiles.login-browser",
+  ] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login", owner), ["sub-claude"], base_codec::json_obj([])) {
       Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
       Ok(_) => panic(op + " returned fake 200")
     }
-  }
-  // `overview.profiles[].login` projects active profile login state (redacted for read-only members!)
-  hooks.profile_login_for = Some(fn(ws : String, pid : String, is_ro : Bool) -> Option[base_codec::Json] {
-    if ws == "ws-main" && pid == "sub-claude" {
-      if is_ro {
-        return Some(base_codec::json_obj([("id", base_codec::json_str("plogin-1")), ("state", base_codec::json_str("code"))]))
-      }
-      return Some(base_codec::json_obj([("id", base_codec::json_str("plogin-1")), ("state", base_codec::json_str("code")), ("code", base_codec::json_str("WXYZ-9999"))]))
-    }
-    None
-  })
-  match (api.admin.host.overview)(owner, station_api::Lang::En) {
-    Ok(ov) => {
-      let s = base_codec::json_stringify(ov)
-      if !s.contains("\"login\":") || !s.contains("WXYZ-9999") {
-        panic("owner overview missing profile.login: " + s)
-      }
-    }
-    Err(e) => panic("owner overview failed: " + e.message)
-  }
-  match (api.admin.host.overview)(ro, station_api::Lang::En) {
-    Ok(ov) => {
-      let s = base_codec::json_stringify(ov)
-      if !s.contains("\"login\":") || s.contains("WXYZ-9999") {
-        panic("read-only overview must include limited profile.login without secret code: " + s)
-      }
-    }
-    Err(e) => panic("read-only overview failed: " + e.message)
   }
 }
 

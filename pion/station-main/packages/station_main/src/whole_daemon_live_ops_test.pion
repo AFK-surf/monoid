@@ -7,12 +7,14 @@
 // 4. Read-only `login_view_to_json` uses `login_limited` (strips `url`, `code`, and raw CLI `error` tail).
 // 5. `LoginsManager::start_isolated` & `PeerAuthPolicy::add_workspace` & controlled S3/join error messages.
 
+import "base64"
 import "base_codec"
 import "host_shim"
 import "http1"
 import "station_api"
 import "station_cloud"
 import "station_devices"
+import "station_drivers"
 import "station_http"
 import "station_ops"
 import "station_whole"
@@ -272,5 +274,76 @@ test "wave17d2 r4: downgraded member rejected before idempotency replay & join d
   }
   if !owner.manages_station() {
     panic("owner must manage station")
+  }
+}
+
+test "wave17d2 r6: updates.check binds beta channel without updateChannel and drops stale cross-channel completion" {
+  let mfs = station_ops::MemFs::new()
+  let _ = mfs.put_text("/app/BUILD", "11999\n", 420)
+  let _ = mfs.put_text("/app/CHANNEL", "beta\n", 420)
+  let raw_cfg = base_codec::json_obj([]) // no explicit `updateChannel`
+  let cur_ch = resolve_station_update_channel(raw_cfg, mfs.ops(), Some("/app"), "/")
+  if cur_ch != "beta" {
+    panic("expected resolved channel beta, got " + cur_ch)
+  }
+
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  updates.station.version = station_ops::station_version(mfs.ops(), "/app", sep="/")
+
+  // Valid signed beta release feed (verified with test verifier)
+  let trusted : Map[String, String] = Map::new()
+  trusted.set("test-key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+  let always_ok : Option[(String, Bytes, Bytes, Bytes) -> Bool] = Some(fn(_k : String, _p : Bytes, _m : Bytes, _s : Bytes) -> Bool { true })
+  let make_signed_feed = fn(ver : String, bld : Int) -> String {
+    let words = "{\"kind\":\"stillfail-station-release\",\"version\":\"" + ver + "\",\"build\":" + bld.to_string() + ",\"builds\":{}}"
+    let rel_b64 = base64::encode(words.to_bytes())
+    "{\"version\":\"" + ver + "\",\"release\":\"" + rel_b64 + "\",\"key\":\"test-key\",\"signature\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+  }
+  let beta_feed = make_signed_feed("0.1.12050", 12050)
+  let applied_beta = apply_updates_check_result(
+    updates,
+    "beta",
+    cur_ch,
+    Ok((200, beta_feed.to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if !applied_beta {
+    panic("matching beta updates.check result should be applied")
+  }
+  let view = station_whole::updates_view_json(updates, raw_cfg, resolved_channel=Some(cur_ch))
+  let view_s = base_codec::json_stringify(view)
+  if !view_s.contains("\"channel\":\"beta\"") || !view_s.contains("\"version\":\"0.1.11999\"") || !view_s.contains("\"latest\":\"0.1.12050\"") || !view_s.contains("\"newer\":true") {
+    panic("beta updates.check view inconsistent: " + view_s)
+  }
+
+  // Late/stale completion for `"stable"` after channel switched to `"beta"` MUST be discarded!
+  let stale_feed = make_signed_feed("0.1.11900", 11900)
+  let applied_stale = apply_updates_check_result(
+    updates,
+    "stable",
+    "beta",
+    Ok((200, stale_feed.to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if applied_stale {
+    panic("stale cross-channel completion must be discarded")
+  }
+  if updates.station.latest != Some("0.1.12050") || !updates.station.updatable || updates.station.failed_text.is_some() {
+    panic("stale cross-channel completion corrupted updates.station state")
+  }
+
+  // Stale cross-channel error MUST also NOT overwrite current channel state!
+  let applied_stale_err = apply_updates_check_result(
+    updates,
+    "stable",
+    "beta",
+    Err("network timeout"),
+    trusted,
+    always_ok,
+  )
+  if applied_stale_err || updates.station.latest != Some("0.1.12050") || updates.station.failed_text.is_some() {
+    panic("stale cross-channel error must not clear or overwrite active channel state")
   }
 }

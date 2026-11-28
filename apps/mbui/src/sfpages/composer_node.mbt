@@ -574,7 +574,8 @@ fn composer_node_of(
     let seam_backdrop_top = fn(u : @view.View) -> Double {
       let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
       let shut_h = one_line + 2.0 * stand.place().capsule_pad
-      lift_backdrop_top(u) + composer_backdrop_over + shut_h - 6.0 - composer_seam_fade
+      let composer_top = lift_backdrop_top(u) + composer_backdrop_over
+      @sf.dmax(composer_top + 1.0, composer_top + shut_h + 4.0 - composer_seam_fade)
     }
     composer_foot_scrim_node(
       foot,
@@ -660,9 +661,9 @@ fn composer_node_of(
 }
 
 ///|
-/// The short top-fade seam seal used while the soft keyboard is down. Reuses `p.bg` with `alpha(254/255)` so
-/// `Node::covers` never blocks selection or wheel scrolling beside the composer and no new palette color is introduced.
-let composer_seam_fade : Double = 18.0
+/// The top-fade seam band behind the resting single-line composer while the soft keyboard is down: spans smoothly
+/// across the capsule height into the bottom seam rather than cutting sharply across the lower rim.
+let composer_seam_fade : Double = 52.0
 
 ///|
 /// How far above the composer's drawn top edge its backdrop fade starts (matching the top bar's soft edge).

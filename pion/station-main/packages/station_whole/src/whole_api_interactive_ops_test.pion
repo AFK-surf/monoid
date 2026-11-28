@@ -1,0 +1,185 @@
+// Wave 17D-3 pure-Pion unit tests (zero C FFI linkage; real SQLite + real FS tests run via
+// `run_w17d3_sqlite_selftest` in `--smoke-w17c3a-sqlite` and `pion-station-whole-e2e.test.ts`):
+// - `links.preview`: strict SSRF defense (literal/IPv4/IPv6/non-canonical/metadata/userinfo/scheme,
+//   multi-A private IP rejection, multi-hop redirect re-verification, proxy env fail-closed,
+//   empty Content-Type rejection, HTML head parsing without raw remote image URL)
+// - `feedback.report`: hook dispatch, `parse_feedback_cloud_response` (200/duplicate/502),
+//   and `resolve_feedback_channel` (real installed `CHANNEL` fallback so beta installs never default to stable)
+
+import "base_codec"
+import "station_api"
+
+fn w17d3_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("W17D-3 assertion failed: " + msg)
+  }
+}
+
+test "w17d3: links.preview blocks SSRF (literal, multi-A DNS, redirect, proxy env) and extracts HTML head" {
+  // 1. Non-http(s) rejected 400
+  match fetch_link_preview_with_ports("file:///etc/passwd", fn(_h) { ["93.184.216.34"] }, fn(_u, _ips) { None }) {
+    Err(e) => w17d3_assert(e.status == 400, "file:// must return 400")
+    Ok(_) => panic("file:// must return 400")
+  }
+  match fetch_link_preview_with_ports("javascript:alert(1)", fn(_h) { ["93.184.216.34"] }, fn(_u, _ips) { None }) {
+    Err(e) => w17d3_assert(e.status == 400, "javascript: must return 400")
+    Ok(_) => panic("javascript: must return 400")
+  }
+
+  // 2. Private/loopback/metadata literal hosts never invoke fetch_hop
+  let mut fetch_called = false
+  let ssrf_urls : Array[String] = [
+    "http://127.0.0.1/secret",
+    "http://0.0.0.0/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://10.0.0.5/",
+    "http://172.16.0.1/",
+    "http://192.168.1.1/",
+    "http://[::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://2130706433/",
+    "http://localhost/admin",
+    "http://user:pass@example.com/",
+  ]
+  for i in 0..<ssrf_urls.length() {
+    match fetch_link_preview_with_ports(ssrf_urls[i], fn(_h) { ["93.184.216.34"] }, fn(_u, _ips) { fetch_called = true; None }) {
+      Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "SSRF URL must yield kind:none: " + ssrf_urls[i])
+      Err(e) => panic("SSRF URL unexpected error: " + e.message)
+    }
+  }
+  w17d3_assert(!fetch_called, "SSRF literal hosts must NEVER reach fetch_hop")
+
+  // 3. DNS resolving to metadata IP `169.254.169.254` (alone OR mixed with a public IP) blocked before fetch
+  match fetch_link_preview_with_ports("https://rebind.example.com/", fn(_h) { ["169.254.169.254"] }, fn(_u, _ips) { fetch_called = true; None }) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "DNS metadata IP must yield kind:none")
+    Err(_) => panic("unexpected error")
+  }
+  match fetch_link_preview_with_ports("https://dual-a.example.com/", fn(_h) { ["93.184.216.34", "10.0.0.5"] }, fn(_u, _ips) { fetch_called = true; None }) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "multi-A record containing private IP must yield kind:none")
+    Err(_) => panic("unexpected error")
+  }
+  w17d3_assert(!fetch_called, "DNS-blocked host must NEVER reach fetch_hop")
+
+  // 4. Redirect to internal IP blocked on hop 2
+  let mut hop_count = 0
+  let redir_fetch = fn(u : String, _ips : Array[String]) -> Option[LinkPreviewHopResponse] {
+    hop_count = hop_count + 1
+    if u == "https://public.example.com/start" {
+      Some(LinkPreviewHopResponse::{
+        status: 302,
+        content_type: "",
+        content_encoding: "",
+        location: Some("http://169.254.169.254/latest/meta-data/"),
+        body: "",
+      })
+    } else {
+      panic("redirect to metadata IP must NEVER be fetched: " + u)
+    }
+  }
+  match fetch_link_preview_with_ports("https://public.example.com/start", fn(_h) { ["93.184.216.34"] }, redir_fetch) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none") && hop_count == 1, "SSRF redirect must stop after hop 1")
+    Err(_) => panic("unexpected error")
+  }
+
+  // 5. Public HTML page extracts title/description/site, decodes entities, and omits raw third-party image URL
+  let ok_html =
+  "<html><head>" +
+  "<meta property=\"og:title\" content=\"Pion &amp; Monoid &#39;Docs&#39;\">" +
+  "<meta name=\"description\" content=\"Fast  system  language\">" +
+  "<meta property=\"og:site_name\" content=\"Monoid\">" +
+  "<meta property=\"og:image\" content=\"/hero.png\">" +
+  "</head><body>ignored</body></html>"
+  let ok_fetch = fn(_u : String, _ips : Array[String]) -> Option[LinkPreviewHopResponse] {
+    Some(LinkPreviewHopResponse::{
+      status: 200,
+      content_type: "text/html; charset=utf-8",
+      content_encoding: "identity",
+      location: None,
+      body: ok_html,
+    })
+  }
+  match fetch_link_preview_with_ports("https://public.example.com/page", fn(_h) { ["93.184.216.34"] }, ok_fetch) {
+    Ok(j) => {
+      w17d3_assert(json_field_str(j, "kind") == Some("page"), "expected kind:page")
+      w17d3_assert(json_field_str(j, "title") == Some("Pion & Monoid 'Docs'"), "title decode mismatch")
+      w17d3_assert(json_field_str(j, "description") == Some("Fast system language"), "desc mismatch")
+      w17d3_assert(json_field_str(j, "site") == Some("Monoid"), "site mismatch")
+      w17d3_assert(json_field_str(j, "image") is None, "raw third-party image URL must be omitted")
+    }
+    Err(e) => panic("valid preview failed: " + e.message)
+  }
+
+  // 6. Empty Content-Type must return kind:none; proxy env vars must fail-closed block
+  let empty_ct_fetch = fn(_u : String, _ips : Array[String]) -> Option[LinkPreviewHopResponse] {
+    Some(LinkPreviewHopResponse::{
+      status: 200,
+      content_type: "",
+      content_encoding: "identity",
+      location: None,
+      body: ok_html,
+    })
+  }
+  match fetch_link_preview_with_ports("https://public.example.com/raw", fn(_h) { ["93.184.216.34"] }, empty_ct_fetch) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "empty Content-Type must yield kind:none")
+    Err(_) => panic("unexpected error")
+  }
+  w17d3_assert(
+    link_preview_proxy_blocked(fn(k : String) -> Option[String] { if k == "HTTPS_PROXY" { Some("http://proxy.internal:8080") } else { None } }),
+    "HTTPS_PROXY must block links.preview fail-closed",
+  )
+  w17d3_assert(
+    !link_preview_proxy_blocked(fn(_k : String) -> Option[String] { None }),
+    "no proxy env must allow links.preview",
+  )
+}
+
+test "w17d3: links.preview & feedback.report hook dispatch, channel resolution, and cloud response parsing" {
+  let (api, _, hooks, _, _) = make_w17c3a_r2_fixture()
+  let owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+
+  // 1. Hooked `links.preview`
+  hooks.on_links_preview = Some(fn(u : String) -> Result[base_codec::Json, station_api::ApiError] {
+    Ok(base_codec::json_obj([("kind", base_codec::json_str("page")), ("url", base_codec::json_str(u)), ("title", base_codec::json_str("OK"))]))
+  })
+  match (api.admin.host.call)("links.preview", make_test_api_req_as("GET", "/link-preview?url=https://example.com", owner), [], base_codec::json_obj([])) {
+    Ok(r) => w17d3_assert(json_field_str(r, "title") == Some("OK"), "links.preview hook mismatch")
+    Err(e) => panic("links.preview failed: " + e.message)
+  }
+  match (api.admin.host.call)("links.preview", make_test_api_req_as("GET", "/link-preview?url=ftp://example.com", owner), [], base_codec::json_obj([])) {
+    Err(e) => w17d3_assert(e.status == 400, "non-http links.preview must return 400")
+    Ok(_) => panic("non-http links.preview must fail")
+  }
+
+  // 2. Hooked `feedback.report` & cloud response parsing
+  hooks.on_feedback_report = Some(fn(_req : station_api::ApiRequest, tid : Int, n : Int) -> Result[base_codec::Json, station_api::ApiError] {
+    w17d3_assert(tid == 10 && n == 3, "feedback params mismatch")
+    parse_feedback_cloud_response(200, "{\"number\":77,\"duplicate\":true}")
+  })
+  match (api.admin.host.call)("feedback.report", make_test_api_req_as("POST", "/threads/10/report", owner), ["10"], base_codec::json_obj([("n", base_codec::json_int(3))])) {
+    Ok(r) => w17d3_assert(ro_json_int_field(r, "number") == Some(77) && json_field_bool(r, "duplicate") == Some(true), "feedback.report hook mismatch")
+    Err(e) => panic("feedback.report failed: " + e.message)
+  }
+  match parse_feedback_cloud_response(503, "down") {
+    Err(e) => w17d3_assert(e.status == 502, "upstream 503 must map to 502")
+    Ok(_) => panic("upstream 503 must fail")
+  }
+
+  // 2b. Overflow/wraparound thread id ("18446744073709551617" -> 1 under 64-bit wrap) MUST be rejected with 400!
+  match (api.admin.host.call)("feedback.report", make_test_api_req_as("POST", "/threads/18446744073709551617/report", owner), ["18446744073709551617"], base_codec::json_obj([("n", base_codec::json_int(1))])) {
+    Err(e) => w17d3_assert(e.status == 400, "64-bit wraparound thread id must return 400, got " + e.status.to_string())
+    Ok(_) => panic("64-bit wraparound thread id must be rejected")
+  }
+
+  // 3. `resolve_feedback_channel` trims config `updateChannel` and respects installed `CHANNEL`
+  w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), Some("beta")) == "beta", "beta CHANNEL must not default to stable")
+  w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), Some("stable")) == "stable", "stable CHANNEL must resolve to stable")
+  w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), None) == "stable", "pre-channel install (None) resolves to stable")
+  w17d3_assert(
+    resolve_feedback_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("  beta \n"))]), Some("stable")) == "beta",
+    "trimmed config updateChannel overrides installed CHANNEL",
+  )
+  w17d3_assert(
+    resolve_feedback_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))]), Some("beta")) == "stable",
+    "explicit config stable overrides beta CHANNEL",
+  )
+}
