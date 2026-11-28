@@ -702,6 +702,8 @@ pub struct JobStatus {
   pub chat : Option[String]
 }
 
+let JOBS_SSE_JOURNAL_MAX : Int = 4096
+
 enum StagedJobOp {
   Upsert(String, Bool, base_codec::Json, JobStatus)
   Remove(String)
@@ -737,7 +739,9 @@ pub struct StationEvents {
   authoritative_jobs_by_id : Map[String, base_codec::Json]
   authoritative_jobs_order : Array[String]
   mut jobs_sse_seq : Int64
+  mut jobs_reset_gen : Int64
   mut jobs_snapshot_inflight : Int
+  mut jobs_sse_journal_overflow : Bool
   jobs_sse_journal : Array[(Int64, StagedJobOp)]
   dirty_threads : Map[Int, Bool]
   mut resync_needed : Int
@@ -790,7 +794,9 @@ pub fn StationEvents::new(
     authoritative_jobs_by_id: Map::new(),
     authoritative_jobs_order: [],
     jobs_sse_seq: 0L,
+    jobs_reset_gen: 1L,
     jobs_snapshot_inflight: 0,
+    jobs_sse_journal_overflow: false,
     jobs_sse_journal: [],
     dirty_threads: Map::new(),
     resync_needed: 0,
@@ -825,21 +831,34 @@ pub fn StationEvents::jobs_sse_seq(self : StationEvents) -> Int64 {
   self.jobs_sse_seq
 }
 
-/// Mark the start of an in-flight `GET /jobs?chats=0` snapshot fetch, returning the SSE commit
-/// sequence cut point so any SSE job events committed after this cut are replayed on top of the snapshot.
-pub fn StationEvents::begin_jobs_snapshot(self : StationEvents) -> Int64 {
-  self.jobs_snapshot_inflight += 1
-  self.jobs_sse_seq
+pub fn StationEvents::jobs_reset_gen(self : StationEvents) -> Int64 {
+  self.jobs_reset_gen
 }
 
-/// Balance `begin_jobs_snapshot`; clears the bounded in-flight SSE replay journal once the last
-/// in-flight snapshot finishes.
-pub fn StationEvents::end_jobs_snapshot(self : StationEvents) -> Unit {
+pub fn StationEvents::jobs_snapshot_inflight_count(self : StationEvents) -> Int {
+  self.jobs_snapshot_inflight
+}
+
+/// Mark the start of an in-flight `GET /jobs?chats=0` snapshot fetch, returning the generation-bound
+/// cut token `(jobs_reset_gen, jobs_sse_seq)` so late callbacks from a prior reset generation can
+/// NEVER decrement a new generation's counter or clear its replay journal.
+pub fn StationEvents::begin_jobs_snapshot(self : StationEvents) -> (Int64, Int64) {
+  self.jobs_snapshot_inflight += 1
+  (self.jobs_reset_gen, self.jobs_sse_seq)
+}
+
+/// Balance `begin_jobs_snapshot` for `token_gen`; silently ignored if `reset_state()` advanced
+/// `jobs_reset_gen` since the snapshot began.
+pub fn StationEvents::end_jobs_snapshot(self : StationEvents, token_gen : Int64) -> Unit {
+  if token_gen != self.jobs_reset_gen {
+    return
+  }
   if self.jobs_snapshot_inflight > 0 {
     self.jobs_snapshot_inflight -= 1
   }
   if self.jobs_snapshot_inflight == 0 {
     self.jobs_sse_journal.clear()
+    self.jobs_sse_journal_overflow = false
   }
 }
 
@@ -856,7 +875,11 @@ fn StationEvents::apply_committed_job_op(self : StationEvents, op : StagedJobOp)
     }
   }
   if self.jobs_snapshot_inflight > 0 {
-    self.jobs_sse_journal.push((self.jobs_sse_seq, op))
+    if self.jobs_sse_journal.length() >= JOBS_SSE_JOURNAL_MAX {
+      self.jobs_sse_journal_overflow = true
+    } else {
+      self.jobs_sse_journal.push((self.jobs_sse_seq, op))
+    }
   }
 }
 
@@ -991,7 +1014,9 @@ pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
   self.authoritative_jobs_by_id.clear()
   self.authoritative_jobs_order.clear()
   self.jobs_sse_seq = 0L
+  self.jobs_reset_gen += 1L
   self.jobs_snapshot_inflight = 0
+  self.jobs_sse_journal_overflow = false
   self.jobs_sse_journal.clear()
   self.dirty_threads.clear()
   self.resync_needed = 0
@@ -2121,8 +2146,15 @@ pub fn is_valid_jobs_payload(payload : base_codec::Json) -> Bool {
 pub fn StationEvents::apply_jobs_at_cut(
   self : StationEvents,
   payload : base_codec::Json,
+  token_gen : Int64,
   cut_seq : Int64,
 ) -> sql::SqlResult[Int] {
+  if token_gen != self.jobs_reset_gen {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "jobs_snapshot_stale_gen" })
+  }
+  if self.jobs_sse_journal_overflow {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "jobs_sse_journal_overflow" })
+  }
   if !is_valid_jobs_payload(payload) {
     return sql::SqlResult::Err(shell::ShellError::{ message: "malformed_jobs_payload" })
   }
@@ -2249,12 +2281,41 @@ pub fn StationEvents::apply_jobs_at_cut(
         }
       }
     }
-    // Close any previously-open jobs absent from both the fresh snapshot and post-cut SSE replays.
+    // Close any previously-open jobs absent from both the fresh snapshot and post-cut SSE replays:
+    // reconcile directly against SQLite `open = 1` rows (covering cold-boot / post-reset DB rows
+    // even when in-memory `self.job_order` is empty!) plus any tracked in-memory open jobs.
+    let closed_seen : Map[String, Bool] = Map::new()
+    match b.all("SELECT id, session, chat FROM job WHERE station = ? AND open = 1", params=[
+      base_codec::json_str(self.station),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(open_rows) => {
+        for i in 0..<open_rows.length() {
+          let old_id = sql::col_text(open_rows[i], 0)
+          if old_id.length() > 0 && merged.get(old_id).is_none() && deleted_ids.get(old_id).is_none() && closed_seen.get(old_id).is_none() {
+            closed_seen.set(old_id, true)
+            let old_sess = sql::col_opt_text(open_rows[i], 1)
+            let old_chat = sql::col_opt_text(open_rows[i], 2)
+            match b.run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", params=[
+              base_codec::json_str(self.station),
+              base_codec::json_str(old_id),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => {
+                tracked.push(JobStatus::{ id: old_id, session: old_sess, open: false, chat: old_chat })
+                job_events.push(CoreEvent::JobChanged(self.station, old_id, false))
+              }
+            }
+          }
+        }
+      }
+    }
     for i in 0..<self.job_order.length() {
       let old_id = self.job_order[i]
-      if merged.get(old_id).is_none() && deleted_ids.get(old_id).is_none() {
+      if merged.get(old_id).is_none() && deleted_ids.get(old_id).is_none() && closed_seen.get(old_id).is_none() {
         match self.jobs.get(old_id) {
           Some(old_j) => if old_j.open {
+            closed_seen.set(old_id, true)
             match b.run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", params=[
               base_codec::json_str(self.station),
               base_codec::json_str(old_id),
@@ -2317,7 +2378,7 @@ pub fn StationEvents::apply_jobs(
   self : StationEvents,
   payload : base_codec::Json,
 ) -> sql::SqlResult[Int] {
-  self.apply_jobs_at_cut(payload, self.jobs_sse_seq)
+  self.apply_jobs_at_cut(payload, self.jobs_reset_gen, self.jobs_sse_seq)
 }
 
 /// Apply a validated `GET /threads/<expected_thread>/entries` `{last, entries}` response in a single
@@ -3796,7 +3857,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
         k(effect::Exit::Interrupted)
       }
       effect::Exit::Succeeded(should_reconnect) => {
-        if should_reconnect {
+        if should_reconnect || (!self.paused_for_admission && self.is_admitted_for_current_auth()) {
           self.schedule_reconnect_k(rt, k)
         } else {
           self.set_state(ConnectionState::Disconnected("stopped"))

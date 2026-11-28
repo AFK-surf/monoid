@@ -475,9 +475,14 @@ pub struct MeshStationTransport {
   mut admission_drive_fiber : Option[effect::Fiber[Unit]]
   mut admission_drive_target : Int64
   mut admission_drive_gen : Int64
+  mut admission_drive_sleeping : Bool
   mut admission_blocked_by_lock : Bool
+  mut lock_gen : Int64
+  mut lock_catchup_tries : Int
   mut closed : Bool
 }
+
+let LOCK_BEHIND_TRIES : Int = 4
 
 pub fn MeshStationTransport::new(
   sh : shell::Shell,
@@ -498,7 +503,10 @@ pub fn MeshStationTransport::new(
     admission_drive_fiber: None,
     admission_drive_target: 0L,
     admission_drive_gen: 0L,
+    admission_drive_sleeping: false,
     admission_blocked_by_lock: false,
+    lock_gen: 0L,
+    lock_catchup_tries: 0,
     closed: false,
   }
 }
@@ -556,17 +564,41 @@ fn MeshStationTransport::current_cred_epoch(self : MeshStationTransport) -> Int6
   }
 }
 
-/// Whether the admission reconnect driver stopped because the station refused with `lock_unconfirmed`.
+/// Whether the latest admission result was a lock refusal (`lock_unconfirmed` or `lock_station`,
+/// aligned with `client/core-ts/src/station/link.ts:119`).
+pub fn MeshStationTransport::is_lock_refusal(self : MeshStationTransport) -> Bool {
+  match self.last_admission {
+    Some(adm) => {
+      if adm.lock_unconfirmed {
+        return true
+      }
+      match adm.error_code {
+        Some(c) => c == "lock_unconfirmed" || c == "lock_station"
+        None => false
+      }
+    }
+    None => false
+  }
+}
+
+/// Whether the admission reconnect driver stopped because the station refused with a lock error
+/// after exhausting bounded catchup retries under the same `lock_gen`.
 pub fn MeshStationTransport::is_admission_blocked_by_lock(self : MeshStationTransport) -> Bool {
   self.admission_blocked_by_lock
 }
 
-/// Clear the `lock_unconfirmed` admission block when workspace or personal lock state changes,
-/// allowing the admission driver to re-dial cleanly.
+/// Advance `lock_gen`, reset bounded catchup retries, and clear any lock-refusal admission block
+/// when workspace/personal lock state or Cloud confirmation updates. If the driver is currently
+/// sleeping in a retry timer, cancels the sleep immediately so the caller's re-trigger dials now.
 pub fn MeshStationTransport::clear_lock_admission_block(self : MeshStationTransport) -> Unit {
+  self.lock_gen += 1L
+  self.lock_catchup_tries = 0
   self.admission_blocked_by_lock = false
-  if self.is_lock_unconfirmed() {
+  if self.is_lock_refusal() {
     self.last_admission = None
+  }
+  if self.admission_drive_sleeping {
+    self.cancel_admission_drive()
   }
 }
 
@@ -574,6 +606,7 @@ pub fn MeshStationTransport::clear_lock_admission_block(self : MeshStationTransp
 pub fn MeshStationTransport::cancel_admission_drive(self : MeshStationTransport) -> Unit {
   self.admission_drive_gen += 1L
   self.admission_drive_target = 0L
+  self.admission_drive_sleeping = false
   match self.admission_drive_fiber {
     Some(f) => {
       self.admission_drive_fiber = None
@@ -585,10 +618,14 @@ pub fn MeshStationTransport::cancel_admission_drive(self : MeshStationTransport)
 
 /// Deduplicated, scoped post-downgrade admission reconnect driver:
 /// dials ONLY `connect_k` -> `Link::admitted_k` (never business reads) until the live serving link
-/// reaches `admitted_cred_epoch >= required_epoch`, using bounded exponential backoff `500ms..15000ms`
-/// ONLY after transient failure/unadmitted dial. Stops immediately on `lock_unconfirmed` refusal
-/// (setting `admission_blocked_by_lock = true` with 0 backoff timers until lock state changes),
-/// on admission, on `close_k`, or when `!can_continue()`.
+/// reaches `admitted_cred_epoch >= required_epoch`.
+/// - On `lock_unconfirmed` / `lock_station` refusal:
+///   - If `lock_gen` advanced during the dial (external lock change or `on_admission` evidence),
+///     resets `lock_catchup_tries` and redials immediately without blocking;
+///   - Otherwise performs at most `LOCK_BEHIND_TRIES` (4) bounded catchup retries (`1500ms * try`)
+///     to absorb station lock propagation lag (matching `views/lock.ts:1441-1455`);
+///   - After 4 refusals at the same `lock_gen`, sets `admission_blocked_by_lock = true` and stops.
+/// - On transient network/credential failure, uses bounded exponential backoff `500ms..15000ms`.
 pub fn MeshStationTransport::ensure_admitted_for_epoch(
   self : MeshStationTransport,
   rt : effect::Runtime,
@@ -614,6 +651,7 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
     if self.closed || self.admission_blocked_by_lock || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
       if self.admission_drive_gen == drive_gen {
         self.admission_drive_fiber = None
+        self.admission_drive_sleeping = false
       }
       fk(effect::Exit::Succeeded(()))
       return
@@ -622,6 +660,7 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
     if target <= 0L || self.live_admitted_cred_epoch() >= target {
       if self.admission_drive_gen == drive_gen {
         self.admission_drive_fiber = None
+        self.admission_drive_sleeping = false
       }
       fk(effect::Exit::Succeeded(()))
       return
@@ -629,10 +668,12 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
     if self.active_link.is_some() && self.live_admitted_cred_epoch() < target {
       self.drop_link(reason="admission_stale")
     }
+    let dial_lock_gen = self.lock_gen
     self.connect_k(fn(cex : effect::Exit[mesh::Link]) -> Unit {
       if self.closed || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
         if self.admission_drive_gen == drive_gen {
           self.admission_drive_fiber = None
+          self.admission_drive_sleeping = false
         }
         fk(effect::Exit::Succeeded(()))
         return
@@ -641,16 +682,46 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
       if cur_target <= 0L || self.live_admitted_cred_epoch() >= cur_target {
         if self.admission_drive_gen == drive_gen {
           self.admission_drive_fiber = None
+          self.admission_drive_sleeping = false
         }
         fk(effect::Exit::Succeeded(()))
         return
       }
-      // [Opus R3 P2-1] Stop immediately on `lock_unconfirmed` refusal (no 15s backoff storm);
-      // resumed cleanly via `clear_lock_admission_block()` when lock state changes.
-      if self.is_lock_unconfirmed() {
+      if self.is_lock_refusal() {
+        if self.lock_gen != dial_lock_gen {
+          // Lock advanced while dial was in-flight (or via `on_admission` signed evidence):
+          // NEVER block — immediately redial with the updated lock state!
+          self.lock_catchup_tries = 0
+          self.admission_blocked_by_lock = false
+          step(500, fk)
+          return
+        }
+        if self.lock_catchup_tries < LOCK_BEHIND_TRIES {
+          self.lock_catchup_tries += 1
+          let catchup_ms = 1500 * self.lock_catchup_tries
+          self.admission_drive_sleeping = true
+          // timer: retry after a failure (lock refusal), bounded at most 4 tries
+          effect::sleep_k(catchup_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+            if self.admission_drive_gen == drive_gen {
+              self.admission_drive_sleeping = false
+            }
+            match sex {
+              effect::Exit::Interrupted => {
+                if self.admission_drive_gen == drive_gen {
+                  self.admission_drive_fiber = None
+                }
+                fk(effect::Exit::Interrupted)
+              }
+              _ => step(500, fk)
+            }
+          })
+          return
+        }
+        // Exhausted 4 bounded catchup retries under the same `lock_gen`: stop until lock changes.
         self.admission_blocked_by_lock = true
         if self.admission_drive_gen == drive_gen {
           self.admission_drive_fiber = None
+          self.admission_drive_sleeping = false
         }
         fk(effect::Exit::Succeeded(()))
         return
@@ -659,13 +730,18 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
         effect::Exit::Interrupted => {
           if self.admission_drive_gen == drive_gen {
             self.admission_drive_fiber = None
+            self.admission_drive_sleeping = false
           }
           fk(effect::Exit::Interrupted)
         }
         _ => {
           let next_delay = if delay_ms * 2 > 15000 { 15000 } else { delay_ms * 2 }
+          self.admission_drive_sleeping = true
           // timer: retry after a failure, with a backoff
           effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+            if self.admission_drive_gen == drive_gen {
+              self.admission_drive_sleeping = false
+            }
             match sex {
               effect::Exit::Interrupted => {
                 if self.admission_drive_gen == drive_gen {
@@ -917,6 +993,7 @@ pub fn MeshStationTransport::connect_k(
                           let uid = link.uid
                           if adm.error_code.is_none() && !adm.lock_unconfirmed {
                             self.admission_blocked_by_lock = false
+                            self.lock_catchup_tries = 0
                             if presented_epoch_box[0] > 0L {
                               let prev = match self.link_admitted_epochs.get(uid) { Some(v) => v; None => 0L }
                               let next_ep = if presented_epoch_box[0] > prev { presented_epoch_box[0] } else { prev }
@@ -1056,6 +1133,7 @@ pub fn MeshStationTransport::close_k(
 ) -> Unit {
   self.closed = true
   self.admission_blocked_by_lock = false
+  self.lock_catchup_tries = 0
   self.cancel_admission_drive()
   self.link_admitted_epochs.clear()
   self.drop_link(reason=reason)

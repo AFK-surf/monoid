@@ -1456,7 +1456,10 @@ struct R4MeshHarness {
   ctrl : MeshStationTransport
   mock_db : MockCloudDb
   dial_count : Array[Int]
-  reject_lock_unconfirmed : Array[Bool]
+  reject_code : Array[String]
+  reject_extra_json : Array[String]
+  hold_ctrl_reply : Array[Bool]
+  flush_ctrl_reply : Array[() -> Unit]
   sse_end_cbs : Array[(Int64) -> Unit]
   sh : shell::Shell
 }
@@ -1471,7 +1474,10 @@ fn make_r4_mesh_harness(reject_lock_initially : Bool) -> R4MeshHarness {
   let mut ctrl_reply_queue : Array[String] = []
   let mut ctrl_pending_read : Option[Int64] = None
   let dial_count : Array[Int] = [0]
-  let reject_lock_unconfirmed : Array[Bool] = [reject_lock_initially]
+  let reject_code : Array[String] = [if reject_lock_initially { "lock_unconfirmed" } else { "" }]
+  let reject_extra_json : Array[String] = [""]
+  let hold_ctrl_reply : Array[Bool] = [false]
+  let flush_ctrl_reply : Array[() -> Unit] = []
   let closed_conns : Map[String, Bool] = Map::new()
   let stream_req_buf : Map[Int, String] = Map::new()
   let stream_resp : Map[Int, String] = Map::new()
@@ -1535,17 +1541,25 @@ fn make_r4_mesh_harness(reject_lock_initially : Bool) -> R4MeshHarness {
         let sid = j_int(args, "id")
         let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
         if sid == ctrl_stream_id {
-          let reply_line = if reject_lock_unconfirmed[0] {
-            "{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"lock unconfirmed\"}\n"
+          let reply_line = if reject_code[0].length() > 0 {
+            let extra = if reject_extra_json[0].length() > 0 { "," + reject_extra_json[0] } else { "" }
+            "{\"ok\":false,\"code\":\"" + reject_code[0] + "\",\"error\":\"lock refused\"" + extra + "}\n"
           } else {
             "{\"ok\":true,\"station\":{\"id\":\"" + DA_ST1 + "\"}}\n"
           }
-          match ctrl_pending_read {
-            Some(rid) => {
-              ctrl_pending_read = None
-              s.answer(rid, base_codec::json_obj([]), bytes=Some(reply_line.to_bytes()))
+          let deliver = fn() -> Unit {
+            match ctrl_pending_read {
+              Some(rid) => {
+                ctrl_pending_read = None
+                s.answer(rid, base_codec::json_obj([]), bytes=Some(reply_line.to_bytes()))
+              }
+              None => ctrl_reply_queue.push(reply_line)
             }
-            None => ctrl_reply_queue.push(reply_line)
+          }
+          if hold_ctrl_reply[0] {
+            flush_ctrl_reply.push(deliver)
+          } else {
+            deliver()
           }
         } else {
           let prev = match stream_req_buf.get(sid) { Some(p) => p; None => "" }
@@ -1640,6 +1654,9 @@ fn make_r4_mesh_harness(reject_lock_initially : Bool) -> R4MeshHarness {
     fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
       ck(effect::Exit::Succeeded("cred-ep-" + core.membership.cred_epoch_of(DA_WS1).to_string()))
     },
+    on_admission=Some(fn(adm : MeshAdmission) -> Unit {
+      let _ = core.absorb_mesh_admission_lock(DA_WS1, adm)
+    }),
     get_cred_epoch=Some(fn() -> Int64 { core.membership.cred_epoch_of(DA_WS1) }),
   )
   let (ctrl, _) = shell_mesh_transport(sh, cfg)
@@ -1665,7 +1682,10 @@ fn make_r4_mesh_harness(reject_lock_initially : Bool) -> R4MeshHarness {
     ctrl: ctrl,
     mock_db: mock_db,
     dial_count: dial_count,
-    reject_lock_unconfirmed: reject_lock_unconfirmed,
+    reject_code: reject_code,
+    reject_extra_json: reject_extra_json,
+    hold_ctrl_reply: hold_ctrl_reply,
+    flush_ctrl_reply: flush_ctrl_reply,
     sse_end_cbs: sse_end_cbs,
     sh: sh,
   }
@@ -1742,32 +1762,51 @@ test "2B-2.13: Natural link drop (!usable) after post-downgrade admission auto-r
   let _ = h.rt.run_ready()
 }
 
-test "2B-2.14: lock_unconfirmed stops admission backoff storm (0 dials over 60s) and lock state change wakes admission" {
+test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-flight lock_gen redial, on_admission evidence, and Cloud detail wakeup" {
+  // Part A: `lock_station` bounded catchup (4 tries: 1500/3000/4500/6000ms), then stops (0 dials over 60s),
+  // then Cloud detail confirmation (`commit_cloud_workspace`) wakes the blocked station cleanly!
   let h = make_r4_mesh_harness(true)
+  h.reject_code[0] = "lock_station"
   let _ = h.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
   h.core.attach_mesh_station_transport(DA_ST1, h.ctrl, workspace=DA_WS1)
   h.core.start()
   let _ = h.rt.run_ready()
 
-  debug_assert(h.dial_count[0] == 1, "initial dial attempted once")
-  debug_assert(h.ctrl.is_admission_blocked_by_lock(), "lock_unconfirmed sets admission_blocked_by_lock=true")
-  debug_assert(h.core.events.is_paused_for_admission(), "SSE stays paused while lock unconfirmed")
+  debug_assert(h.dial_count[0] == 1 && !h.ctrl.is_admission_blocked_by_lock(), "initial lock_station enters bounded catchup #1")
+  // Exhaust all 4 bounded catchup retries: 1500 + 3000 + 4500 + 6000 ms
+  h.rt.advance(1500)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 2, "catchup retry #1 fired at 1500ms")
+  h.rt.advance(3000)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 3, "catchup retry #2 fired at 3000ms")
+  h.rt.advance(4500)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 4, "catchup retry #3 fired at 4500ms")
+  h.rt.advance(6000)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 5, "catchup retry #4 fired at 6000ms")
+  debug_assert(h.ctrl.is_admission_blocked_by_lock(), "blocked after exhausting 4 bounded catchup tries at same lock_gen")
+  debug_assert(h.core.events.is_paused_for_admission(), "SSE stays paused while lock blocked")
 
   // Advance virtual clock 60 seconds: MUST NOT spin a 15s backoff loop!
   for _ in 0..<12 {
     h.rt.advance(5000)
     let _ = h.rt.run_ready()
   }
-  debug_assert(h.dial_count[0] == 1, "0 backoff dials over 60s while blocked by lock_unconfirmed")
+  debug_assert(h.dial_count[0] == 5, "0 backoff dials over 60s after bounded catchup exhausted")
 
-  // Now lock state changes (station now accepts lock): wake paused stations -> auto-dials & admits!
-  h.reject_lock_unconfirmed[0] = false
-  h.core.wake_paused_stations_on_lock_change(DA_WS1)
+  // Cloud detail confirmation (`commit_cloud_workspace`, same role, no Safe Mode change) wakes the blocked station!
+  h.reject_code[0] = ""
+  let ws_seq = h.core.membership.next_cloud_seq()
+  let ws_ep = h.core.membership.cred_epoch_of(DA_WS1)
+  match h.core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1]), req_seq=ws_seq, captured_cred_epoch=ws_ep) {
+    Ok(true) => ()
+    _ => panic("expected Cloud detail commit Ok(true)")
+  }
   let _ = h.rt.run_ready()
-
-  debug_assert(!h.ctrl.is_admission_blocked_by_lock(), "lock change cleared admission_blocked_by_lock")
-  debug_assert(h.dial_count[0] == 2, "lock change woke admission driver cleanly")
-  debug_assert(h.ctrl.live_admitted_cred_epoch() == 2L, "admitted at epoch 2 after lock change")
+  debug_assert(!h.ctrl.is_admission_blocked_by_lock(), "Cloud detail confirmation cleared lock admission block")
+  debug_assert(h.dial_count[0] == 6 && h.ctrl.live_admitted_cred_epoch() == 2L, "Cloud detail woke blocked station and admitted at epoch 2")
   debug_assert(!h.core.events.is_paused_for_admission() && h.core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "SSE resumed and chats confirmed")
 
   h.core.stop()
@@ -1775,6 +1814,52 @@ test "2B-2.14: lock_unconfirmed stops admission backoff storm (0 dials over 60s)
     h.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = h.rt.run_ready()
+
+  // Part B: Dial in-flight lock change (`lock_gen` advances mid-dial!) -> refused dial NEVER blocks
+  // and immediately redials with the updated lock state without waiting for any timer!
+  let h2 = make_r4_mesh_harness(true)
+  h2.hold_ctrl_reply[0] = true
+  let _ = h2.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h2.core.attach_mesh_station_transport(DA_ST1, h2.ctrl, workspace=DA_WS1)
+  h2.core.start()
+  let _ = h2.rt.run_ready()
+  debug_assert(h2.dial_count[0] == 1 && h2.flush_ctrl_reply.length() == 1, "dial #1 in-flight awaiting station admission reply")
+
+  // While dial #1 is in-flight, lock state advances (`lock_gen` increments) AND station will accept dial #2!
+  h2.core.wake_paused_stations_on_lock_change(DA_WS1)
+  h2.reject_code[0] = ""
+  h2.hold_ctrl_reply[0] = false
+  // Now deliver the stale `lock_unconfirmed` refusal for dial #1!
+  (h2.flush_ctrl_reply[0])()
+  let _ = h2.rt.run_ready()
+
+  debug_assert(!h2.ctrl.is_admission_blocked_by_lock(), "in-flight lock_gen advance prevents blocking on stale refusal")
+  debug_assert(h2.dial_count[0] == 2 && h2.ctrl.live_admitted_cred_epoch() == 2L, "immediately redialed #2 with 0ms timer wait and admitted at epoch 2")
+  debug_assert(!h2.core.events.is_paused_for_admission() && h2.core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "SSE resumed & chats confirmed after in-flight lock advance")
+
+  h2.core.stop()
+  let _ = h2.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h2.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h2.rt.run_ready()
+
+  // Part C: `lock_unconfirmed` self-heals on bounded catchup retry #2 (station propagation lag)!
+  let h3 = make_r4_mesh_harness(true)
+  let _ = h3.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h3.core.attach_mesh_station_transport(DA_ST1, h3.ctrl, workspace=DA_WS1)
+  h3.core.start()
+  let _ = h3.rt.run_ready()
+  debug_assert(h3.dial_count[0] == 1, "initial dial refused with lock_unconfirmed")
+  h3.reject_code[0] = ""
+  h3.rt.advance(1500)
+  let _ = h3.rt.run_ready()
+  debug_assert(h3.dial_count[0] == 2 && h3.ctrl.live_admitted_cred_epoch() == 2L, "bounded catchup retry #1 self-healed at 1500ms")
+  debug_assert(!h3.ctrl.is_admission_blocked_by_lock() && !h3.core.events.is_paused_for_admission(), "recovered cleanly from transient lock propagation lag")
+  h3.core.stop()
+  let _ = h3.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h3.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h3.rt.run_ready()
 }
 
 test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapshot + post-cut SSE replay, 4-view parity, and tx rollback atomicity)" {
@@ -1856,8 +1941,10 @@ test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapsho
   let lj = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 71L, "longJobs", [("scope", base_codec::json_str(DA_WS1))]), "longJobs 4-way check"))
   debug_assert(!lj.contains("job-A") && !lj.contains("job-B") && lj.contains("job-C"), "longJobs has ONLY [job-C]: " + lj)
 
-  // 5. SQLite rollback atomicity: fail `burst.in_tx` on SSE job events -> ZERO memory mutations & unchanged `jobs_sse_seq`!
+  // 5. True mid-transaction SQLite rollback atomicity: `BEGIN IMMEDIATE` and 1st `job` upsert SUCCEED
+  // (staging `StagedJobOp`!), then the 2nd statement fails -> ZERO memory mutations & unchanged `jobs_sse_seq`!
   let seq_before_rb = core.events.jobs_sse_seq()
+  let mut run_calls = 0
   let fail_sh = shell::Shell::stood_in(
     rt,
     fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
@@ -1868,7 +1955,19 @@ test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapsho
       if op == "sql.all" {
         return shell::AskResult::Ok(base_codec::json_arr([]))
       }
-      shell::AskResult::Err(shell::ShellError::{ message: "simulated_sqlite_disk_full" })
+      if op == "sql.exec" {
+        return shell::AskResult::Ok(base_codec::json_obj([]))
+      }
+      if op == "sql.run" {
+        run_calls += 1
+        if run_calls == 1 {
+          // 1st job upsert succeeds inside tx -> `StagedJobOp::Upsert("job-D", ...)` is staged!
+          return shell::AskResult::Ok(base_codec::json_obj([("changes", base_codec::json_int(1))]))
+        }
+        // 2nd statement (`DELETE FROM job` for `job-C`) fails -> tx rolls back!
+        return shell::AskResult::Err(shell::ShellError::{ message: "simulated_mid_tx_disk_full" })
+      }
+      shell::AskResult::Err(shell::ShellError::{ message: "unexpected op" })
     },
     fn(n : Int) -> Bytes { Bytes::new(n) },
   )
@@ -1884,12 +1983,81 @@ test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapsho
   ]
   match core.events.apply_sse_batch(sse_rb) {
     sql::SqlResult::Err(_) => ()
-    sql::SqlResult::Ok(_) => panic("expected rollback Err on failing SQLite burst")
+    sql::SqlResult::Ok(_) => panic("expected mid-tx rollback Err")
   }
   core.events.db = orig_db
-  debug_assert(core.events.jobs_sse_seq() == seq_before_rb, "rollback leaves jobs_sse_seq unchanged")
+  debug_assert(run_calls == 2, "1st SQL upsert succeeded and staged op before 2nd SQL failed")
+  debug_assert(core.events.jobs_sse_seq() == seq_before_rb, "mid-tx rollback leaves jobs_sse_seq unchanged")
   let open_after_rb = core.events.open_jobs()
-  debug_assert(open_after_rb.length() == 1 && open_after_rb[0].id == "job-C", "rollback leaves self.jobs unchanged")
+  debug_assert(open_after_rb.length() == 1 && open_after_rb[0].id == "job-C", "mid-tx rollback leaves self.jobs unchanged (no job-D, job-C intact)")
   let auth_after_rb = core.events.authoritative_jobs_snapshot()
-  debug_assert(auth_after_rb.length() == 1 && j_str(auth_after_rb[0], "id") == "job-C", "rollback leaves authoritative_jobs_by_id unchanged")
+  debug_assert(auth_after_rb.length() == 1 && j_str(auth_after_rb[0], "id") == "job-C", "mid-tx rollback leaves authoritative_jobs_by_id unchanged")
+
+  // 6. Single-flight per-station `/jobs?chats=0`: concurrent `fetch_jobs_k` + `fetch_chat_jobs_k(7)` +
+  //    `fetch_chat_jobs_k(12)` coalesce into EXACTLY ONE HTTP request and confirm all 3 keys!
+  pending_jobs_req.clear()
+  let mut cb_jobs = false
+  let mut cb_t7 = false
+  let mut cb_t12 = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_jobs = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_t7 = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(12, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_t12 = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "single-flight coalesced 3 concurrent jobs fetches into 1 HTTP request")
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: "[{\"id\":\"job-C\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-c\",\"command\":\"c\",\"startedAt\":1500}]".to_bytes(),
+  }))
+  let _ = rt.run_ready()
+  debug_assert(cb_jobs && cb_t7 && cb_t12, "all 3 coalesced waiters completed")
+  debug_assert(core.can_read_station_key(DA_ST1, "jobs:" + DA_ST1), "jobs:<st> confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/12"), "chatJobs:<st>/12 confirmed")
+
+  // 7. Reset generation isolation + cold-boot SQLite `open=1` reconciliation:
+  //    (a) Stale-gen `end_jobs_snapshot` / `apply_jobs_at_cut` NEVER corrupt new generation's inflight counter or journal!
+  let (old_gen, old_cut) = core.events.begin_jobs_snapshot()
+  // Also leave `job-C` open=1 in SQLite while `reset_state()` wipes in-memory `self.job_order`!
+  core.events.reset_state()
+  let (new_gen, new_cut) = core.events.begin_jobs_snapshot()
+  debug_assert(new_gen > old_gen && core.events.jobs_snapshot_inflight_count() == 1, "reset_state bumped jobs_reset_gen")
+  // Late stale-gen callback tries to end & apply: MUST be rejected & ignored!
+  core.events.end_jobs_snapshot(old_gen)
+  debug_assert(core.events.jobs_snapshot_inflight_count() == 1, "stale-gen end_jobs_snapshot did NOT decrement new-gen inflight counter")
+  let empty_arr = match base_codec::json_parse("[]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match core.events.apply_jobs_at_cut(empty_arr, old_gen, old_cut) {
+    sql::SqlResult::Err(_) => ()
+    sql::SqlResult::Ok(_) => panic("stale-gen apply_jobs_at_cut must fail")
+  }
+  // (b) Now apply empty `[]` snapshot under `new_gen`: even though in-memory `job_order` is empty after reset,
+  //     SQLite `SELECT id, session, chat FROM job WHERE station = ? AND open = 1` reconciles & closes `job-C`!
+  match core.events.apply_jobs_at_cut(empty_arr, new_gen, new_cut) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => panic("new-gen empty snapshot failed: " + e.to_string())
+  }
+  core.events.end_jobs_snapshot(new_gen)
+  debug_assert(core.events.jobs_snapshot_inflight_count() == 0, "new-gen inflight counter balanced to 0")
+  match sim.job_open.get(DA_ST1 + ":job-C") {
+    Some(ov) => debug_assert(ov == 0, "cold-boot/post-reset empty snapshot reconciled stale SQLite open=1 row to open=0")
+    None => panic("expected closed job-C row in SQLite")
+  }
 }

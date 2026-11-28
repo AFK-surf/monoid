@@ -2294,6 +2294,81 @@ fn ClientCore::notify_station_admission_needed(self : ClientCore, station : Stri
   }
 }
 
+fn ClientCore::has_paused_station_in_workspace(self : ClientCore, ws : String) -> Bool {
+  if (ws.length() == 0 || self.events.workspace == ws) && self.events.is_paused_for_admission() {
+    return true
+  }
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    match self.extra_events.get(ks[i]) {
+      Some(ev) => if (ws.length() == 0 || ev.workspace == ws) && ev.is_paused_for_admission() {
+        return true
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+/// Absorb signed workspace lock `entries` and/or personal `person` lock evidence carried by a
+/// station `lock_unconfirmed` / `lock_station` refusal (`MeshAdmission.raw`), routing strictly
+/// through existing signature verification (`handle_lock_event_for_workspace` / `load_person_lock_json`).
+/// Returns `true` if either workspace or personal lock state advanced (which also increments `lock_gen`
+/// via `wake_paused_stations_on_lock_change`).
+pub fn ClientCore::absorb_mesh_admission_lock(
+  self : ClientCore,
+  ws : String,
+  adm : MeshAdmission,
+) -> Bool {
+  let is_lock_err = adm.lock_unconfirmed || match adm.error_code {
+    Some(c) => c == "lock_unconfirmed" || c == "lock_station"
+    None => false
+  }
+  if !is_lock_err {
+    return false
+  }
+  let mut advanced = false
+  let ws_payload_opt : Option[base_codec::Json] = match base_codec::json_get(adm.raw, "lock") {
+    Some(lk) => match base_codec::json_get(lk, "entries") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(lk) } else { None }
+      _ => None
+    }
+    None => match base_codec::json_get(adm.raw, "entries") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(adm.raw) } else { None }
+      _ => None
+    }
+  }
+  match ws_payload_opt {
+    Some(lp) => {
+      match self.handle_lock_event_for_workspace(ws, lp) {
+        Ok(_) => { advanced = true }
+        Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  let person_opt : Option[base_codec::Json] = match base_codec::json_get(adm.raw, "person") {
+    Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(base_codec::Json::Arr(xs)) } else { None }
+    _ => match base_codec::json_get(adm.raw, "lock") {
+      Some(lk) => match base_codec::json_get(lk, "person") {
+        Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(base_codec::Json::Arr(xs)) } else { None }
+        _ => None
+      }
+      None => None
+    }
+  }
+  match person_opt {
+    Some(p_arr) => {
+      let sub = self.membership.effective_sub()
+      if sub.length() > 0 && self.load_person_lock_json(p_arr, sub) {
+        advanced = true
+      }
+    }
+    None => ()
+  }
+  advanced
+}
+
 /// Clear lock-refusal admission blocks and re-trigger `on_station_admission_needed` for every
 /// live station in `ws` (or all workspaces when `ws == ""`) currently paused for admission.
 pub fn ClientCore::wake_paused_stations_on_lock_change(self : ClientCore, ws : String) -> Unit {
@@ -3706,6 +3781,9 @@ pub fn ClientCore::commit_cloud_workspace(
       req_seq=req_seq,
       captured_cred_epoch=captured_cred_epoch,
     )
+  }
+  if !pause_streams_after && !resume_streams_after && self.has_paused_station_in_workspace(ws.id) {
+    self.wake_paused_stations_on_lock_change(ws.id)
   }
   if role_changed {
     match self.on_credential_refresh {

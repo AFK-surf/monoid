@@ -69,6 +69,8 @@ struct RuntimeSession {
   mesh_transports : Map[String, sync::MeshStationTransport]
   desired_mesh_stations : Map[String, DesiredMeshStation]
   inflight_ws_confirm : Map[String, Bool]
+  ws_confirm_401_count : Map[String, Int]
+  ws_confirm_401_bearer_gen : Map[String, Int64]
   rejected_tuples_in_memory : Map[String, (String, String)]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
@@ -556,6 +558,11 @@ fn runtime_attach_mesh_station(
     peer_id,
     relays,
     get_cred,
+    on_admission=Some(fn(adm : sync::MeshAdmission) -> Unit {
+      if core_ref.absorb_mesh_admission_lock(target_ws, adm) {
+        emit_topic_refresh(sess, "lock")
+      }
+    }),
     get_lock_carry=Some(fn() -> sync::MeshLockCarry {
       sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
     }),
@@ -1150,6 +1157,8 @@ fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
   }
   sess.mesh_transports.clear()
   sess.inflight_ws_confirm.clear()
+  sess.ws_confirm_401_count.clear()
+  sess.ws_confirm_401_bearer_gen.clear()
   let mdks = sess.md_stores.keys()
   for i in 0..<mdks.length() {
     match sess.md_stores.get(mdks[i]) {
@@ -1363,6 +1372,8 @@ fn strip_trailing_slash_rt(s : String) -> String {
 
 fn bump_runtime_session_gen(sess : RuntimeSession) -> Int64 {
   sess.session_gen += 1L
+  sess.ws_confirm_401_count.clear()
+  sess.ws_confirm_401_bearer_gen.clear()
   match sess.cloud {
     Some(cs) => { let _ = cs.bump_session_gen() }
     None => ()
@@ -1441,6 +1452,8 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
               effect::Exit::Succeeded(Ok(cws)) => {
                 match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=captured_cred_epoch) {
                   Ok(true) => {
+                    sess.ws_confirm_401_count.remove(ws_id)
+                    sess.ws_confirm_401_bearer_gen.remove(ws_id)
                     emit_topic_refresh(sess, "workspace")
                     emit_topic_refresh(sess, "stations")
                   }
@@ -1458,9 +1471,15 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
                 if herr.status == 403 || herr.status == 404 {
                   cs.trigger_me_reconcile()
                 } else if herr.status == 401 {
-                  let sub_now = sess.core.membership.effective_sub()
-                  if sub_now.length() > 0 {
-                    runtime_refresh_account_token(sess, sub_now, fn(_ : Result[String, String]) -> Unit {})
+                  let prev_gen = match sess.ws_confirm_401_bearer_gen.get(ws_id) { Some(g) => g; None => -1L }
+                  let prev_cnt = match sess.ws_confirm_401_count.get(ws_id) { Some(c) => c; None => 0 }
+                  if prev_gen != orig_bearer_gen && prev_cnt < 2 {
+                    sess.ws_confirm_401_bearer_gen.set(ws_id, orig_bearer_gen)
+                    sess.ws_confirm_401_count.set(ws_id, prev_cnt + 1)
+                    let sub_now = sess.core.membership.effective_sub()
+                    if sub_now.length() > 0 {
+                      runtime_refresh_account_token(sess, sub_now, fn(_ : Result[String, String]) -> Unit {})
+                    }
                   }
                 }
               }
@@ -2454,6 +2473,8 @@ pub extern "C" fn pion_core_runtime_start(
     mesh_transports: Map::new(),
     desired_mesh_stations: Map::new(),
     inflight_ws_confirm: Map::new(),
+    ws_confirm_401_count: Map::new(),
+    ws_confirm_401_bearer_gen: Map::new(),
     rejected_tuples_in_memory: Map::new(),
     cloud: cloud_opt,
     origin: origin,
@@ -4397,6 +4418,8 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
       }
       sess.mesh_transports.clear()
   sess.inflight_ws_confirm.clear()
+  sess.ws_confirm_401_count.clear()
+  sess.ws_confirm_401_bearer_gen.clear()
       match sess.cloud {
         Some(cs) => cs.stop()
         None => ()

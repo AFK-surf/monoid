@@ -785,6 +785,19 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
     }
   } else if stmt == "SELECT session, thread FROM thread_member WHERE station = ?" {
     ()
+  } else if stmt == "SELECT id, session, chat FROM job WHERE station = ? AND open = 1" {
+    let pref = p_str(p, 0) + ":"
+    let jks = self.jobs.keys()
+    for i in 0..<jks.length() {
+      let jk = jks[i]
+      if jk.starts_with(pref) {
+        let ov = match self.job_open.get(jk) { Some(v) => v; None => 1 }
+        if ov == 1 {
+          let jid = jk.slice(pref.length(), jk.length())
+          rows.push(base_codec::json_arr([base_codec::json_str(jid), base_codec::json_null(), base_codec::json_null()]))
+        }
+      }
+    }
   } else if stmt == "SELECT id, session, chat FROM job WHERE station = ?" {
     let pref = p_str(p, 0) + ":"
     let jks = self.jobs.keys()

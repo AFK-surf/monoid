@@ -19,6 +19,12 @@ pub struct SyncScheduler {
   pending_refresh : Map[String, Bool]
   mut pending_lock_refresh : Bool
   mut lock_refresh_running : Bool
+  mut jobs_fetch_inflight : Bool
+  mut jobs_refetch_needed : Bool
+  mut jobs_inflight_epoch : Int64
+  mut jobs_inflight_cred_epoch : Int64
+  jobs_waiters : Array[(Option[Int], (effect::Exit[Int]) -> Unit)]
+  jobs_next_waiters : Array[(Option[Int], (effect::Exit[Int]) -> Unit)]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -50,6 +56,12 @@ pub fn SyncScheduler::new(
     pending_refresh: Map::new(),
     pending_lock_refresh: false,
     lock_refresh_running: false,
+    jobs_fetch_inflight: false,
+    jobs_refetch_needed: false,
+    jobs_inflight_epoch: 0L,
+    jobs_inflight_cred_epoch: 0L,
+    jobs_waiters: [],
+    jobs_next_waiters: [],
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
@@ -248,6 +260,10 @@ pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
   self.pending_refresh.clear()
   self.pending_lock_refresh = false
   self.lock_refresh_running = false
+  self.jobs_fetch_inflight = false
+  self.jobs_refetch_needed = false
+  self.jobs_waiters.clear()
+  self.jobs_next_waiters.clear()
 }
 
 /// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
@@ -261,6 +277,10 @@ pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTra
   self.pending_refresh.clear()
   self.pending_lock_refresh = false
   self.lock_refresh_running = false
+  self.jobs_fetch_inflight = false
+  self.jobs_refetch_needed = false
+  self.jobs_waiters.clear()
+  self.jobs_next_waiters.clear()
   self.transport = transport
 }
 
@@ -1220,11 +1240,12 @@ pub fn SyncScheduler::prefetch_idle_k(
   )
 }
 
-/// Independent station jobs fetch (`GET /jobs?chats=0`, aligned with `client/core-ts/src/station/sync.ts`
-/// `JOBS = "/jobs?chats=0"`). Strictly enforces `admitted_cred_epoch >= required_cred_epoch` and
-/// validates the jobs payload before committing and confirming `jobs:<station>` (and when
-/// `target_thread == Some(th)`, `chatJobs:<station>/<th_id>`).
-/// NEVER piggybacks on `GET /chats` or `GET /threads/<id>/entries`.
+/// Single-flight per-station jobs fetch (`GET /jobs?chats=0`, aligned with `client/core-ts/src/station/sync.ts`
+/// `JOBS = "/jobs?chats=0"`). Coalesces concurrent `fetch_jobs_k` & `fetch_chat_jobs_k(th)` calls on the
+/// same station into ONE in-flight request (eliminating out-of-order snapshot overwrites), strictly enforces
+/// `(link.uid, admitted_cred_epoch >= required_cred_epoch)`, captures a generation-bound SSE cut token
+/// `(reset_gen, cut_seq)`, validates the jobs payload, and on commit confirms `jobs:<station>` plus every
+/// waiting `chatJobs:<station>/<th>` thread. NEVER piggybacks on `GET /chats` or `GET /threads/<id>/entries`.
 pub fn SyncScheduler::fetch_jobs_k(
   self : SyncScheduler,
   priority : Int,
@@ -1232,14 +1253,78 @@ pub fn SyncScheduler::fetch_jobs_k(
   target_thread : Option[Int] = None,
   allow_cred_retry : Bool = true,
 ) -> Unit {
-  let res_name = match target_thread {
-    Some(th) => "chatJobs:" + th.to_string()
-    None => "jobs"
+  if self.jobs_fetch_inflight && self.jobs_inflight_epoch == self.transport_epoch {
+    if self.current_cred_epoch() != self.jobs_inflight_cred_epoch {
+      self.jobs_refetch_needed = true
+      self.jobs_next_waiters.push((target_thread, k))
+    } else {
+      self.jobs_waiters.push((target_thread, k))
+    }
+    return
   }
-  let key = self.task_key(res_name)
+  self.jobs_fetch_inflight = true
+  self.jobs_inflight_epoch = self.transport_epoch
+  self.jobs_inflight_cred_epoch = self.current_cred_epoch()
+  self.jobs_waiters.push((target_thread, k))
+  self.run_single_flight_jobs_k(priority, allow_cred_retry)
+}
+
+fn SyncScheduler::run_single_flight_jobs_k(
+  self : SyncScheduler,
+  priority : Int,
+  allow_cred_retry : Bool,
+) -> Unit {
+  let key = self.task_key("jobs")
   let enqueue_epoch = self.transport_epoch
   let initial_cred_epoch = self.current_cred_epoch()
+  self.jobs_inflight_epoch = enqueue_epoch
+  self.jobs_inflight_cred_epoch = initial_cred_epoch
   let lane_key = key + "@" + enqueue_epoch.to_string() + ":" + initial_cred_epoch.to_string()
+  let finish_round = fn(ex : effect::Exit[Int], confirmed_meta : Option[(Int64, Int, Int64, Int64)]) -> Unit {
+    let cur_waiters : Array[(Option[Int], (effect::Exit[Int]) -> Unit)] = []
+    if self.transport_epoch == enqueue_epoch {
+      for i in 0..<self.jobs_waiters.length() {
+        cur_waiters.push(self.jobs_waiters[i])
+      }
+      self.jobs_waiters.clear()
+      self.jobs_fetch_inflight = false
+    }
+    match confirmed_meta {
+      Some((cap_gen, suid, sadm, sacct)) => {
+        self.notify_resource_confirmed("jobs:" + self.station, cap_gen, suid, sadm, sacct)
+        let seen_th : Map[Int, Bool] = Map::new()
+        for i in 0..<cur_waiters.length() {
+          match cur_waiters[i].0 {
+            Some(th) => if seen_th.get(th).is_none() {
+              seen_th.set(th, true)
+              self.notify_resource_confirmed(
+                "chatJobs:" + self.station + "/" + th.to_string(),
+                cap_gen,
+                suid,
+                sadm,
+                sacct,
+              )
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    for i in 0..<cur_waiters.length() {
+      (cur_waiters[i].1)(ex)
+    }
+    if self.transport_epoch == enqueue_epoch && !self.jobs_fetch_inflight && (self.jobs_refetch_needed || self.jobs_next_waiters.length() > 0) {
+      self.jobs_refetch_needed = false
+      for i in 0..<self.jobs_next_waiters.length() {
+        self.jobs_waiters.push(self.jobs_next_waiters[i])
+      }
+      self.jobs_next_waiters.clear()
+      self.jobs_fetch_inflight = true
+      self.run_single_flight_jobs_k(priority, allow_cred_retry)
+    }
+  }
+  let confirmed_meta_box : Array[Option[(Int64, Int, Int64, Int64)]] = [None]
   self.lane.run_k(
     lane_key,
     priority,
@@ -1269,12 +1354,13 @@ pub fn SyncScheduler::fetch_jobs_k(
         let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
+        let cut_gen_box : Array[Int64] = [0L]
         let cut_seq_box : Array[Int64] = [0L]
         let cut_active_box : Array[Bool] = [false]
         let release_cut = fn() -> Unit {
           if cut_active_box[0] {
             cut_active_box[0] = false
-            self.events.end_jobs_snapshot()
+            self.events.end_jobs_snapshot(cut_gen_box[0])
           }
         }
         let on_attempt_done_guarded = fn(ex : effect::Exit[Int]) -> Unit {
@@ -1297,7 +1383,9 @@ pub fn SyncScheduler::fetch_jobs_k(
           start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
           release_cut()
-          cut_seq_box[0] = self.events.begin_jobs_snapshot()
+          let (cgen, cseq) = self.events.begin_jobs_snapshot()
+          cut_gen_box[0] = cgen
+          cut_seq_box[0] = cseq
           cut_active_box[0] = true
           let req_fn = self.transport.request_k
           req_fn("GET", "/jobs?chats=0", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -1338,6 +1426,7 @@ pub fn SyncScheduler::fetch_jobs_k(
           })
         }
         let apply_json = fn(cap_gen : Int64, j : base_codec::Json) -> Result[Int, String] {
+          let cut_gen = cut_gen_box[0]
           let cut_seq = cut_seq_box[0]
           if self.transport_epoch != enqueue_epoch {
             release_cut()
@@ -1355,24 +1444,14 @@ pub fn SyncScheduler::fetch_jobs_k(
             release_cut()
             return Err("malformed_jobs_payload")
           }
-          let res = self.events.apply_jobs_at_cut(j, cut_seq)
+          let res = self.events.apply_jobs_at_cut(j, cut_gen, cut_seq)
           release_cut()
           match res {
             sql::SqlResult::Err(e) => Err(e.to_string())
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)
-              self.completed_order.push(res_name)
-              self.notify_resource_confirmed("jobs:" + self.station, cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0])
-              match target_thread {
-                Some(th) => self.notify_resource_confirmed(
-                  "chatJobs:" + self.station + "/" + th.to_string(),
-                  cap_gen,
-                  start_link_uid_box[0],
-                  start_admitted_box[0],
-                  start_acct_box[0],
-                )
-                None => ()
-              }
+              self.completed_order.push("jobs")
+              confirmed_meta_box[0] = Some((cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]))
               Ok(n)
             }
           }
@@ -1418,15 +1497,15 @@ pub fn SyncScheduler::fetch_jobs_k(
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
           if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
-            self.fetch_jobs_k(priority, k, target_thread=target_thread, allow_cred_retry=allow_cred_retry)
+            self.run_single_flight_jobs_k(priority, allow_cred_retry)
             return
           }
           self.pending_refresh.remove(key)
-          k(ex)
+          finish_round(ex, None)
         }
         other => {
           self.pending_refresh.remove(key)
-          k(other)
+          finish_round(other, confirmed_meta_box[0])
         }
       }
     },

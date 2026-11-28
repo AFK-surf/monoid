@@ -154,7 +154,9 @@ typedef struct fake_server {
     _Atomic int serve_ws1_lock;
     _Atomic int ws1_downgrade_member;
     _Atomic int ws1_require_rotated_token;
+    _Atomic int ws1_always_401;
     _Atomic int allow_refresh_rotate;
+    _Atomic int refresh_rotate_seq;
     _Atomic int got_ws1_401;
     _Atomic int got_ws1_rotated_ok;
     _Atomic int got_me;
@@ -263,6 +265,12 @@ static void *handle_client_thread(void *arg) {
 
     if (strncmp(buf, "GET /v1/workspaces/" WS1_ID " ", 46) == 0) {
         atomic_fetch_add(&g_srv.got_ws, 1);
+        if (atomic_load(&g_srv.ws1_always_401)) {
+            atomic_fetch_add(&g_srv.got_ws1_401, 1);
+            send_http_json(fd, 401, "Unauthorized", "{\"error\":\"persistent_401\"}");
+            close(fd);
+            return NULL;
+        }
         if (atomic_load(&g_srv.ws1_require_rotated_token)) {
             if (strstr(buf, "Bearer acc-rotated-99") == NULL) {
                 atomic_fetch_add(&g_srv.got_ws1_401, 1);
@@ -359,7 +367,8 @@ static void *handle_client_thread(void *arg) {
         const char *body = buf + header_end;
         assert(strstr(body, "\"request_id\":\"") != NULL);
         assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
-               strstr(body, "\"refresh_token\":\"ref-bob-1\"") != NULL);
+               strstr(body, "\"refresh_token\":\"ref-bob-1\"") != NULL ||
+               strstr(body, "\"refresh_token\":\"ref-rotated-") != NULL);
         atomic_fetch_add(&g_srv.got_auth_refresh, 1);
         pthread_mutex_lock(&g_srv.mu);
         if (g_srv.slow_refresh_hold) {
@@ -370,13 +379,27 @@ static void *handle_client_thread(void *arg) {
             }
         }
         pthread_mutex_unlock(&g_srv.mu);
-        if (atomic_load(&g_srv.allow_refresh_rotate) && strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL) {
-            send_http_json(
-                fd,
-                200,
-                "OK",
-                "{\"access_token\":\"acc-rotated-99\",\"refresh_token\":\"ref-rotated-99\","
-                "\"expires_at\":1900001000,\"name\":\"Alice\"}");
+        if (atomic_load(&g_srv.allow_refresh_rotate) &&
+            (strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
+             strstr(body, "\"refresh_token\":\"ref-rotated-") != NULL)) {
+            int seq = atomic_fetch_add(&g_srv.refresh_rotate_seq, 1) + 1;
+            char rbody[512];
+            if (seq == 1) {
+                snprintf(
+                    rbody,
+                    sizeof(rbody),
+                    "{\"access_token\":\"acc-rotated-99\",\"refresh_token\":\"ref-rotated-99\","
+                    "\"expires_at\":1900001000,\"name\":\"Alice\"}");
+            } else {
+                snprintf(
+                    rbody,
+                    sizeof(rbody),
+                    "{\"access_token\":\"acc-rotated-%d\",\"refresh_token\":\"ref-rotated-%d\","
+                    "\"expires_at\":1900001000,\"name\":\"Alice\"}",
+                    99 + seq,
+                    99 + seq);
+            }
+            send_http_json(fd, 200, "OK", rbody);
         } else {
             send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
         }
@@ -1406,6 +1429,25 @@ int main(void) {
         assert(atomic_load(&g_srv.got_ws1_401) >= 1);
         assert(atomic_load(&g_srv.got_ws1_rotated_ok) >= 1);
         printf("[live_net_e2e] Phase 11 PASSED (401 -> bearer refresh -> requeue_pending_cloud_confirmations confirmed workspace & stations)\n");
+
+        // Phase 11b (R5 Opus P2-2): Persistent 401 -> refresh -> 401 circuit breaker MUST stop after <= 2
+        // consecutive refreshes and NEVER spin an unbounded tight refresh loop!
+        int refreshes_before_cb = atomic_load(&g_srv.got_auth_refresh);
+        atomic_store(&g_srv.ws1_downgrade_member, 0);
+        atomic_store(&g_srv.ws1_require_rotated_token, 0);
+        atomic_store(&g_srv.ws1_always_401, 0);
+        // Upgrade back to owner, then downgrade to member again with persistent 401 on `/v1/workspaces/WS1_ID`!
+        send_json("{\"id\":805,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":805,", "\"ok\":{", 10);
+        atomic_store(&g_srv.ws1_downgrade_member, 1);
+        atomic_store(&g_srv.ws1_always_401, 1);
+        send_json("{\"id\":806,\"call\":\"cloud.sync\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":806,", "persistent_401 (401)", 10);
+        struct timespec ts_wait = { 0, 400000000L };
+        nanosleep(&ts_wait, NULL);
+        int refreshes_after_cb = atomic_load(&g_srv.got_auth_refresh) - refreshes_before_cb;
+        assert(refreshes_after_cb >= 1 && refreshes_after_cb <= 2);
+        printf("[live_net_e2e] Phase 11b PASSED (persistent 401->refresh->401 circuit breaker bounded at %d refreshes)\n", refreshes_after_cb);
     }
 
     atomic_store(&g_host.stopped, 1);
