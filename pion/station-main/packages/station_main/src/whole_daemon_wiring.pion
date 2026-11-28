@@ -630,10 +630,11 @@ fn is_unix_launcher_pid(pid : Int) -> Bool {
   if pid <= 0 {
     return false
   }
-  // Verify process command contains `stillfail-station` (1:1 with `cli_main.pion:684`, prevents PID-reuse SIGUSR2).
-  match cli_run_child(UPKEEP_EVENT_ID_BASE + 900000L, "ps", ["-p", pid.to_string(), "-o", "command="], station_sys::tmpdir(), 3000L) {
-    Ok((code, out, _)) => code == 0 && out.contains("stillfail-station")
-    Err(_) => false
+  // Zero-wait synchronous check via `station_sys::proc_cmdline` (Linux `/proc/<pid>/cmdline`,
+  // macOS `proc_pidpath`): never spawns a child or calls `host_shim::wait`.
+  match station_sys::proc_cmdline(pid) {
+    Some(cmd) => cmd.contains("stillfail-station")
+    None => false
   }
 }
 

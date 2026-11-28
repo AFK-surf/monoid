@@ -428,6 +428,13 @@ fn is_borrowed_profile(entry : base_codec::Json) -> Bool {
     Some(true) => return true
     _ => ()
   }
+  match base_codec::json_get(entry, "share") {
+    Some(sh) => match json_field_bool(sh, "borrowed") {
+      Some(true) => return true
+      _ => ()
+    }
+    None => ()
+  }
   false
 }
 
@@ -479,6 +486,18 @@ fn dispatch_accounts_op(
         return Err(station_api::ApiError::new(404, "unknown profile " + id))
       }
       let mut entry = cur[idx]
+      if is_borrowed_profile(entry) {
+        match body {
+          base_codec::Json::Obj(bfs) => {
+            for bi in 0..<bfs.length() {
+              if bfs[bi].0 != "enabled" {
+                return Err(station_api::ApiError::new(409, "shared profile can only toggle enabled"))
+              }
+            }
+          }
+          _ => return Err(station_api::ApiError::new(400, "body must be an object"))
+        }
+      }
       match base_codec::json_get(body, "name") {
         None => ()
         Some(base_codec::Json::Str(n)) => {
@@ -533,15 +552,22 @@ fn dispatch_accounts_op(
       }
       match base_codec::json_get(body, "env") {
         None => ()
+        Some(base_codec::Json::Null) => entry = json_obj_set(entry, "env", None)
         Some(base_codec::Json::Obj(new_efs)) => {
           let prev_env = base_codec::json_get(entry, "env")
-          let merged_fields : Array[(String, base_codec::Json)] = []
+          let mut merged_env = match prev_env {
+            Some(base_codec::Json::Obj(old_fs)) => base_codec::json_obj(old_fs)
+            _ => base_codec::json_obj([])
+          }
           for ei in 0..<new_efs.length() {
             let (ek, ev) = new_efs[ei]
             if !is_valid_env_name(ek) {
               return Err(station_api::ApiError::new(400, "invalid environment variable name " + ek))
             }
             match ev {
+              base_codec::Json::Null => {
+                merged_env = json_obj_set(merged_env, ek, None)
+              }
               base_codec::Json::Str(sv) => {
                 let keep_prev = match prev_env {
                   Some(pe) => match json_field_str(pe, ek) {
@@ -550,24 +576,16 @@ fn dispatch_accounts_op(
                   }
                   None => false
                 }
-                if keep_prev {
-                  match prev_env {
-                    Some(pe) => match base_codec::json_get(pe, ek) {
-                      Some(pv) => merged_fields.push((ek, pv))
-                      None => ()
-                    }
-                    None => ()
-                  }
-                } else {
-                  merged_fields.push((ek, base_codec::json_str(sv)))
+                if !keep_prev {
+                  merged_env = json_obj_set(merged_env, ek, Some(base_codec::json_str(sv)))
                 }
               }
-              _ => return Err(station_api::ApiError::new(400, "env." + ek + " must be a string"))
+              _ => return Err(station_api::ApiError::new(400, "env." + ek + " must be a string or null"))
             }
           }
-          entry = json_obj_set(entry, "env", Some(base_codec::json_obj(merged_fields)))
+          entry = json_obj_set(entry, "env", Some(merged_env))
         }
-        Some(_) => return Err(station_api::ApiError::new(400, "env must be an object"))
+        Some(_) => return Err(station_api::ApiError::new(400, "env must be an object or null"))
       }
       match base_codec::json_get(body, "access") {
         None => ()
@@ -847,7 +865,19 @@ fn dispatch_accounts_op(
     }
     if on {
       let fs = agents.jobs.fs
-      let skill_dir = nodepath::join(fs.sep, [agents.config.data_dir, "agent", "skills", skill])
+      let raw_cfg = read_config_raw(cfg_opt)
+      let agent_home_dir = match json_field_str(raw_cfg, "agentHome") {
+        Some(ah) if ah.trim().length() > 0 => {
+          let t = ah.trim()
+          if t.starts_with("/") || t.starts_with("\\") || (t.length() >= 2 && t.code_unit_at(1) == 58) {
+            t
+          } else {
+            nodepath::join(fs.sep, [agents.config.data_dir, t])
+          }
+        }
+        _ => nodepath::join(fs.sep, [agents.config.data_dir, "agent"])
+      }
+      let skill_dir = nodepath::join(fs.sep, [agent_home_dir, "skills", skill])
       match (fs.lstat)(skill_dir) {
         Some(st) if st.kind == "symlink" => return Some(Err(station_api::ApiError::new(409, "this skill is another station's")))
         _ => ()
@@ -875,8 +905,8 @@ fn dispatch_accounts_op(
         }
         let share_id = match existing_id {
           Some(pid) => pid
-          None => match (port.random_hex_checked)(8) {
-            Ok(h) => h
+          None => match (port.random_hex_checked)(10) {
+            Ok(h) => "sh-" + h
             Err(e) => return Err(station_api::ApiError::new(500, "CSPRNG failure: " + e))
           }
         }
@@ -934,13 +964,28 @@ fn connect_belongs_to_viewer(
   c_ws == viewer.workspace
 }
 
+/// Strict public-field allowlist projection for connect API responses (`connects.ts` / `group/index.ts`).
+/// Unknown or legacy secret fields (e.g. `group.key`, top-level `botToken`/`appToken`/`appSecret`/`key`/`secretHex`)
+/// are preserved on disk in `config.json` but NEVER echoed in HTTP responses.
 fn redact_connect_json(c : base_codec::Json) -> base_codec::Json {
   match c {
     base_codec::Json::Obj(fields) => {
       let out : Array[(String, base_codec::Json)] = []
       for i in 0..<fields.length() {
         let (k, v) = fields[i]
-        if k == "slack" {
+        if k == "id" ||
+        k == "enabled" ||
+        k == "kind" ||
+        k == "mode" ||
+        k == "requireMention" ||
+        k == "createdBy" ||
+        k == "bind" ||
+        k == "station" ||
+        k == "stations" ||
+        k == "autoStation" ||
+        k == "workspace" {
+          out.push((k, v))
+        } else if k == "slack" {
           match v {
             base_codec::Json::Obj(sfs) => {
               let sout : Array[(String, base_codec::Json)] = []
@@ -951,13 +996,13 @@ fn redact_connect_json(c : base_codec::Json) -> base_codec::Json {
                     base_codec::Json::Str(s) if s.length() > 0 => sout.push(("has_" + sk, base_codec::json_bool(true)))
                     _ => ()
                   }
-                } else {
+                } else if sk == "appId" || sk == "botName" || sk == "botImage" || sk == "team" {
                   sout.push((sk, sv))
                 }
               }
               out.push((k, base_codec::json_obj(sout)))
             }
-            _ => out.push((k, v))
+            _ => ()
           }
         } else if k == "feishu" {
           match v {
@@ -970,13 +1015,21 @@ fn redact_connect_json(c : base_codec::Json) -> base_codec::Json {
                     base_codec::Json::Str(s) if s.length() > 0 => fout.push(("hasAppSecret", base_codec::json_bool(true)))
                     _ => ()
                   }
-                } else {
+                } else if fk == "appId" ||
+                fk == "domain" ||
+                fk == "threads" ||
+                fk == "directThreads" ||
+                fk == "botName" ||
+                fk == "botImage" ||
+                fk == "botOpenId" ||
+                fk == "tenant" ||
+                fk == "registration" {
                   fout.push((fk, fv))
                 }
               }
               out.push((k, base_codec::json_obj(fout)))
             }
-            _ => out.push((k, v))
+            _ => ()
           }
         } else if k == "comma" {
           match v {
@@ -984,23 +1037,33 @@ fn redact_connect_json(c : base_codec::Json) -> base_codec::Json {
               let cout : Array[(String, base_codec::Json)] = []
               for ci in 0..<cfs.length() {
                 let (ck, cv) = cfs[ci]
-                if ck == "token" || ck == "secret" {
+                if ck == "token" {
                   match cv {
-                    base_codec::Json::Str(s) if s.length() > 0 => cout.push(("has_" + ck, base_codec::json_bool(true)))
+                    base_codec::Json::Str(s) if s.length() > 0 => cout.push(("has_token", base_codec::json_bool(true)))
                     _ => ()
                   }
-                } else {
+                } else if ck == "endpoint" || ck == "botName" {
                   cout.push((ck, cv))
                 }
               }
               out.push((k, base_codec::json_obj(cout)))
             }
-            _ => out.push((k, v))
+            _ => ()
           }
-        } else if k == "token" || k == "secret" {
-          ()
-        } else {
-          out.push((k, v))
+        } else if k == "group" {
+          match v {
+            base_codec::Json::Obj(gfs) => {
+              let gout : Array[(String, base_codec::Json)] = []
+              for gi in 0..<gfs.length() {
+                let (gk, gv) = gfs[gi]
+                if gk == "endpoint" || gk == "name" || gk == "publicKey" || gk == "botName" {
+                  gout.push((gk, gv))
+                }
+              }
+              out.push((k, base_codec::json_obj(gout)))
+            }
+            _ => ()
+          }
         }
       }
       base_codec::json_obj(out)
@@ -1217,6 +1280,7 @@ fn upsert_connect_in_config(
     }
     let model_opt = keep_bind_str("model")
     let effort_opt = keep_bind_str("effort")
+    let cwd_opt = keep_bind_str("cwd")
     let old_profiles : Option[Array[String]] = match old_bind {
       Some(ob) => match extract_station_list(base_codec::json_get(ob, "profiles")) {
         Some(xs) => Some(xs)
@@ -1270,10 +1334,14 @@ fn upsert_connect_in_config(
         None => true
       }
     }
-    // Validate `autoStation` / `stations` types and preserve existing routing when omitted (1:1 with connects.ts:209-260)
+    // Validate `autoStation` / `stations` / `station` types and preserve existing routing when omitted (1:1 with connects.ts:209-260)
     match base_codec::json_get(body, "autoStation") {
       None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(_)) => ()
       _ => return Err(station_api::ApiError::new(400, "autoStation must be a boolean or null"))
+    }
+    match base_codec::json_get(body, "station") {
+      None | Some(base_codec::Json::Null) | Some(base_codec::Json::Str(_)) => ()
+      _ => return Err(station_api::ApiError::new(400, "station must be a string or null"))
     }
     match base_codec::json_get(body, "stations") {
       None | Some(base_codec::Json::Null) => ()
@@ -1363,6 +1431,10 @@ fn upsert_connect_in_config(
     }
     match effort_opt {
       Some(ef) => bind_fields.push(("effort", base_codec::json_str(ef)))
+      None => ()
+    }
+    match cwd_opt {
+      Some(cw) => bind_fields.push(("cwd", base_codec::json_str(cw)))
       None => ()
     }
     match next_profiles {
@@ -2137,6 +2209,20 @@ fn project_vault_use(r : base_codec::Json) -> base_codec::Json {
   ])
 }
 
+fn json_is_non_null(j : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    None | Some(base_codec::Json::Null) => false
+    Some(_) => true
+  }
+}
+
+fn json_is_truthy(j : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => false
+    Some(_) => true
+  }
+}
+
 /// Filter & project `vault_requests` rows for `GET /vault/uses` (`secrets.ts:1151-1184`).
 fn filter_and_project_uses(
   rows : Array[base_codec::Json],
@@ -2162,11 +2248,11 @@ fn filter_and_project_uses(
       }
       None => ()
     }
-    let is_meta = base_codec::json_get(r, "save").is_some() ||
-    base_codec::json_get(r, "describe").is_some() ||
-    base_codec::json_get(r, "remove").is_some() ||
-    base_codec::json_get(r, "browse").is_some() ||
-    base_codec::json_get(r, "cross").is_some()
+    let is_meta = json_is_truthy(r, "save") ||
+    json_is_non_null(r, "describe") ||
+    json_is_non_null(r, "remove") ||
+    json_is_non_null(r, "browse") ||
+    json_is_non_null(r, "cross")
     if is_meta {
       continue
     }
@@ -2175,7 +2261,7 @@ fn filter_and_project_uses(
   out
 }
 
-/// Filter & project `vault_requests` rows for `GET /vault/cross-uses` (`secrets.ts:1189-1215`).
+/// Filter & project `vault_requests` rows for `GET /vault/cross-uses` (`secrets.ts:1189-1215` & `vault.ts:3180-3184`).
 fn filter_and_project_cross_uses(
   rows : Array[base_codec::Json],
   owner_email : String,
@@ -2187,16 +2273,41 @@ fn filter_and_project_cross_uses(
     if status != "granted" && status != "denied" {
       continue
     }
-    if base_codec::json_get(r, "cross").is_none() {
-      continue
+    let cross_obj = match base_codec::json_get(r, "cross") {
+      Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+      _ => continue
     }
     let ro = match json_field_str(r, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
     if ro != owner_email {
       continue
     }
+    let req_id = match json_field_str(r, "id") {
+      Some(s) => s
+      None => match json_field_str(r, "request") { Some(s) => s, None => "" }
+    }
+    let src_ws = match json_field_str(cross_obj, "workspace") {
+      Some(s) => s
+      None => match json_field_str(cross_obj, "sourceWorkspace") { Some(s) => s, None => "" }
+    }
+    let src_vault = match json_field_str(cross_obj, "vault") {
+      Some(s) => s
+      None => match json_field_str(cross_obj, "sourceVault") { Some(s) => s, None => "" }
+    }
     let base = project_vault_use(r)
-    let cross_v = match base_codec::json_get(r, "cross") { Some(c) => c, None => base_codec::json_null() }
-    out.push(json_obj_set(base, "cross", Some(cross_v)))
+    let projected = json_obj_set(
+      json_obj_set(
+        json_obj_set(
+          json_obj_set(base, "request", Some(base_codec::json_str(req_id))),
+          "sourceWorkspace",
+          Some(base_codec::json_str(src_ws)),
+        ),
+        "sourceVault",
+        Some(base_codec::json_str(src_vault)),
+      ),
+      "cross",
+      Some(cross_obj),
+    )
+    out.push(projected)
   }
   out
 }
@@ -2211,7 +2322,7 @@ pub struct VaultPlainStorePort {
   pub get_lasts : (String, String) -> Result[Option[(String, Int64)], station_api::ApiError]
   pub set_lasts : (String, String, String, Int64) -> Result[Unit, station_api::ApiError]
   pub list_pending : (String) -> Result[Array[base_codec::Json], station_api::ApiError]
-  pub list_decided_requests : (String) -> Result[Array[base_codec::Json], station_api::ApiError]
+  pub list_decided_requests : (String, Option[String], Option[String], Bool) -> Result[Array[base_codec::Json], station_api::ApiError]
   pub seed_request_for_test : (String, String, String, String, base_codec::Json) -> Unit
 }
 
@@ -2294,14 +2405,34 @@ pub fn VaultPlainStorePort::in_memory() -> VaultPlainStorePort {
       }
       Ok(out)
     },
-    list_decided_requests: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+    list_decided_requests: fn(ws : String, vault_opt : Option[String], owner_opt : Option[String], cross_only : Bool) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let out : Array[base_codec::Json] = []
       let ks = requests.keys()
       for i in 0..<ks.length() {
         if ks[i].starts_with(ws + "\x00") {
           match requests.get(ks[i]) {
             Some((_, status, j)) if status == "granted" || status == "denied" => {
-              out.push(json_obj_set(j, "status", Some(base_codec::json_str(status))))
+              let mut keep = true
+              match vault_opt {
+                Some(v) => if json_field_str(j, "vault") != Some(v) { keep = false }
+                None => ()
+              }
+              match owner_opt {
+                Some(o) => {
+                  let ro = match json_field_str(j, "owner") { Some(s) => admin_ascii_lower(s), None => "" }
+                  if ro != admin_ascii_lower(o) { keep = false }
+                }
+                None => ()
+              }
+              if cross_only {
+                match base_codec::json_get(j, "cross") {
+                  Some(base_codec::Json::Obj(_)) => ()
+                  _ => keep = false
+                }
+              }
+              if keep {
+                out.push(json_obj_set(j, "status", Some(base_codec::json_str(status))))
+              }
             }
             _ => ()
           }
@@ -2415,10 +2546,33 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
         Err(e) => Err(station_api::ApiError::new(500, e.message))
       }
     },
-    list_decided_requests: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+    list_decided_requests: fn(ws : String, vault_opt : Option[String], owner_opt : Option[String], cross_only : Bool) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
       match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
-      match st.db.all("SELECT status, body FROM vault_requests WHERE ws = ?1 AND status IN ('granted', 'denied') ORDER BY id DESC LIMIT 500", [base_codec::json_str(ws)]) {
+      let mut sql = "SELECT status, body FROM vault_requests WHERE ws = ?1 AND status IN ('granted', 'denied')"
+      let qparams : Array[base_codec::Json] = [base_codec::json_str(ws)]
+      let mut p_idx = 2
+      match vault_opt {
+        Some(v) => {
+          sql = sql + " AND json_extract(body, '$.vault') = ?" + p_idx.to_string()
+          qparams.push(base_codec::json_str(v))
+          p_idx = p_idx + 1
+        }
+        None => ()
+      }
+      match owner_opt {
+        Some(o) => {
+          sql = sql + " AND lower(json_extract(body, '$.owner')) = ?" + p_idx.to_string()
+          qparams.push(base_codec::json_str(admin_ascii_lower(o)))
+          p_idx = p_idx + 1
+        }
+        None => ()
+      }
+      if cross_only {
+        sql = sql + " AND json_type(body, '$.cross') = 'object'"
+      }
+      sql = sql + " ORDER BY id DESC LIMIT 500"
+      match st.db.all(sql, qparams) {
         Ok(rows) => {
           let out : Array[base_codec::Json] = []
           for i in 0..<rows.length() {
@@ -2445,10 +2599,18 @@ fn viewer_can_see_vault_req(
   ws : String,
   viewer : station_api::Viewer,
   whole_store : WholeStore,
+  is_locked : Bool,
 ) -> Bool {
   let owner_email = admin_ascii_lower(viewer.email)
   let vid = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
-  if vid == "plain" || vid == "" {
+  // 1:1 with `station/src/vault/secrets.ts:985-988` (`#decides`):
+  // plain, save, browse, and cross requests are strictly visible ONLY to `owner == viewer.email`.
+  let owner_only = vid == "plain" ||
+  vid == "" ||
+  json_is_truthy(req_j, "save") ||
+  json_is_non_null(req_j, "browse") ||
+  json_is_non_null(req_j, "cross")
+  if owner_only {
     match json_field_str(req_j, "owner") {
       Some(o) => return admin_ascii_lower(o) == owner_email
       None => match json_field_str(req_j, "assignee") {
@@ -2456,6 +2618,9 @@ fn viewer_can_see_vault_req(
         None => return false
       }
     }
+  }
+  if !is_locked {
+    return false
   }
   match whole_store.vault_store {
     Some(vs) => vs.in_vault(ws, viewer.sub, vid)
@@ -2616,7 +2781,7 @@ fn dispatch_vault_requests_and_plain_op(
     }
     let visible : Array[base_codec::Json] = []
     for i in 0..<all_pending.length() {
-      if viewer_can_see_vault_req(all_pending[i], ws, req.viewer, whole_store) {
+      if viewer_can_see_vault_req(all_pending[i], ws, req.viewer, whole_store, is_locked) {
         visible.push(all_pending[i])
       }
     }
@@ -2640,17 +2805,17 @@ fn dispatch_vault_requests_and_plain_op(
         return Some(Ok(base_codec::json_obj([("uses", base_codec::json_arr([]))])))
       }
     }
-    let rows = match (vp.list_decided_requests)(ws) {
+    let plain_owner_opt : Option[String] = if vid == "plain" { Some(owner) } else { None }
+    let rows = match (vp.list_decided_requests)(ws, Some(vid), plain_owner_opt, false) {
       Ok(xs) => xs
       Err(e) => return Some(Err(e))
     }
-    let plain_owner_opt : Option[String] = if vid == "plain" { Some(owner) } else { None }
     let uses = filter_and_project_uses(rows, vid, plain_owner_opt)
     return Some(Ok(base_codec::json_obj([("uses", base_codec::json_arr(uses))])))
   }
 
   if op == "vault.cross-uses.get" {
-    let rows = match (vp.list_decided_requests)(ws) {
+    let rows = match (vp.list_decided_requests)(ws, None, Some(owner), true) {
       Ok(xs) => xs
       Err(e) => return Some(Err(e))
     }
