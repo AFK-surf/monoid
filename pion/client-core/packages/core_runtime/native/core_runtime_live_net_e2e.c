@@ -2184,6 +2184,12 @@ int main(void) {
                 send_json("{\"id\":824,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
                 wait_for_matching_msg(&g_host, "\"id\":824,", "\"ok\":{", 10);
                 wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
+                // Confirm baseline role is `"member"` via `workspaces.list` + subscribe `workspaces` for deterministic commit barrier:
+                send_json("{\"id\":8241,\"call\":\"workspaces.list\",\"params\":{}}");
+                char *m_wl_5b_before = wait_for_matching_msg(&g_host, "\"id\":8241,", "\"ok\":{", 10);
+                assert(strstr(m_wl_5b_before, "\"role\":\"member\"") != NULL);
+                send_json("{\"id\":814,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
+                wait_for_matching_msg(&g_host, "\"id\":814,", "\"role\":\"member\"", 10);
 
                 int ws401_base_5b = atomic_load(&g_srv.got_ws1_401);
                 int ref_base_5b = atomic_load(&g_srv.got_auth_refresh);
@@ -2207,7 +2213,8 @@ int main(void) {
                 wait_srv_atomic_ge(&g_srv.got_ws1_401, ws401_base_5b + 1, 10);
 
                 // While that `boundary_1` 401 is parked, upgrade Alice `member -> owner` (`boundary_1 -> 0L`)
-                // on the SAME bearer!
+                // on the SAME bearer and explicitly prove `workspaces.list` already committed `"role":"owner"`
+                // BEFORE releasing the parked 401!
                 int me_base_5b = atomic_load(&g_srv.got_me);
                 atomic_store(&g_srv.ws1_downgrade_member, 0);
                 pthread_mutex_lock(&g_srv.mu);
@@ -2216,9 +2223,11 @@ int main(void) {
                 pthread_cond_broadcast(&g_srv.cv);
                 pthread_mutex_unlock(&g_srv.mu);
                 wait_srv_atomic_ge(&g_srv.got_me, me_base_5b + 1, 10);
+                wait_for_matching_msg(&g_host, "\"id\":814,", "\"role\":\"owner\"", 10);
                 wait_srv_atomic_eq(&g_srv.active_http_conns, 1, 10);
                 send_json("{\"id\":825,\"call\":\"workspaces.list\",\"params\":{}}");
-                wait_for_matching_msg(&g_host, "\"id\":825,", "\"ok\":{", 10);
+                char *m_wl_5b_after = wait_for_matching_msg(&g_host, "\"id\":825,", "\"ok\":{", 10);
+                assert(strstr(m_wl_5b_after, "\"role\":\"owner\"") != NULL);
                 assert(atomic_load(&g_srv.got_ws1_401) == ws401_base_5b + 1);
                 assert(atomic_load(&g_srv.got_auth_refresh) == ref_base_5b);
 
@@ -2234,7 +2243,94 @@ int main(void) {
                 wait_srv_atomic_ge(&g_srv.got_ws1_rotated_ok, rot_ok_base_5b + 1, 10);
                 wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
                 assert(atomic_load(&g_srv.got_auth_refresh) - ref_base_5b == 1);
-                printf("[live_net_e2e] Phase 11b-5b PASSED (same-bearer 401 across member->owner boundary_1->0L re-issued & confirmed)\n");
+                printf("[live_net_e2e] Phase 11b-5b PASSED (workspaces.list confirmed owner BEFORE 401 release; same-bearer 401 across boundary_1->0L re-issued & confirmed)\n");
+
+                // (c) R12 Codex P1: Role upgrade (`member -> owner`, `boundary_1 -> 0L`) inserted strictly
+                //     BETWEEN detail 401 starting OAuth Refresh #1 AND Refresh #1 returning transient HTTP 500!
+                //     With ZERO further external WS pushes, retiring old boundary MUST hand off the live
+                //     replay demand to `0L`, trigger a new detail fetch + Refresh #2 (200), and confirm client!
+                atomic_store(&g_srv.ws1_downgrade_member, 1); // owner -> member (installs boundary_1 > 0)
+                atomic_store(&g_srv.ws1_require_rotated_token, 0);
+                pthread_mutex_lock(&g_srv.mu);
+                g_srv.ws1_custom_name[0] = '\0';
+                g_srv.ws1_custom_station[0] = '\0';
+                pthread_mutex_unlock(&g_srv.mu);
+                send_json("{\"id\":826,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+                wait_for_matching_msg(&g_host, "\"id\":826,", "\"ok\":{", 10);
+                wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
+                send_json("{\"id\":8261,\"call\":\"workspaces.list\",\"params\":{}}");
+                char *m_wl_5c_before = wait_for_matching_msg(&g_host, "\"id\":8261,", "\"ok\":{", 10);
+                assert(strstr(m_wl_5c_before, "\"role\":\"member\"") != NULL);
+
+                int ref_base_5c = atomic_load(&g_srv.got_auth_refresh);
+                int rot_ok_base_5c = atomic_load(&g_srv.got_ws1_rotated_ok);
+                int next_seq_5c = atomic_load(&g_srv.refresh_rotate_seq) + 1;
+                pthread_mutex_lock(&g_srv.mu);
+                snprintf(g_srv.ws1_expected_bearer, sizeof(g_srv.ws1_expected_bearer), "acc-rotated-%d", 99 + next_seq_5c);
+                snprintf(g_srv.ws1_custom_name, sizeof(g_srv.ws1_custom_name), "Live Handoff 500 Confirmed");
+                snprintf(g_srv.ws1_custom_station, sizeof(g_srv.ws1_custom_station), "Live Handoff 500 St");
+                g_srv.refresh_gate_enabled = 1;
+                g_srv.refresh_budget = 0;
+                pthread_mutex_unlock(&g_srv.mu);
+                atomic_store(&g_srv.refresh_fail_500_remaining, 1);
+                atomic_store(&g_srv.ws1_require_rotated_token, 1);
+
+                // Trigger detail 401 under `boundary_1` -> starts OAuth Refresh #1 which parks at refresh latch:
+                pthread_mutex_lock(&g_srv.mu);
+                snprintf(g_srv.pending_cloud_ws_msg, sizeof(g_srv.pending_cloud_ws_msg), "{\"type\":\"workspace\",\"id\":\"" WS1_ID "\"}");
+                g_srv.cloud_ws_push_ready = 1;
+                pthread_cond_broadcast(&g_srv.cv);
+                pthread_mutex_unlock(&g_srv.mu);
+                wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base_5c + 1, 10);
+                wait_srv_atomic_eq(&g_srv.active_http_conns, 1, 10);
+
+                // While Refresh #1 (destined for transient HTTP 500) is parked in-flight, upgrade `member -> owner`
+                // and explicitly confirm `workspaces.list` reports `"role":"owner"` (`boundary_1 -> 0L`)!
+                int me_base_5c = atomic_load(&g_srv.got_me);
+                atomic_store(&g_srv.ws1_downgrade_member, 0);
+                pthread_mutex_lock(&g_srv.mu);
+                snprintf(g_srv.pending_cloud_ws_msg, sizeof(g_srv.pending_cloud_ws_msg), "{\"type\":\"workspaces\"}");
+                g_srv.cloud_ws_push_ready = 1;
+                pthread_cond_broadcast(&g_srv.cv);
+                pthread_mutex_unlock(&g_srv.mu);
+                wait_srv_atomic_ge(&g_srv.got_me, me_base_5c + 1, 10);
+                // Poll `workspaces.list` until `/v1/me` has committed `"role":"owner"` on the core thread:
+                {
+                    int got_owner = 0;
+                    for (int attempt = 0; attempt < 200; attempt++) {
+                        char req_wl[96];
+                        char needle_wl[32];
+                        int req_id = 8300 + attempt;
+                        snprintf(req_wl, sizeof(req_wl), "{\"id\":%d,\"call\":\"workspaces.list\",\"params\":{}}", req_id);
+                        snprintf(needle_wl, sizeof(needle_wl), "\"id\":%d,", req_id);
+                        send_json(req_wl);
+                        char *m_wl = wait_for_matching_msg(&g_host, needle_wl, "\"ok\":{", 10);
+                        if (strstr(m_wl, "\"role\":\"owner\"") != NULL) {
+                            got_owner = 1;
+                            break;
+                        }
+                        struct timespec ts = { 0, 10000000L };
+                        nanosleep(&ts, NULL);
+                    }
+                    assert(got_owner == 1);
+                }
+                wait_srv_atomic_eq(&g_srv.active_http_conns, 1, 10);
+                assert(atomic_load(&g_srv.got_auth_refresh) - ref_base_5c == 1);
+
+                // Release parked Refresh #1 -> returns transient HTTP 500 -> old boundary retires & hands off
+                // live replay demand to `0L` -> auto-fetches under `0L` -> Refresh #2 (200) -> commits client!
+                pthread_mutex_lock(&g_srv.mu);
+                g_srv.refresh_gate_enabled = 0;
+                pthread_cond_broadcast(&g_srv.cv);
+                pthread_mutex_unlock(&g_srv.mu);
+
+                wait_for_matching_msg(&g_host, "\"id\":811,", "Live Handoff 500 Confirmed", 10);
+                wait_for_matching_msg(&g_host, "\"id\":812,", "Live Handoff 500 St", 10);
+                wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base_5c + 2, 10);
+                wait_srv_atomic_ge(&g_srv.got_ws1_rotated_ok, rot_ok_base_5c + 1, 10);
+                wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
+                assert(atomic_load(&g_srv.got_auth_refresh) - ref_base_5c == 2);
+                printf("[live_net_e2e] Phase 11b-5c PASSED (boundary_1->0L upgrade mid-refresh before transient 500 handed off to 0L & confirmed with 0 external push)\n");
             }
             atomic_store(&g_srv.enable_cloud_ws, 0);
             pthread_mutex_lock(&g_srv.mu);

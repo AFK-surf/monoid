@@ -1473,6 +1473,32 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
     !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
 }
 
+/// Hand off any still-live workspace detail replay demand (`pending_live_ws_replay_seq` or
+/// unconfirmed `PendingAuthConfirm`) to the workspace's CURRENT boundary without touching or
+/// consuming the current boundary's rotated/transient budgets.
+fn hand_off_live_ws_replay_to_current_boundary(sess : RuntimeSession, ws_id : String) -> Unit {
+  if sess.stopped || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  if !sess.core.can_read_workspace(ws_id) {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+    return
+  }
+  let has_demand = sess.pending_live_ws_replay_seq.get(ws_id).is_some() ||
+    needs_workspace_cloud_confirm(sess, ws_id)
+  if !has_demand {
+    return
+  }
+  let cur_bid = sess.core.membership.pending_auth_boundary_id(ws_id)
+  let cur_bkey = ws_confirm_401_key(ws_id, cur_bid)
+  let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
+  if cur_rot >= 2 {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+    return
+  }
+  trigger_workspace_confirm_fetch(sess, ws_id)
+}
+
 /// Single Cloud `/v1/workspaces/<ws>` 401 coordinator across ALL 3 fetch entrypoints
 /// (`trigger_workspace_confirm_fetch`, `cloud.sync`, and live `CloudSync` WS refreshes).
 /// Keyed on immutable `(ws_id, PendingAuthConfirm.boundary_seq)` (unaffected by mesh `fresh`
@@ -1498,32 +1524,12 @@ fn handle_workspace_confirm_401(
     return
   }
   let cur_boundary_id = sess.core.membership.pending_auth_boundary_id(ws_id)
-  // Late 401 from an older bearer after another workspace/call already rotated `sess.bearer_gen`:
-  // NEVER consume rotation budget or trigger another refresh; keep `pending_live_ws_replay_seq` and
-  // immediately replay once with the live bearer (deduped by `dkey` containing `sess.bearer_gen`).
-  if orig_bearer_gen != sess.bearer_gen {
-    let cur_bkey = ws_confirm_401_key(ws_id, cur_boundary_id)
-    let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
-    if cur_rot >= 2 {
-      sess.pending_live_ws_replay_seq.remove(ws_id)
-      return
-    }
+  // Late 401 from an older bearer OR same-bearer 401 crossing a live boundary change (e.g. role
+  // upgrade `boundary_1 -> 0L` or newer downgrade): NEVER consume `cur_boundary_id`'s budget;
+  // record `req_seq` and hand off once to `cur_boundary_id` (deduped by `dkey`).
+  if orig_bearer_gen != sess.bearer_gen || cur_boundary_id != orig_boundary_id {
     record_live_ws_replay(sess, ws_id, req_seq)
-    trigger_workspace_confirm_fetch(sess, ws_id)
-    return
-  }
-  // Same-bearer 401 crossing a live boundary change (e.g. role upgrade `boundary_1 -> 0L` or
-  // newer downgrade): NEVER consume `cur_boundary_id`'s rotation budget; retain the readable
-  // workspace detail demand and re-issue once under `cur_boundary_id`.
-  if cur_boundary_id != orig_boundary_id {
-    let cur_bkey = ws_confirm_401_key(ws_id, cur_boundary_id)
-    let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
-    if cur_rot >= 2 {
-      sess.pending_live_ws_replay_seq.remove(ws_id)
-      return
-    }
-    record_live_ws_replay(sess, ws_id, req_seq)
-    trigger_workspace_confirm_fetch(sess, ws_id)
+    hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
     return
   }
   let bkey = ws_confirm_401_key(ws_id, orig_boundary_id)
@@ -1552,8 +1558,11 @@ fn handle_workspace_confirm_401(
     }
     if sess.stopped ||
       sess.session_gen != orig_session_gen ||
-      sess.core.membership.is_session_invalidated() ||
-      sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
+      sess.core.membership.is_session_invalidated() {
+      return
+    }
+    if sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
+      hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
       return
     }
     match res {
@@ -1579,15 +1588,18 @@ fn handle_workspace_confirm_401(
               match sex {
                 effect::Exit::Interrupted => rfk(effect::Exit::Interrupted)
                 _ => {
-                  let still_want = needs_workspace_cloud_confirm(sess, ws_id) ||
-                    sess.pending_live_ws_replay_seq.get(ws_id).is_some()
                   if !sess.stopped &&
                     sess.session_gen == orig_session_gen &&
-                    !sess.core.membership.is_session_invalidated() &&
-                    sess.core.membership.pending_auth_boundary_id(ws_id) == orig_boundary_id &&
-                    sess.bearer_gen == orig_bearer_gen &&
-                    still_want {
-                    trigger_workspace_confirm_fetch(sess, ws_id)
+                    !sess.core.membership.is_session_invalidated() {
+                    if sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
+                      hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
+                    } else {
+                      let still_want = needs_workspace_cloud_confirm(sess, ws_id) ||
+                        sess.pending_live_ws_replay_seq.get(ws_id).is_some()
+                      if sess.bearer_gen == orig_bearer_gen && still_want {
+                        trigger_workspace_confirm_fetch(sess, ws_id)
+                      }
+                    }
                   }
                   rfk(effect::Exit::Succeeded(()))
                 }
