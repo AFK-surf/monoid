@@ -69,6 +69,7 @@ struct RuntimeSession {
   mesh_transports : Map[String, sync::MeshStationTransport]
   desired_mesh_stations : Map[String, DesiredMeshStation]
   inflight_ws_confirm : Map[String, Bool]
+  pending_live_ws_replay : Map[String, Bool]
   ws_confirm_401_rotated_count : Map[String, Int]
   ws_confirm_401_inflight_gen : Map[String, Int64]
   ws_confirm_401_transient_count : Map[String, Int]
@@ -1375,6 +1376,7 @@ fn ws_confirm_401_key(ws_id : String, boundary_id : Int64) -> String {
 }
 
 fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
+  sess.pending_live_ws_replay.remove(ws_id)
   let prefix = ws_id + "|"
   let rks = sess.ws_confirm_401_rotated_count.keys()
   for i in 0..<rks.length() {
@@ -1397,6 +1399,7 @@ fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
 }
 
 fn clear_all_ws_confirm_401_state(sess : RuntimeSession) -> Unit {
+  sess.pending_live_ws_replay.clear()
   sess.ws_confirm_401_rotated_count.clear()
   sess.ws_confirm_401_inflight_gen.clear()
   sess.ws_confirm_401_transient_count.clear()
@@ -1477,6 +1480,12 @@ fn handle_workspace_confirm_401(
   if sub_now.length() == 0 {
     return
   }
+  // When no `PendingAuthConfirm` is active (`boundary_id == 0L`), record this workspace so
+  // `requeue_pending_cloud_confirmations` replays the live detail fetch after bearer adoption
+  // and resets the `"ws|0"` budget upon `commit_cloud_workspace` success!
+  if orig_boundary_id == 0L {
+    sess.pending_live_ws_replay.set(ws_id, true)
+  }
   sess.ws_confirm_401_inflight_gen.set(bkey, orig_bearer_gen)
   runtime_refresh_account_token(sess, sub_now, fn(res : Result[String, String]) -> Unit {
     match sess.ws_confirm_401_inflight_gen.get(bkey) {
@@ -1501,7 +1510,9 @@ fn handle_workspace_confirm_401(
         // Transient refresh failure (bearer did NOT rotate): NEVER increment rotated circuit-breaker
         // or permanently lock out `orig_bearer_gen`; schedule bounded backoff retry (<= 2 tries).
         let t_cnt = match sess.ws_confirm_401_transient_count.get(bkey) { Some(c) => c; None => 0 }
-        if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && needs_workspace_cloud_confirm(sess, ws_id) {
+        let want_retry = needs_workspace_cloud_confirm(sess, ws_id) ||
+          (orig_boundary_id == 0L && sess.pending_live_ws_replay.get(ws_id).is_some())
+        if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && want_retry {
           sess.ws_confirm_401_transient_count.set(bkey, t_cnt + 1)
           let delay_ms = if t_cnt == 0 { 150 } else { 400 }
           let _ = sess.core.rt.fork_quiet_named("ws-401-retry:" + ws_id, fn(rfk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -1510,12 +1521,14 @@ fn handle_workspace_confirm_401(
               match sex {
                 effect::Exit::Interrupted => rfk(effect::Exit::Interrupted)
                 _ => {
+                  let still_want = needs_workspace_cloud_confirm(sess, ws_id) ||
+                    (orig_boundary_id == 0L && sess.pending_live_ws_replay.get(ws_id).is_some())
                   if !sess.stopped &&
                     sess.session_gen == orig_session_gen &&
                     !sess.core.membership.is_session_invalidated() &&
                     sess.core.membership.pending_auth_boundary_id(ws_id) == orig_boundary_id &&
                     sess.bearer_gen == orig_bearer_gen &&
-                    needs_workspace_cloud_confirm(sess, ws_id) {
+                    still_want {
                     trigger_workspace_confirm_fetch(sess, ws_id)
                   }
                   rfk(effect::Exit::Succeeded(()))
@@ -1632,12 +1645,25 @@ fn requeue_pending_cloud_confirmations(sess : RuntimeSession) -> Unit {
     sql::SqlResult::Err(_) => ()
   }
   let mut any_pending = false
+  let replayed : Map[String, Bool] = Map::new()
   for i in 0..<candidate_ws.length() {
     let wid = candidate_ws[i]
     if sess.core.membership.has_pending_auth_confirm(wid) {
       any_pending = true
     }
     if needs_workspace_cloud_confirm(sess, wid) {
+      replayed.set(wid, true)
+      sess.pending_live_ws_replay.remove(wid)
+      trigger_workspace_confirm_fetch(sess, wid)
+    }
+  }
+  // Replay normal live workspace detail fetches (`boundary_id == 0L`) that hit 401 before bearer
+  // adoption so they commit with the new bearer and reset the `"ws|0"` budget!
+  let live_ks = sess.pending_live_ws_replay.keys()
+  for i in 0..<live_ks.length() {
+    let wid = live_ks[i]
+    sess.pending_live_ws_replay.remove(wid)
+    if wid.length() > 0 && replayed.get(wid).is_none() && sess.core.can_read_workspace(wid) {
       trigger_workspace_confirm_fetch(sess, wid)
     }
   }
@@ -2588,6 +2614,7 @@ pub extern "C" fn pion_core_runtime_start(
     mesh_transports: Map::new(),
     desired_mesh_stations: Map::new(),
     inflight_ws_confirm: Map::new(),
+    pending_live_ws_replay: Map::new(),
     ws_confirm_401_rotated_count: Map::new(),
     ws_confirm_401_inflight_gen: Map::new(),
     ws_confirm_401_transient_count: Map::new(),
@@ -4249,6 +4276,22 @@ pub extern "C" fn pion_core_runtime_send(
           if call_name == "cloud.sync" {
             handle_cloud_sync_call(sess, id, params)
             let _ = drain_and_emit(sess)
+            return
+          }
+          if call_name == "test.mesh_fresh_cred_bump" && is_loopback_http_url(sess.origin) {
+            let wid = match opt_str_param(params, "workspace") {
+              Some(w) => if w.length() > 0 { w } else { sess.core.workspace }
+              None => sess.core.workspace
+            }
+            let next_ep = sess.core.membership.bump_cred_epoch(wid)
+            let bid = sess.core.membership.pending_auth_boundary_id(wid)
+            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("workspace", base_codec::json_str(wid)),
+              ("credEpoch", base_codec::json_int64(next_ep)),
+              ("boundaryId", base_codec::json_int64(bid)),
+            ]), None)
+            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+            emit_wire(out_j, payload=out_b)
             return
           }
           if call_name == "auth.complete" {

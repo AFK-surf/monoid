@@ -5933,15 +5933,53 @@ pub fn ClientCore::lock_kept_aside(self : ClientCore) -> Array[form::Json] {
   self.lock_kept_aside
 }
 
+fn person_signed_entry_key(fe : form::Json, c : lock::Crypto) -> String {
+  let h = lock_entry_hash(fe, c)
+  if h.length() == 0 {
+    return ""
+  }
+  let sig_part = match form::json_field(Some(fe), "sig") {
+    Some(sig_j) => {
+      let sk = match form::json_field(Some(sig_j), "key") {
+        Some(form::Json::Str(s)) => s
+        _ => ""
+      }
+      let salg = match form::json_field(Some(sig_j), "alg") {
+        Some(form::Json::Str(s)) => s
+        _ => ""
+      }
+      let sval = match form::json_field(Some(sig_j), "sig") {
+        Some(form::Json::Str(s)) => s
+        _ => ""
+      }
+      if sk.length() > 0 || salg.length() > 0 || sval.length() > 0 {
+        sk + ":" + salg + ":" + sval
+      } else {
+        base_codec::json_stringify(form_to_codec(sig_j))
+      }
+    }
+    None => ""
+  }
+  let by_part = match form::json_field(Some(fe), "by") {
+    Some(by_j) => base_codec::json_stringify(form_to_codec(by_j))
+    None => ""
+  }
+  if sig_part.length() > 0 || by_part.length() > 0 {
+    h + "|" + sig_part + "|" + by_part
+  } else {
+    h + "|" + base_codec::json_stringify(form_to_codec(fe))
+  }
+}
+
 fn person_lock_entries_fingerprint(entries : Array[base_codec::Json], c : lock::Crypto) -> String {
   let sb = StringBuilder::new()
   for i in 0..<entries.length() {
     if i > 0 {
       sb.write_string(",")
     }
-    let h = lock_entry_hash(codec_to_form(entries[i]), c)
-    if h.length() > 0 {
-      sb.write_string(h)
+    let k = person_signed_entry_key(codec_to_form(entries[i]), c)
+    if k.length() > 0 {
+      sb.write_string(k)
     } else {
       sb.write_string(base_codec::json_stringify(entries[i]))
     }
@@ -6129,13 +6167,16 @@ fn ClientCore::load_person_lock_json_inner(
     return (false, false)
   }
 
-  // Merge `person_lock_entries ∪ person_lock_aside ∪ incoming_form` deduplicated by `entry_hash`.
+  // Merge `person_lock_entries ∪ person_lock_aside ∪ incoming_form` deduplicated by the FULL signed
+  // record key (`person_signed_entry_key`: unsigned `entry_hash` + signature/signer fields) so
+  // distinct signed variants sharing an unsigned `entry_hash` (e.g. bad signature before valid
+  // signature, or competing signers for tie-break) are NEVER dropped before `lock::person_chain`!
   let seen : Map[String, Bool] = Map::new()
   let combined : Array[form::Json] = []
   let push_unique = fn(fe : form::Json) -> Unit {
-    let h = lock_entry_hash(fe, c)
-    if h.length() > 0 && seen.get(h).is_none() {
-      seen.set(h, true)
+    let k = person_signed_entry_key(fe, c)
+    if k.length() > 0 && seen.get(k).is_none() {
+      seen.set(k, true)
       combined.push(fe)
     }
   }
