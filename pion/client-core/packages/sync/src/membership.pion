@@ -530,18 +530,13 @@ pub fn AccountRefreshCoordinator::upsert_account_cas_k(
             Some(list) => (list, parse_stored_account_sessions(doc))
           }
         }
-        let next_list : Array[views::StoredAccount] = []
-        let mut replaced = false
+        // Place the newly signed-in active account at index 0 (`[account, ...others]`) so
+        // `accounts[0]` stays aligned with the active DB account across live runtime and cold restarts!
+        let next_list : Array[views::StoredAccount] = [account]
         for i in 0..<disk_list.length() {
-          if disk_list[i].sub == account.sub {
-            next_list.push(account)
-            replaced = true
-          } else {
+          if disk_list[i].sub != account.sub {
             next_list.push(disk_list[i])
           }
-        }
-        if !replaced {
-          next_list.push(account)
         }
         if session_id.length() > 0 {
           disk_sessions.set(account.sub, session_id)
@@ -569,12 +564,13 @@ pub fn AccountRefreshCoordinator::upsert_account_cas_k(
 }
 
 /// Asynchronous CAS rollback of a just-persisted `(sub, expected_session, expected_refresh)` entry
-/// when an in-flight `auth.complete` is cancelled or superseded by a newer `auth.begin`/`auth.cancel`
-/// while `write_accounts_k` was in flight:
+/// (used by simulated async host tests; native `core_runtime` uses synchronous atomic C transactions
+/// so no async window exists between `login_gen` verification and disk commit):
 /// - Acquires both in-process dir lock and cross-process file lock.
-/// - Re-reads latest disk `accounts`; removes `sub` ONLY if BOTH `disk_sessions[sub] == expected_session`
+/// - Re-reads latest disk `accounts`; mutates `sub` ONLY if BOTH `disk_sessions[sub] == expected_session`
 ///   AND `disk_list[idx].refresh == expected_refresh` so a newer login/rotation for `sub` is NEVER clobbered.
-/// - Preserves all sibling accounts verbatim.
+/// - If `restore_prev` is `Some((old_acct, old_sid))`, restores that prior same-sub entry in place instead
+///   of deleting the subject; otherwise removes `sub` and preserves all sibling accounts verbatim.
 pub fn AccountRefreshCoordinator::rollback_account_cas_k(
   self : AccountRefreshCoordinator,
   read_accounts_k : ((HostStorageRead) -> Unit) -> Unit,
@@ -583,6 +579,7 @@ pub fn AccountRefreshCoordinator::rollback_account_cas_k(
   expected_session : String,
   expected_refresh : String,
   k : (Result[Bool, String]) -> Unit,
+  restore_prev : Option[(views::StoredAccount, String)] = None,
 ) -> Unit {
   if sub.length() == 0 {
     k(Ok(false))
@@ -620,9 +617,22 @@ pub fn AccountRefreshCoordinator::rollback_account_cas_k(
                 for i in 0..<disk_list.length() {
                   if i != idx {
                     next_list.push(disk_list[i])
+                  } else {
+                    match restore_prev {
+                      Some((old_acct, old_sid)) => {
+                        next_list.push(old_acct)
+                        if old_sid.length() > 0 {
+                          disk_sessions.set(sub, old_sid)
+                        } else {
+                          disk_sessions.remove(sub)
+                        }
+                      }
+                      None => {
+                        disk_sessions.remove(sub)
+                      }
+                    }
                   }
                 }
-                disk_sessions.remove(sub)
                 let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
                 write_accounts_k(encoded, fn(wres : Result[Unit, String]) -> Unit {
                   match wres {

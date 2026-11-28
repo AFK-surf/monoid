@@ -17,8 +17,13 @@
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
-extern int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len);
-extern void pion_core_dir_lock_release(int64_t handle);
+extern int64_t pion_core_accounts_tx_begin(const char *dir, int64_t dir_len);
+extern int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len);
+extern int32_t pion_core_accounts_tx_status(int64_t tx_id);
+extern const uint8_t *pion_core_accounts_tx_data(int64_t tx_id);
+extern int64_t pion_core_accounts_tx_len(int64_t tx_id);
+extern int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_t len);
+extern void pion_core_accounts_tx_end(int64_t tx_id);
 extern int mb_core_deliver_media(
     uint64_t call,
     int kind,
@@ -643,54 +648,85 @@ int main(void) {
     assert(strstr(m->json, "\"id\":59") != NULL && strstr(m->json, "\"error\"") != NULL);
     assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
 
-    // 7a. Stop-time managed dir-lock leak guard: acquire dir lock while core is running WITHOUT
-    //     calling release, trigger `mb_core_stop()`, and assert next `pion_core_dir_lock_try`
-    //     immediately succeeds (plus safe idempotent release of old leaked_fd)!
+    // 7a. Same-account re-login failure/cancel MUST preserve original `<data_dir>/accounts` tuple untouched,
+    //     and mid-flight `auth.refresh` interrupted by `mb_core_stop()` MUST NOT deadlock after restart!
     {
-        int64_t dlen = (int64_t)strlen(data_dir);
-        int64_t leaked_fd = pion_core_dir_lock_try(data_dir, dlen);
-        assert(leaked_fd >= 0);
-        assert(pion_core_dir_lock_try(data_dir, dlen) == -1);
+        send_json("{\"id\":60,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-e2e\"}}");
+        // Immediately stop while `auth.refresh` may still be in flight: must release cleanly with 0 deadlock!
         mb_core_stop();
-        int64_t reacq_fd = pion_core_dir_lock_try(data_dir, dlen);
-        assert(reacq_fd >= 0);
-        pion_core_dir_lock_release(leaked_fd); // safe no-op (already removed on stop, must not close reacq_fd!)
-        assert(pion_core_dir_lock_try(data_dir, dlen) == -1); // reacq_fd still held!
-        pion_core_dir_lock_release(reacq_fd);
-        printf("[core_runtime_e2e] stop-time dir_lock_release_all leak guard OK\n");
+
+        // Verify original `u-e2e` / `ref-e2e` tuple on disk is still completely intact!
+        char acct_path[256];
+        snprintf(acct_path, sizeof(acct_path), "%s/accounts", data_dir);
+        FILE *af = fopen(acct_path, "r");
+        assert(af != NULL);
+        char abuf[1024];
+        size_t an = fread(abuf, 1, sizeof(abuf) - 1, af);
+        fclose(af);
+        abuf[an] = '\0';
+        assert(strstr(abuf, "\"sub\":\"u-e2e\"") != NULL && strstr(abuf, "\"refresh\":\"ref-e2e\"") != NULL);
+
+        // Same-process restart + immediate `auth.refresh` MUST complete promptly (0 Semaphore/mutex deadlock)!
+        atomic_store(&g_ctx.stopped, 0);
+        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+        send_json("{\"id\":61,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-e2e\"}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        printf("[core_runtime_e2e] #61 post-stop-mid-refresh auth.refresh -> %s\n", m->json);
+        assert(strstr(m->json, "\"id\":61") != NULL && strstr(m->json, "\"error\"") != NULL);
+        mb_core_stop();
+        printf("[core_runtime_e2e] post-stop restart non-deadlock + accounts preservation OK\n");
     }
 
-    // 7b. Cross-process `fork()` + dual-fd mutual exclusion check on `pion_core_dir_lock_try` / `release`!
+    // 7b. Cross-process `fork()` mutual exclusion + monotonic logical `tx_id` stale-end immunity!
     {
         int64_t dlen = (int64_t)strlen(data_dir);
-        int64_t fd1 = pion_core_dir_lock_try(data_dir, dlen);
-        assert(fd1 >= 0);
-        // Same-process second open file description MUST be contended (`-1`).
-        assert(pion_core_dir_lock_try(data_dir, dlen) == -1);
+        int64_t tx1 = pion_core_accounts_tx_try_begin(data_dir, dlen);
+        assert(tx1 >= 1);
+        assert(pion_core_accounts_tx_status(tx1) == 1);
+        assert(pion_core_accounts_tx_len(tx1) > 0 && pion_core_accounts_tx_data(tx1) != NULL);
+        // Same-process second acquire MUST be contended (`-1`).
+        assert(pion_core_accounts_tx_try_begin(data_dir, dlen) == -1);
         // Forked child process MUST observe contention (`-1`).
         pid_t c1 = fork();
         assert(c1 >= 0);
         if (c1 == 0) {
-            int64_t child_fd = pion_core_dir_lock_try(data_dir, dlen);
-            _exit(child_fd == -1 ? 0 : 1);
+            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
+            _exit(child_tx == -1 ? 0 : 1);
         }
         int st1 = 0;
         assert(waitpid(c1, &st1, 0) == c1 && WIFEXITED(st1) && WEXITSTATUS(st1) == 0);
-        pion_core_dir_lock_release(fd1);
-        // After release, forked child MUST immediately acquire (`>= 0`) and release!
+        pion_core_accounts_tx_end(tx1);
+
+        // Acquire new `tx2 > tx1` and invoke STALE `tx_end(tx1)`: MUST be a no-op and MUST NOT release `tx2`!
+        int64_t tx2 = pion_core_accounts_tx_try_begin(data_dir, dlen);
+        assert(tx2 > tx1);
+        pion_core_accounts_tx_end(tx1); // stale tx_id: MUST NOT release tx2!
+        pid_t c_stale = fork();
+        assert(c_stale >= 0);
+        if (c_stale == 0) {
+            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
+            _exit(child_tx == -1 ? 0 : 1);
+        }
+        int st_stale = 0;
+        assert(waitpid(c_stale, &st_stale, 0) == c_stale && WIFEXITED(st_stale) && WEXITSTATUS(st_stale) == 0);
+        pion_core_accounts_tx_end(tx2);
+
+        // After ending `tx2`, forked child MUST immediately acquire (`>= 1`) and end cleanly!
         pid_t c2 = fork();
         assert(c2 >= 0);
         if (c2 == 0) {
-            int64_t child_fd = pion_core_dir_lock_try(data_dir, dlen);
-            if (child_fd >= 0) {
-                pion_core_dir_lock_release(child_fd);
+            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
+            if (child_tx >= 1) {
+                pion_core_accounts_tx_end(child_tx);
                 _exit(0);
             }
             _exit(1);
         }
         int st2 = 0;
         assert(waitpid(c2, &st2, 0) == c2 && WIFEXITED(st2) && WEXITSTATUS(st2) == 0);
-        printf("[core_runtime_e2e] cross-process flock mutex check OK\n");
+        printf("[core_runtime_e2e] accounts_tx cross-process mutex + stale tx_id immunity OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),

@@ -143,6 +143,16 @@ pub struct ClientCore {
   mut vaults_set_up : Bool
 }
 
+fn default_notify_kinds() -> views::NotifyKindsInput {
+  views::NotifyKindsInput::{
+    wait: true,
+    failed: true,
+    done: "away",
+    message: true,
+    billed: false,
+  }
+}
+
 pub fn ClientCore::new(
   workspace : String,
   station : String,
@@ -226,13 +236,7 @@ pub fn ClientCore::new(
     notify_permission: "unknown",
     notify_in_front: false,
     notify_muted: [],
-    notify_kinds: views::NotifyKindsInput::{
-      wait: true,
-      failed: true,
-      done: "away",
-      message: true,
-      billed: false,
-    },
+    notify_kinds: default_notify_kinds(),
     lang: "zh",
     device_app: "desktop",
     device_locale: "",
@@ -276,6 +280,18 @@ pub fn ClientCore::new(
   })
   let _ = auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
     core.handle_auth_boundary(ev)
+  })
+  core.outbox.set_stamp_fn(fn(ev : CoreEvent) -> Int {
+    let st = core_event_station(ev)
+    if st.length() == 0 {
+      return 0
+    }
+    let ws = core.membership.station_workspace(st, fallback_ws=core.workspace)
+    if ws.length() == 0 {
+      0
+    } else {
+      core.auth.workspace_auth_gen(ws)
+    }
   })
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
@@ -1549,13 +1565,7 @@ pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit
   self.notify_push = true
   self.notify_preview = true
   self.notify_muted.clear()
-  self.notify_kinds = views::NotifyKindsInput::{
-    wait: true,
-    failed: true,
-    done: "away",
-    message: true,
-    billed: true,
-  }
+  self.notify_kinds = default_notify_kinds()
   self.lock_pairing_prompts.clear()
   self.vault_key_asks.clear()
   self.lock_pending.items.clear()
@@ -2106,6 +2116,23 @@ fn ClientCore::purge_workspace_memory(self : ClientCore, ws : String, stations :
   }
   self.vault_key_asks.clear()
   for i in 0..<kept_asks.length() { self.vault_key_asks.push(kept_asks[i]) }
+  // Immediately evict ALL queued outbound frames belonging to `ws` (or any of its stations)
+  // so no pre-purge frame can ever survive in `outbox` even if `ws` is rejoined in the same turn!
+  self.outbox.retain_where(fn(ev : CoreEvent) -> Bool {
+    let st = core_event_station(ev)
+    if st.length() == 0 {
+      return true
+    }
+    if self.membership.station_workspace(st, fallback_ws=self.workspace) == ws {
+      return false
+    }
+    for i in 0..<stations.length() {
+      if stations[i] == st {
+        return false
+      }
+    }
+    true
+  })
 }
 
 /// Internal synchronous single-tx `drop_workspace` executed ONLY while `in_commit_guard` is held.
@@ -2122,7 +2149,7 @@ fn ClientCore::drop_workspace_locked(
   let snap = self.membership.snapshot_for_tx()
   let op_gen = self.membership.latch_purge(ws, stations)
 
-  // Always purge in-memory caches & advance cred/auth gens so 0 stale rows can ever be projected.
+  // Always purge in-memory caches (including immediate outbox eviction) & advance cred/auth gens.
   self.purge_workspace_memory(ws, stations)
   let _ = self.membership.bump_cred_epoch(ws)
   self.membership.clear_role(ws)
@@ -3404,6 +3431,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       viewer_sub=self.viewer_sub,
       viewer_email=self.viewer_marks.me,
       allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
+      active_sub=self.membership.effective_sub(),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -5239,20 +5267,26 @@ fn ClientCore::handle_lock_event_for_workspace(
 }
 
 /// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).
-/// Never emits queued events while unauthenticated, session-invalidated, or for any
-/// station/workspace whose authorization was revoked before delivery.
+/// Never emits queued events while unauthenticated, session-invalidated, for any
+/// station/workspace whose authorization was revoked, or for any frame stamped under
+/// an older workspace `authGen` (e.g. pre-purge frame surviving into a same-turn rejoin).
 pub fn ClientCore::drain_frame(self : ClientCore, most : Option[Int] = None) -> Array[CoreEvent] {
   if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
     self.outbox.clear()
     return []
   }
-  let raw = self.outbox.take(most=most)
+  let raw = self.outbox.take_stamped(most=most)
   let out : Array[CoreEvent] = []
   for i in 0..<raw.length() {
-    let ev = raw[i]
+    let (ev, stamped_gen) = raw[i]
     let st = core_event_station(ev)
-    if st.length() == 0 || self.can_read_station(st) {
+    if st.length() == 0 {
       out.push(ev)
+    } else if self.can_read_station(st) {
+      let ws = self.membership.station_workspace(st, fallback_ws=self.workspace)
+      if stamped_gen <= 0 || ws.length() == 0 || self.auth.workspace_auth_gen(ws) == stamped_gen {
+        out.push(ev)
+      }
     }
   }
   out
@@ -6106,19 +6140,13 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             refresh: refresh,
             access_expires: exp,
           }
-          // Build candidate accounts snapshot and persist BEFORE mutating auth_store or opening gate!
-          let cand_accounts : Array[views::StoredAccount] = []
-          let mut replaced_cand = false
+          // Build candidate accounts snapshot with the active signed-in account at index 0
+          // and persist BEFORE mutating auth_store or opening gate!
+          let cand_accounts : Array[views::StoredAccount] = [new_acct]
           for i in 0..<self.auth_store.accounts.length() {
-            if self.auth_store.accounts[i].sub == sub {
-              cand_accounts.push(new_acct)
-              replaced_cand = true
-            } else {
+            if self.auth_store.accounts[i].sub != sub {
               cand_accounts.push(self.auth_store.accounts[i])
             }
-          }
-          if !replaced_cand {
-            cand_accounts.push(new_acct)
           }
           let cand_sessions : Map[String, String] = Map::new()
           let sks = self.account_sessions.keys()

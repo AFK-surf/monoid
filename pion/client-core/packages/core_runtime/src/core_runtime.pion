@@ -18,9 +18,12 @@ extern "C" fn mb_core_emit(json : Ptr, len : Int64, bytes : Ptr, blen : Int64) -
 extern "C" fn pion_core_wall_now_ms() -> Int64
 extern "C" fn pion_core_utc_offset_min(ms : Int64) -> Int
 extern "C" fn pion_core_log_warn(msg : Ptr, len : Int64) -> Unit
-extern "C" fn pion_core_dir_lock_try(dir : Ptr, dir_len : Int64) -> Int64
-extern "C" fn pion_core_dir_lock_release(handle : Int64) -> Unit
-extern "C" fn pion_core_dir_lock_release_all() -> Unit
+extern "C" fn pion_core_accounts_tx_begin(dir : Ptr, dir_len : Int64) -> Int64
+extern "C" fn pion_core_accounts_tx_status(tx_id : Int64) -> Int
+extern "C" fn pion_core_accounts_tx_data(tx_id : Int64) -> Ptr
+extern "C" fn pion_core_accounts_tx_len(tx_id : Int64) -> Int64
+extern "C" fn pion_core_accounts_tx_commit(tx_id : Int64, bytes : Ptr, len : Int64) -> Int
+extern "C" fn pion_core_accounts_tx_end(tx_id : Int64) -> Unit
 
 struct AccountInfo {
   sub : String
@@ -46,6 +49,7 @@ struct RuntimeSession {
   mut db : sql::Sql
   core : sync::ClientCore
   refresh_coord : sync::AccountRefreshCoordinator
+  accounts_tx_id : Array[Int64]
   accounts : Array[AccountInfo]
   prefs : Map[String, base_codec::Json]
   station_online : Map[String, Bool]
@@ -271,50 +275,115 @@ fn is_loopback_http_url(url : String) -> Bool {
   url.starts_with("http://[::1]/")
 }
 
-fn accounts_file_lock_backoff_ms(attempt : Int) -> Int {
-  if attempt <= 0 {
-    10
-  } else if attempt == 1 {
-    20
-  } else if attempt == 2 {
-    40
-  } else if attempt == 3 {
-    80
-  } else if attempt == 4 {
-    160
+fn accounts_tx_begin_dir(dir : String) -> Result[Int64, String] {
+  let bs = dir.to_bytes()
+  let tx_id = pion_core_accounts_tx_begin(bytes_data_ptr(bs), bs.length().to_int64())
+  let _ = bs.length()
+  if tx_id >= 1L {
+    Ok(tx_id)
   } else {
-    250
+    Err("accounts lock/tx I/O error")
   }
 }
 
-fn acquire_accounts_file_lock_retry_k(
-  dir : String,
-  attempt : Int,
-  k : (Result[Int64, String]) -> Unit,
-) -> Unit {
-  let bs = dir.to_bytes()
-  let fd = pion_core_dir_lock_try(bytes_data_ptr(bs), bs.length().to_int64())
-  let _ = bs.length()
-  if fd >= 0L {
-    k(Ok(fd))
-    return
+fn accounts_tx_read_state(tx_id : Int64) -> sync::HostStorageRead {
+  let st = pion_core_accounts_tx_status(tx_id)
+  if st == 0 {
+    return sync::HostStorageRead::Absent
   }
-  if fd == -2L {
-    k(Err("accounts lock file I/O error"))
-    return
+  if st != 1 {
+    return sync::HostStorageRead::ReadError("accounts tx read error")
   }
-  if attempt >= 16 {
-    k(Err("accounts lock file busy timeout"))
-    return
+  let p = pion_core_accounts_tx_data(tx_id)
+  let n = pion_core_accounts_tx_len(tx_id)
+  let raw_str = ptr_to_string(p, n)
+  match base_codec::json_parse(raw_str) {
+    base_codec::JsonParseResult::Ok(j) => sync::HostStorageRead::Found(j)
+    base_codec::JsonParseResult::Err(e) => sync::HostStorageRead::ReadError(e)
   }
-  let delay = accounts_file_lock_backoff_ms(attempt)
-  // timer: retry after a failure, with a backoff
-  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
-    match sex {
-      effect::Exit::Succeeded(_) => acquire_accounts_file_lock_retry_k(dir, attempt + 1, k)
-      _ => k(Err("accounts lock acquire interrupted"))
+}
+
+fn accounts_tx_commit_json(tx_id : Int64, doc : base_codec::Json) -> Result[Unit, String] {
+  let raw_bs = base_codec::json_stringify(doc).to_bytes()
+  let rc = pion_core_accounts_tx_commit(tx_id, bytes_data_ptr(raw_bs), raw_bs.length().to_int64())
+  let _ = raw_bs.length()
+  if rc == 0 {
+    Ok(())
+  } else {
+    Err("accounts tx commit failed")
+  }
+}
+
+fn read_accounts_atomic_sync(dir : String) -> Array[AccountInfo] {
+  match accounts_tx_begin_dir(dir) {
+    Err(_) => []
+    Ok(tx_id) => {
+      let out = match accounts_tx_read_state(tx_id) {
+        sync::HostStorageRead::Found(j) => parse_stored_accounts(j)
+        _ => []
+      }
+      pion_core_accounts_tx_end(tx_id)
+      out
     }
-  })
+  }
+}
+
+/// Single synchronous atomic `<dir>/accounts` upsert for `auth.complete`:
+/// Holds process mutex + exclusive `<dir>/.accounts.lock`, re-verifies `sess.login_gen` &
+/// `db_account_sub` with ZERO async yields, places `new_stored` at index 0 (`[new_stored, ...others]`),
+/// fsyncs + atomically renames `<dir>/accounts`, and unconditionally releases the lock before returning!
+fn runtime_upsert_account_atomic(
+  sess : RuntimeSession,
+  req_login_gen : Int64,
+  new_stored : views::StoredAccount,
+  session_id : String,
+) -> Result[(Array[views::StoredAccount], Map[String, String]), String] {
+  let tx_id = match accounts_tx_begin_dir(sess.dir) {
+    Err(e) => return Err(e)
+    Ok(tid) => tid
+  }
+  if sess.login_gen != req_login_gen {
+    pion_core_accounts_tx_end(tx_id)
+    return Err("login_expired")
+  }
+  match sess.core.db_account_sub {
+    Some(existing) => if existing != new_stored.sub {
+      pion_core_accounts_tx_end(tx_id)
+      return Err("account_sub_mismatch: expected " + existing + ", got " + new_stored.sub)
+    }
+    None => ()
+  }
+  let (disk_list, disk_sessions) : (Array[views::StoredAccount], Map[String, String]) = match accounts_tx_read_state(tx_id) {
+    sync::HostStorageRead::ReadError(reason) => {
+      pion_core_accounts_tx_end(tx_id)
+      return Err("accounts disk read failed: " + reason)
+    }
+    sync::HostStorageRead::Absent => ([], Map::new())
+    sync::HostStorageRead::Found(doc) => match sync::parse_stored_accounts_strict(doc) {
+      None => {
+        pion_core_accounts_tx_end(tx_id)
+        return Err("accounts disk invalid json")
+      }
+      Some(list) => (list, sync::parse_stored_account_sessions(doc))
+    }
+  }
+  // Place newly signed-in active account at index 0 (`[new_stored, ...others]`).
+  let next_list : Array[views::StoredAccount] = [new_stored]
+  for i in 0..<disk_list.length() {
+    if disk_list[i].sub != new_stored.sub {
+      next_list.push(disk_list[i])
+    }
+  }
+  if session_id.length() > 0 {
+    disk_sessions.set(new_stored.sub, session_id)
+  }
+  let encoded = sync::serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+  let commit_res = accounts_tx_commit_json(tx_id, encoded)
+  pion_core_accounts_tx_end(tx_id)
+  match commit_res {
+    Ok(_) => Ok((next_list, disk_sessions))
+    Err(e) => Err(e)
+  }
 }
 
 fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
@@ -1287,10 +1356,20 @@ fn runtime_refresh_account_token(
   let req_session_gen = sess.session_gen
   let host = sync::AccountRefreshHost::{
     read_accounts_k: fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
-      read_storage_json_state_k(sess.sh, "accounts", rk)
+      let tid = sess.accounts_tx_id[0]
+      if tid <= 0L {
+        rk(sync::HostStorageRead::ReadError("missing active accounts tx"))
+      } else {
+        rk(accounts_tx_read_state(tid))
+      }
     },
     write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
-      write_storage_json_k(sess.sh, "accounts", doc, wk)
+      let tid = sess.accounts_tx_id[0]
+      if tid <= 0L {
+        wk(Err("missing active accounts tx"))
+      } else {
+        wk(accounts_tx_commit_json(tid, doc))
+      }
     },
     do_refresh_http_k: fn(rtok : String, now_ms : Int64, hk : (effect::Exit[Result[sync::RefreshedTokens, sync::RefreshTokenError]]) -> Unit) -> Unit {
       sync::refresh_token_k(sess.sh, req_origin, rtok, now_ms, hk)
@@ -1390,17 +1469,34 @@ fn sess_lang(sess : RuntimeSession) -> String {
   if sess.core.lang == "en" { "en" } else { "zh" }
 }
 
-fn sess_viewer_email(sess : RuntimeSession) -> String {
-  if sess.accounts.length() > 0 && sess.accounts[0].email.length() > 0 {
-    sess.accounts[0].email
+fn sess_viewer_sub(sess : RuntimeSession) -> String {
+  let bound = sess.core.membership.effective_sub()
+  if bound.length() > 0 {
+    return bound
+  }
+  if sess.core.viewer_sub.length() > 0 {
+    return sess.core.viewer_sub
+  }
+  if sess.accounts.length() > 0 {
+    sess.accounts[0].sub
   } else {
-    sess.core.viewer_marks.me
+    ""
   }
 }
 
-fn sess_viewer_sub(sess : RuntimeSession) -> String {
-  if sess.accounts.length() > 0 {
-    sess.accounts[0].sub
+fn sess_viewer_email(sess : RuntimeSession) -> String {
+  let active = sess_viewer_sub(sess)
+  if active.length() > 0 {
+    for i in 0..<sess.accounts.length() {
+      if sess.accounts[i].sub == active && sess.accounts[i].email.length() > 0 {
+        return sess.accounts[i].email
+      }
+    }
+  }
+  if sess.core.viewer_marks.me.length() > 0 {
+    sess.core.viewer_marks.me
+  } else if sess.accounts.length() > 0 && sess.accounts[0].email.length() > 0 {
+    sess.accounts[0].email
   } else {
     ""
   }
@@ -1656,11 +1752,8 @@ pub extern "C" fn pion_core_runtime_start(
       return 0
     }
   }
-  // Load signed-in accounts and device prefs from host storage (matching `client/core-ts`).
-  let accounts : Array[AccountInfo] = match read_storage_json(sh, "accounts") {
-    Some(j) => parse_stored_accounts(j)
-    None => []
-  }
+  // Load signed-in accounts via synchronous atomic C tx (`<dir>/accounts`) and device prefs from host storage.
+  let accounts : Array[AccountInfo] = read_accounts_atomic_sync(dir)
   let prefs_map : Map[String, base_codec::Json] = Map::new()
   match read_storage_json(sh, "device/prefs") {
     Some(j) => {
@@ -1989,13 +2082,26 @@ pub extern "C" fn pion_core_runtime_start(
     // Retry any persisted `(account_sub, ws)` pending purges on startup before serving views.
     let _ = core.retry_pending_purges()
   }
-  let refresh_coord = sync::AccountRefreshCoordinator::for_storage_dir(dir)
+  // Per-session `AccountRefreshCoordinator` backed by synchronous atomic C transactions
+  // (`pion_core_accounts_tx_*`): NEVER shares cross-session `effect::Semaphore`, NEVER holds
+  // a mutex or OS file lock across async yields, and NEVER deadlocks across `mb_core_stop()`/restart!
+  let accounts_tx_id : Array[Int64] = [0L]
+  let refresh_coord = sync::AccountRefreshCoordinator::new()
   refresh_coord.set_external_file_lock(
     fn(lk : (Result[Int64, String]) -> Unit) -> Unit {
-      acquire_accounts_file_lock_retry_k(dir, 0, lk)
+      match accounts_tx_begin_dir(dir) {
+        Ok(tid) => {
+          accounts_tx_id[0] = tid
+          lk(Ok(tid))
+        }
+        Err(msg) => lk(Err(msg))
+      }
     },
-    fn(fd : Int64) -> Unit {
-      pion_core_dir_lock_release(fd)
+    fn(tid : Int64) -> Unit {
+      if accounts_tx_id[0] == tid {
+        accounts_tx_id[0] = 0L
+      }
+      pion_core_accounts_tx_end(tid)
     },
   )
   let sess = RuntimeSession::{
@@ -2004,6 +2110,7 @@ pub extern "C" fn pion_core_runtime_start(
     db: db,
     core: core,
     refresh_coord: refresh_coord,
+    accounts_tx_id: accounts_tx_id,
     accounts: accounts,
     prefs: prefs_map,
     station_online: Map::new(),
@@ -2573,150 +2680,104 @@ fn finish_verified_auth_complete_k(
       done()
       return
     }
-    // Step 2: Acquire shared dir lock + cross-process `flock`, re-verify `login_gen` & `db_account_sub`
-    // inside the lock BEFORE writing `accounts`!
-    sess.refresh_coord.upsert_account_cas_k(
-      fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
-        read_storage_json_state_k(sess.sh, "accounts", rk)
-      },
-      fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
-        write_storage_json_k(sess.sh, "accounts", doc, wk)
-      },
-      new_stored,
-      session_id,
-      fn(ures : Result[(Array[views::StoredAccount], Map[String, String]), String]) -> Unit {
-        match ures {
+    // Step 2: Single synchronous atomic C transaction over `<dir>/accounts`:
+    // holds process mutex + exclusive `flock`, re-verifies `login_gen` & `db_account_sub` with
+    // ZERO async yields, writes `[new_stored, ...others]` via `fsync` + atomic rename, and
+    // releases the lock BEFORE returning (0 async window, 0 Rust background disk thread race!).
+    match runtime_upsert_account_atomic(sess, req_login_gen, new_stored, session_id) {
+      Err(msg) => {
+        close_staged_db(staged_opt)
+        let err_code = if msg == "login_expired" {
+          "login_expired"
+        } else if msg.starts_with("account_sub_mismatch") {
+          "account_sub_mismatch"
+        } else {
+          "storage_error"
+        }
+        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+          code: err_code,
+          message: msg,
+        })
+        let (out_j, out_b) = protocol::encode_core_event(ev)
+        emit_wire(out_j, payload=out_b)
+        done()
+        return
+      }
+      Ok((all_accts, all_sessions)) => {
+        // Step 3: Commit runtime state atomically BEFORE firing auth boundary!
+        sess.login_gen += 1L
+        let _ = bump_runtime_session_gen(sess)
+        sess.bearer_gen += 1L
+        match runtime_install_staged_db_now(sess, new_stored.sub, staged_opt) {
           Err(msg) => {
-            close_staged_db(staged_opt)
-            let err_code = if msg == "login_expired" {
-              "login_expired"
-            } else if msg.starts_with("account_sub_mismatch") {
-              "account_sub_mismatch"
-            } else {
-              "storage_error"
-            }
-            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
-              code: err_code,
-              message: msg,
-            })
+            let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "sql_error" }
+            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
             let (out_j, out_b) = protocol::encode_core_event(ev)
             emit_wire(out_j, payload=out_b)
             done()
             return
           }
-          Ok((all_accts, all_sessions)) => {
-            if sess.login_gen != req_login_gen {
-              close_staged_db(staged_opt)
-              let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
-                code: "login_expired",
-                message: "登录已过期，请重新登录",
-              })
-              let (out_j, out_b) = protocol::encode_core_event(ev)
-              emit_wire(out_j, payload=out_b)
-              // Async CAS rollback of the just-persisted `(sub, session_id, refresh)` entry
-              // so disk and memory cannot split if `auth.cancel` / `auth.begin` raced with `storage.set`!
-              sess.refresh_coord.rollback_account_cas_k(
-                fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
-                  read_storage_json_state_k(sess.sh, "accounts", rk)
-                },
-                fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
-                  write_storage_json_k(sess.sh, "accounts", doc, wk)
-                },
-                new_stored.sub,
-                session_id,
-                new_stored.refresh,
-                fn(_ : Result[Bool, String]) -> Unit { done() },
+          Ok(_) => ()
+        }
+        sess.core.membership.clear_session_invalidated()
+        sess.core.membership.set_unauthenticated(false)
+        sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+        sess.core.set_viewer(new_stored.email, sub=new_stored.sub)
+        sess.core.login_flow.mark_completed(new_stored.sub, return_to)
+        let _ = store::put_account_doc(
+          sess.db,
+          "accounts",
+          base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+        )
+        if new_stored.access.length() > 0 && req_origin.length() > 0 {
+          let cs = match sess.cloud {
+            Some(existing) => {
+              existing.switch_db(sess.db)
+              let _ = existing.bind_account_context(new_stored.sub, session=session_id)
+              existing.set_origin_and_token("", new_stored.access)
+              existing
+            }
+            None => {
+              let created = sync::CloudSync::new(
+                sess.sh,
+                sess.db,
+                req_origin,
+                token=new_stored.access,
+                bound_sub=new_stored.sub,
+                bound_session=session_id,
               )
-              return
+              wire_live_cloud_sync(sess, created, new_stored.sub, session_id)
+              sess.cloud = Some(created)
+              created
             }
-            // Step 3: Commit runtime state atomically BEFORE firing auth boundary!
-            sess.login_gen += 1L
-            let _ = bump_runtime_session_gen(sess)
-            sess.bearer_gen += 1L
-            match runtime_install_staged_db_now(sess, new_stored.sub, staged_opt) {
-              Err(msg) => {
-                let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "sql_error" }
-                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
-                let (out_j, out_b) = protocol::encode_core_event(ev)
-                emit_wire(out_j, payload=out_b)
-                done()
-                return
-              }
-              Ok(_) => ()
-            }
-            sess.core.membership.clear_session_invalidated()
-            sess.core.membership.set_unauthenticated(false)
-            sync_mem_accounts_from_list(sess, all_accts, all_sessions)
-            sess.core.set_viewer(new_stored.email, sub=new_stored.sub)
-            sess.core.login_flow.mark_completed(new_stored.sub, return_to)
-            let _ = store::put_account_doc(
-              sess.db,
-              "accounts",
-              base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
-            )
-            if new_stored.access.length() > 0 && req_origin.length() > 0 {
-              let cs = match sess.cloud {
-                Some(existing) => {
-                  existing.switch_db(sess.db)
-                  let _ = existing.bind_account_context(new_stored.sub, session=session_id)
-                  existing.set_origin_and_token("", new_stored.access)
-                  existing
-                }
-                None => {
-                  let created = sync::CloudSync::new(
-                    sess.sh,
-                    sess.db,
-                    req_origin,
-                    token=new_stored.access,
-                    bound_sub=new_stored.sub,
-                    bound_session=session_id,
-                  )
-                  wire_live_cloud_sync(sess, created, new_stored.sub, session_id)
-                  sess.cloud = Some(created)
-                  created
-                }
-              }
-              if cs.origin().length() > 0 {
-                cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
-              }
-            }
-            // Step 4 (FINAL): Now that `sess.db`, `sess.core.db`, `sess.cloud`, `auth_store`, and
-            // `viewer` are ALL installed, emit the authoritative auth boundary + `Ok` reply!
-            let _ = sess.core.auth.bump_all()
-            // NEVER expose `access_token`, `refresh_token`, `code`, or `verifier`!
-            let account_view = base_codec::json_obj([
-              ("sub", base_codec::json_str(new_stored.sub)),
-              ("email", base_codec::json_str(new_stored.email)),
-              ("name", base_codec::json_str(new_stored.name)),
-              ("picture", base_codec::json_str(new_stored.picture)),
-            ])
-            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
-              ("ok", base_codec::json_bool(true)),
-              ("account", account_view),
-              ("returnTo", base_codec::json_str(return_to)),
-            ]), None)
-            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
-            emit_wire(out_j, payload=out_b)
-            emit_topic_refresh(sess, "accounts")
-            emit_topic_refresh(sess, "workspaces")
-            emit_topic_refresh(sess, "notify")
-            done()
+          }
+          if cs.origin().length() > 0 {
+            cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
           }
         }
-      },
-      pre_write_check=Some(fn() -> Result[Unit, String] {
-        if sess.login_gen != req_login_gen {
-          return Err("login_expired")
-        }
-        match sess.core.db_account_sub {
-          Some(existing) => if existing != new_stored.sub {
-            return Err("account_sub_mismatch: expected " + existing + ", got " + new_stored.sub)
-          }
-          None => ()
-        }
-        Ok(())
-      }),
-    )
+        // Step 4 (FINAL): Now that `sess.db`, `sess.core.db`, `sess.cloud`, `auth_store`, and
+        // `viewer` are ALL installed, emit the authoritative auth boundary + `Ok` reply!
+        let _ = sess.core.auth.bump_all()
+        // NEVER expose `access_token`, `refresh_token`, `code`, or `verifier`!
+        let account_view = base_codec::json_obj([
+          ("sub", base_codec::json_str(new_stored.sub)),
+          ("email", base_codec::json_str(new_stored.email)),
+          ("name", base_codec::json_str(new_stored.name)),
+          ("picture", base_codec::json_str(new_stored.picture)),
+        ])
+        let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+          ("ok", base_codec::json_bool(true)),
+          ("account", account_view),
+          ("returnTo", base_codec::json_str(return_to)),
+        ]), None)
+        let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+        emit_wire(out_j, payload=out_b)
+        emit_topic_refresh(sess, "accounts")
+        emit_topic_refresh(sess, "workspaces")
+        emit_topic_refresh(sess, "notify")
+        done()
+      }
+    }
   })
 }
 
@@ -3557,5 +3618,4 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
     }
     None => ()
   }
-  pion_core_dir_lock_release_all()
 }

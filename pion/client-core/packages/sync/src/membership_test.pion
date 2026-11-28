@@ -1819,3 +1819,173 @@ test "Slice 2B-1 R4: auth.complete in-flight CAS rollback, silent staged pending
   }
   debug_assert(!saw_revoked && saw_allowed, "drain_frame MUST drop revoked-workspace frames and deliver only authorized frames")
 }
+
+// ── Test 12 (R5 Primitives A, B, C): restore_prev rollback, active-account [0] & active_sub workspace grouping,
+//    same-turn revoke+rejoin outbox purge + ws_auth_gen stamp gate, and unified notify billed=false default ──
+
+test "Slice 2B-1 R5: restore_prev rollback, active account ordering/grouping, same-turn revoke+rejoin outbox gate, notify billed=false" {
+  let rt = effect::Runtime::new()
+
+  // 1. Primitive A (`restore_prev` rollback preserves original same-sub tuple on disk):
+  let coord = AccountRefreshCoordinator::new()
+  let orig_alice = views::StoredAccount::{
+    sub: "u-alice", email: "alice@still.fail", name: "Alice", picture: "", access: "acc-old", refresh: "ref-old", access_expires: 1900000000L,
+  }
+  let bob = views::StoredAccount::{
+    sub: "u-bob", email: "bob@still.fail", name: "Bob", picture: "", access: "acc-bob", refresh: "ref-bob", access_expires: 1900000000L,
+  }
+  let s_init : Map[String, String] = Map::new()
+  s_init.set("u-alice", "01ARZ3NDEKTSV4RRFFQ69G5FA1")
+  s_init.set("u-bob", "01ARZ3NDEKTSV4RRFFQ69G5FB1")
+  let disk_doc : Array[base_codec::Json] = [serialize_stored_accounts([bob, orig_alice], sessions=Some(s_init))]
+
+  // Re-login of `u-alice` places `u-alice` at index 0 (`[u-alice, u-bob]`):
+  let new_alice = views::StoredAccount::{
+    sub: "u-alice", email: "alice@still.fail", name: "Alice", picture: "", access: "acc-new", refresh: "ref-new", access_expires: 1900000000L,
+  }
+  let up_ok : Array[Bool] = [false]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord.upsert_account_cas_k(
+      fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_doc[0])) },
+      fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+        disk_doc[0] = doc
+        wk(Ok(()))
+      },
+      new_alice,
+      "01ARZ3NDEKTSV4RRFFQ69G5FA2",
+      fn(r : Result[(Array[views::StoredAccount], Map[String, String]), String]) -> Unit {
+        match r {
+          Ok((list, _)) => {
+            up_ok[0] = list.length() == 2 && list[0].sub == "u-alice" && list[1].sub == "u-bob"
+          }
+          Err(_) => ()
+        }
+        fk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(up_ok[0], "upsert_account_cas_k MUST place newly signed-in active account at index 0")
+
+  // Rollback with `restore_prev=Some((orig_alice, old_sid))` MUST restore original `ref-old` instead of deleting `u-alice`!
+  let rb_ok : Array[Bool] = [false]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord.rollback_account_cas_k(
+      fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_doc[0])) },
+      fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+        disk_doc[0] = doc
+        wk(Ok(()))
+      },
+      "u-alice",
+      "01ARZ3NDEKTSV4RRFFQ69G5FA2",
+      "ref-new",
+      fn(r : Result[Bool, String]) -> Unit {
+        match r {
+          Ok(v) => { rb_ok[0] = v }
+          Err(_) => ()
+        }
+        fk(effect::Exit::Succeeded(()))
+      },
+      restore_prev=Some((orig_alice, "01ARZ3NDEKTSV4RRFFQ69G5FA1")),
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(rb_ok[0], "rollback with restore_prev succeeded")
+  let restored_list = match parse_stored_accounts_strict(disk_doc[0]) {
+    Some(xs) => xs
+    None => panic("valid disk_doc after restore_prev")
+  }
+  let restored_sids = parse_stored_account_sessions(disk_doc[0])
+  debug_assert(restored_list.length() == 2 && restored_list[0].sub == "u-alice" && restored_list[0].refresh == "ref-old", "restore_prev preserved u-alice with original ref-old")
+  let restored_sid = match restored_sids.get("u-alice") { Some(s) => s; None => "" }
+  debug_assert(restored_sid == "01ARZ3NDEKTSV4RRFFQ69G5FA1", "restore_prev restored original session id")
+
+  // 2. Primitive B: `workspaces` topic groups workspaces under active bound `db_account_sub` (even if `accounts[0]` is a sibling!):
+  let (_, db_grp) = make_sim_db(rt)
+  let gcore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db_grp, core_offline_transport(), fn() -> Unit {})
+  let _ = gcore.set_db_account_sub("u-alice")
+  gcore.set_viewer("alice@still.fail", sub="u-alice", role="owner")
+  // Register Bob FIRST (index 0) and Alice SECOND (index 1) to prove `project_workspaces` keys on `active_sub`, NOT blind `accounts[0]`!
+  gcore.auth_store.register_account(bob)
+  gcore.auth_store.register_account(orig_alice)
+  let _ = gcore.commit_cloud_me(
+    mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "Alice Private WS", "owner")]),
+    req_seq=1L,
+  )
+  let ws_grouped = mt_expect_val_json(mt_sub(gcore, 80L, "workspaces", []), "workspaces grouped by active_sub")
+  match ws_grouped {
+    base_codec::Json::Arr(grps) => {
+      debug_assert(grps.length() == 2, "two account groups")
+      let bob_s = base_codec::json_stringify(grps[0])
+      let alice_s = base_codec::json_stringify(grps[1])
+      debug_assert(bob_s.contains("u-bob") && !bob_s.contains("Alice Private WS"), "Bob group must have 0 Alice workspaces")
+      debug_assert(alice_s.contains("u-alice") && alice_s.contains("Alice Private WS"), "Alice group must own Alice workspaces")
+    }
+    _ => panic("workspaces topic must return array")
+  }
+
+  // 3. Primitive C (Codex P1-5): Same-turn enqueue -> revoke WS1 -> rejoin WS1 -> drain_frame MUST emit 0 pre-purge frames!
+  let (_, db_rj) = make_sim_db(rt)
+  let rcore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db_rj, core_offline_transport(), fn() -> Unit {})
+  // Verify Codex P2-1 default `notify_kinds.billed == false` both on fresh init AND after `clear_account_scoped_runtime_state()`!
+  debug_assert(!rcore.notify_kinds.billed, "ClientCore::new default notify_kinds.billed must be false")
+  rcore.notify_kinds = views::NotifyKindsInput::{ wait: true, failed: true, done: "away", message: true, billed: true }
+  rcore.clear_account_scoped_runtime_state()
+  debug_assert(!rcore.notify_kinds.billed, "clear_account_scoped_runtime_state must reset notify_kinds.billed to false")
+
+  let _ = rcore.set_db_account_sub("u-alice")
+  let _ = rcore.commit_cloud_me(
+    mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "owner")]),
+    req_seq=1L,
+  )
+  let _ = rcore.membership.bind_station_checked(ULID_WS1, "st-1")
+  let _ = rcore.membership.bind_station_checked(ULID_WS2, "st-2")
+  rcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    10,
+    store::Entry::{
+      n: 1, kind: "message", author_kind: "person", author: "alice",
+      text: "PRE_PURGE_SECRET_TEXT", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  // Same turn: revoke WS1 then immediately rejoin WS1 BEFORE draining outbox!
+  let _ = rcore.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS2, "W2", "owner")]), req_seq=2L)
+  debug_assert(rcore.outbox.waiting() == 0, "drop_workspace immediately evicted WS1 frames from outbox")
+  let _ = rcore.commit_cloud_me(
+    mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "owner")]),
+    req_seq=3L,
+  )
+  let drained1 = rcore.drain_frame()
+  for i in 0..<drained1.length() {
+    match drained1[i] {
+      CoreEvent::EntryAdded(_, _, ent, _) => debug_assert(!ent.text.contains("PRE_PURGE_SECRET_TEXT"), "0 pre-purge frames after same-turn rejoin")
+      _ => ()
+    }
+  }
+  // Depth-in-defense: even if an outbox frame survived an authGen bump without `retain_where`, `ws_auth_gen` stamp drops it!
+  rcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    11,
+    store::Entry::{
+      n: 2, kind: "message", author_kind: "person", author: "alice",
+      text: "STALE_GEN_SECRET_TEXT", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let _ = rcore.auth.bump_workspace(ULID_WS1)
+  let drained2 = rcore.drain_frame()
+  debug_assert(drained2.length() == 0, "ws_auth_gen stamp rejects stale-generation queued frame")
+  // Fresh frame enqueued AFTER rejoin / authGen bump IS delivered normally!
+  rcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    12,
+    store::Entry::{
+      n: 3, kind: "message", author_kind: "person", author: "alice",
+      text: "FRESH_POST_REJOIN_TEXT", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let drained3 = rcore.drain_frame()
+  debug_assert(drained3.length() == 1, "fresh post-rejoin frame delivered cleanly")
+}

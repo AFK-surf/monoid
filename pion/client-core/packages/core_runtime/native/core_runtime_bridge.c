@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -23,57 +24,250 @@
 
 #include "core_api.h"
 
-// Cross-process & cross-fd non-blocking exclusive file lock on `<dir>/.accounts.lock`
-// serializing `accounts` CAS across multiple OS processes and runtime instances:
-// - returns handle/fd >= 0 on success
-// - returns -1 if currently held by another process or open file description (contended)
-// - returns -2 on I/O or invalid path error
-// All open handles are tracked in a mutex-protected registry so `pion_core_dir_lock_release_all()`
-// unconditionally releases every held handle during `mb_core_stop()` / `pion_core_runtime_stop()`
-// even if an in-flight Pion continuation was dropped mid-operation.
-#define MAX_OPEN_DIR_LOCKS 32
-static pthread_mutex_t g_dir_lock_mu = PTHREAD_MUTEX_INITIALIZER;
-static int64_t g_open_dir_locks[MAX_OPEN_DIR_LOCKS];
-static int g_open_dir_lock_count = 0;
+// Synchronous atomic C transaction for `<dir>/accounts` (`client/shell/src/fs_ops.rs:144-153`):
+// - Acquires a process-wide mutex (`pthread_mutex_t` / `CRITICAL_SECTION`) AND an exclusive OS
+//   file lock on `<dir>/.accounts.lock` (`flock` / UTF-16 `CreateFileW` + `LockFileEx`).
+// - Synchronously reads `<dir>/accounts` into an owned buffer distinguishing Found (1),
+//   Absent (0), and ReadError (-1).
+// - Returns a strictly monotonic logical `tx_id >= 1` (NEVER exposing raw OS fd/HANDLE numbers).
+// - `commit` writes `<dir>/accounts.partial.<pid>.<tx_id>` (`0600`), `fsync`s, and atomically
+//   renames over `<dir>/accounts` BEFORE releasing the OS lock (zero Rust background disk thread!).
+// - `end(tx_id)` validates `tx_id == active_id` before releasing; stale or duplicate `tx_id` calls
+//   are guaranteed no-ops and can NEVER release a newer transaction's lock!
+// - Because every transaction is synchronous and non-yielding, `mb_core_stop()` can NEVER strand
+//   a held mutex, OS file lock, or cross-session semaphore.
 
-static void dir_lock_close_raw(int64_t handle) {
-    if (handle < 0) {
+#define ACCOUNTS_MAX_BYTES (16 * 1024 * 1024)
+
+#ifdef _WIN32
+static INIT_ONCE g_accts_tx_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION g_accts_tx_cs;
+static BOOL CALLBACK init_accts_tx_cs_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    InitializeCriticalSection(&g_accts_tx_cs);
+    return TRUE;
+}
+static void accts_mu_lock(void) {
+    InitOnceExecuteOnce(&g_accts_tx_once, init_accts_tx_cs_cb, NULL, NULL);
+    EnterCriticalSection(&g_accts_tx_cs);
+}
+static int accts_mu_trylock(void) {
+    InitOnceExecuteOnce(&g_accts_tx_once, init_accts_tx_cs_cb, NULL, NULL);
+    return TryEnterCriticalSection(&g_accts_tx_cs) ? 0 : -1;
+}
+static void accts_mu_unlock(void) {
+    LeaveCriticalSection(&g_accts_tx_cs);
+}
+#else
+static pthread_mutex_t g_accts_tx_mu = PTHREAD_MUTEX_INITIALIZER;
+static void accts_mu_lock(void) {
+    pthread_mutex_lock(&g_accts_tx_mu);
+}
+static int accts_mu_trylock(void) {
+    return pthread_mutex_trylock(&g_accts_tx_mu) == 0 ? 0 : -1;
+}
+static void accts_mu_unlock(void) {
+    pthread_mutex_unlock(&g_accts_tx_mu);
+}
+#endif
+
+static _Atomic int64_t g_accts_tx_next_id = 1;
+static _Atomic int64_t g_accts_tx_active_id = 0;
+static char g_accts_tx_dir[3840];
+static size_t g_accts_tx_dir_len = 0;
+#ifdef _WIN32
+static HANDLE g_accts_tx_lock_handle = INVALID_HANDLE_VALUE;
+#else
+static int g_accts_tx_lock_fd = -1;
+#endif
+static int32_t g_accts_tx_status = 0;
+static uint8_t *g_accts_tx_buf = NULL;
+static size_t g_accts_tx_len = 0;
+
+static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, const char *name) {
+    size_t pos = dlen;
+    if (pos + 2 + strlen(name) >= cap) {
+        out[0] = '\0';
         return;
     }
-#ifdef _WIN32
-    HANDLE h = (HANDLE)(intptr_t)handle;
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof(ov));
-    (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
-    (void)CloseHandle(h);
-#else
-    int fd = (int)handle;
-    (void)flock(fd, LOCK_UN);
-    (void)close(fd);
-#endif
+    memcpy(out, dir, pos);
+    if (pos > 0 && out[pos - 1] != '/' && out[pos - 1] != '\\') {
+        out[pos++] = '/';
+    }
+    size_t nlen = strlen(name);
+    memcpy(out + pos, name, nlen + 1);
 }
 
-int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
-    if (dir == NULL || dir_len <= 0 || dir_len > 3800) {
-        return -2;
+static void accts_tx_reset_buf(void) {
+    if (g_accts_tx_buf != NULL) {
+        free(g_accts_tx_buf);
+        g_accts_tx_buf = NULL;
     }
-    char path[4096];
-    memcpy(path, dir, (size_t)dir_len);
-    size_t pos = (size_t)dir_len;
-    if (pos > 0 && path[pos - 1] != '/' && path[pos - 1] != '\\') {
-        path[pos++] = '/';
-    }
-    static const char suffix[] = ".accounts.lock";
-    memcpy(path + pos, suffix, sizeof(suffix));
-    int64_t handle = -2;
+    g_accts_tx_len = 0;
+    g_accts_tx_status = 0;
+}
+
+static void accts_tx_read_file_locked(const char *accts_path) {
+    accts_tx_reset_buf();
 #ifdef _WIN32
     wchar_t wpath[4096];
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096);
-    if (wlen <= 0) {
-        return -2;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wpath, 4096) <= 0) {
+        g_accts_tx_status = -1;
+        return;
     }
     HANDLE h = CreateFileW(
         wpath,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        g_accts_tx_status = (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+        return;
+    }
+    size_t cap = 4096;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        CloseHandle(h);
+        g_accts_tx_status = -1;
+        return;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) {
+            if (cap >= ACCOUNTS_MAX_BYTES) {
+                free(buf);
+                CloseHandle(h);
+                g_accts_tx_status = -1;
+                return;
+            }
+            size_t ncap = cap * 2;
+            if (ncap > ACCOUNTS_MAX_BYTES) {
+                ncap = ACCOUNTS_MAX_BYTES;
+            }
+            uint8_t *nbuf = (uint8_t *)realloc(buf, ncap);
+            if (nbuf == NULL) {
+                free(buf);
+                CloseHandle(h);
+                g_accts_tx_status = -1;
+                return;
+            }
+            buf = nbuf;
+            cap = ncap;
+        }
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, (DWORD)(cap - total), &got, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            g_accts_tx_status = -1;
+            return;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += (size_t)got;
+    }
+    CloseHandle(h);
+    g_accts_tx_buf = buf;
+    g_accts_tx_len = total;
+    g_accts_tx_status = 1;
+#else
+    int fd = open(accts_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        g_accts_tx_status = (errno == ENOENT) ? 0 : -1;
+        return;
+    }
+    size_t cap = 4096;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        close(fd);
+        g_accts_tx_status = -1;
+        return;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) {
+            if (cap >= ACCOUNTS_MAX_BYTES) {
+                free(buf);
+                close(fd);
+                g_accts_tx_status = -1;
+                return;
+            }
+            size_t ncap = cap * 2;
+            if (ncap > ACCOUNTS_MAX_BYTES) {
+                ncap = ACCOUNTS_MAX_BYTES;
+            }
+            uint8_t *nbuf = (uint8_t *)realloc(buf, ncap);
+            if (nbuf == NULL) {
+                free(buf);
+                close(fd);
+                g_accts_tx_status = -1;
+                return;
+            }
+            buf = nbuf;
+            cap = ncap;
+        }
+        ssize_t n = read(fd, buf + total, cap - total);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            free(buf);
+            close(fd);
+            g_accts_tx_status = -1;
+            return;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+    g_accts_tx_buf = buf;
+    g_accts_tx_len = total;
+    g_accts_tx_status = 1;
+#endif
+}
+
+static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonblocking) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= (int64_t)sizeof(g_accts_tx_dir)) {
+        return -2;
+    }
+    if (nonblocking) {
+        if (accts_mu_trylock() != 0) {
+            return -1;
+        }
+    } else {
+        accts_mu_lock();
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+
+    char lock_path[4096];
+    join_dir_file(lock_path, sizeof(lock_path), dir_copy, (size_t)dir_len, ".accounts.lock");
+    if (lock_path[0] == '\0') {
+        accts_mu_unlock();
+        return -2;
+    }
+
+#ifdef _WIN32
+    wchar_t wdir[3840];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 3840) > 0) {
+        (void)CreateDirectoryW(wdir, NULL);
+    }
+    wchar_t wlock[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lock_path, -1, wlock, 4096) <= 0) {
+        accts_mu_unlock();
+        return -2;
+    }
+    HANDLE h = CreateFileW(
+        wlock,
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -81,71 +275,203 @@ int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
         FILE_ATTRIBUTE_NORMAL,
         NULL);
     if (h == INVALID_HANDLE_VALUE) {
+        accts_mu_unlock();
         return -2;
     }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof(ov));
-    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &ov)) {
+    DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | (nonblocking ? LOCKFILE_FAIL_IMMEDIATELY : 0);
+    if (!LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov)) {
         DWORD err = GetLastError();
         CloseHandle(h);
-        return (err == ERROR_LOCK_VIOLATION) ? -1 : -2;
+        accts_mu_unlock();
+        return (nonblocking && err == ERROR_LOCK_VIOLATION) ? -1 : -2;
     }
-    handle = (int64_t)(intptr_t)h;
+    g_accts_tx_lock_handle = h;
 #else
-    int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    (void)mkdir(dir_copy, 0700);
+    int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (fd < 0) {
+        accts_mu_unlock();
         return -2;
     }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    int op = LOCK_EX | (nonblocking ? LOCK_NB : 0);
+    while (flock(fd, op) != 0) {
         int e = errno;
+        if (!nonblocking && e == EINTR) {
+            continue;
+        }
         close(fd);
-        return (e == EWOULDBLOCK || e == EAGAIN) ? -1 : -2;
+        accts_mu_unlock();
+        return (nonblocking && (e == EWOULDBLOCK || e == EAGAIN)) ? -1 : -2;
     }
-    handle = (int64_t)fd;
+    g_accts_tx_lock_fd = fd;
 #endif
-    pthread_mutex_lock(&g_dir_lock_mu);
-    if (g_open_dir_lock_count >= MAX_OPEN_DIR_LOCKS) {
-        pthread_mutex_unlock(&g_dir_lock_mu);
-        dir_lock_close_raw(handle);
-        return -2;
-    }
-    g_open_dir_locks[g_open_dir_lock_count++] = handle;
-    pthread_mutex_unlock(&g_dir_lock_mu);
-    return handle;
+
+    memcpy(g_accts_tx_dir, dir_copy, (size_t)dir_len + 1);
+    g_accts_tx_dir_len = (size_t)dir_len;
+
+    char accts_path[4096];
+    join_dir_file(accts_path, sizeof(accts_path), g_accts_tx_dir, g_accts_tx_dir_len, "accounts");
+    accts_tx_read_file_locked(accts_path);
+
+    int64_t tx_id = atomic_fetch_add_explicit(&g_accts_tx_next_id, 1, memory_order_relaxed);
+    atomic_store_explicit(&g_accts_tx_active_id, tx_id, memory_order_release);
+    return tx_id;
 }
 
-void pion_core_dir_lock_release(int64_t handle) {
-    if (handle < 0) {
+int64_t pion_core_accounts_tx_begin(const char *dir, int64_t dir_len) {
+    return accts_tx_begin_impl(dir, dir_len, 0);
+}
+
+int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len) {
+    return accts_tx_begin_impl(dir, dir_len, 1);
+}
+
+int32_t pion_core_accounts_tx_status(int64_t tx_id) {
+    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
+        return -2;
+    }
+    return g_accts_tx_status;
+}
+
+const uint8_t *pion_core_accounts_tx_data(int64_t tx_id) {
+    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
+        return NULL;
+    }
+    return g_accts_tx_status == 1 ? g_accts_tx_buf : NULL;
+}
+
+int64_t pion_core_accounts_tx_len(int64_t tx_id) {
+    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
+        return 0;
+    }
+    return g_accts_tx_status == 1 ? (int64_t)g_accts_tx_len : 0;
+}
+
+int32_t pion_core_accounts_tx_commit(int64_t tx_id, const uint8_t *bytes, int64_t len) {
+    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
+        return -1;
+    }
+    if (len < 0 || (len > 0 && bytes == NULL)) {
+        return -1;
+    }
+    char accts_path[4096];
+    join_dir_file(accts_path, sizeof(accts_path), g_accts_tx_dir, g_accts_tx_dir_len, "accounts");
+    char tmp_name[128];
+#ifdef _WIN32
+    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%lu.%lld",
+             (unsigned long)GetCurrentProcessId(), (long long)tx_id);
+#else
+    snprintf(tmp_name, sizeof(tmp_name), "accounts.partial.%ld.%lld",
+             (long)getpid(), (long long)tx_id);
+#endif
+    char tmp_path[4096];
+    join_dir_file(tmp_path, sizeof(tmp_path), g_accts_tx_dir, g_accts_tx_dir_len, tmp_name);
+    if (accts_path[0] == '\0' || tmp_path[0] == '\0') {
+        return -1;
+    }
+
+#ifdef _WIN32
+    wchar_t wtmp[4096];
+    wchar_t wdst[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wdst, 4096) <= 0) {
+        return -1;
+    }
+    (void)DeleteFileW(wtmp);
+    HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        DWORD wrote = 0;
+        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            (void)DeleteFileW(wtmp);
+            return -1;
+        }
+        off += (size_t)wrote;
+    }
+    if (!FlushFileBuffers(h)) {
+        CloseHandle(h);
+        (void)DeleteFileW(wtmp);
+        return -1;
+    }
+    CloseHandle(h);
+    if (!MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        (void)DeleteFileW(wtmp);
+        return -1;
+    }
+    return 0;
+#else
+    (void)unlink(tmp_path);
+    int fd = open(tmp_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        ssize_t n = write(fd, bytes + off, (size_t)len - off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            (void)unlink(tmp_path);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, accts_path) != 0) {
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    int dfd = open(g_accts_tx_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        (void)close(dfd);
+    }
+    return 0;
+#endif
+}
+
+void pion_core_accounts_tx_end(int64_t tx_id) {
+    if (tx_id <= 0 || atomic_load_explicit(&g_accts_tx_active_id, memory_order_acquire) != tx_id) {
         return;
     }
-    int found = 0;
-    pthread_mutex_lock(&g_dir_lock_mu);
-    for (int i = 0; i < g_open_dir_lock_count; i++) {
-        if (g_open_dir_locks[i] == handle) {
-            g_open_dir_locks[i] = g_open_dir_locks[--g_open_dir_lock_count];
-            found = 1;
-            break;
-        }
+    atomic_store_explicit(&g_accts_tx_active_id, 0, memory_order_release);
+    accts_tx_reset_buf();
+    g_accts_tx_dir[0] = '\0';
+    g_accts_tx_dir_len = 0;
+#ifdef _WIN32
+    if (g_accts_tx_lock_handle != INVALID_HANDLE_VALUE) {
+        HANDLE h = g_accts_tx_lock_handle;
+        g_accts_tx_lock_handle = INVALID_HANDLE_VALUE;
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
+        (void)CloseHandle(h);
     }
-    pthread_mutex_unlock(&g_dir_lock_mu);
-    if (found) {
-        dir_lock_close_raw(handle);
+#else
+    if (g_accts_tx_lock_fd >= 0) {
+        int fd = g_accts_tx_lock_fd;
+        g_accts_tx_lock_fd = -1;
+        (void)flock(fd, LOCK_UN);
+        (void)close(fd);
     }
-}
-
-void pion_core_dir_lock_release_all(void) {
-    int64_t to_close[MAX_OPEN_DIR_LOCKS];
-    int n = 0;
-    pthread_mutex_lock(&g_dir_lock_mu);
-    n = g_open_dir_lock_count;
-    for (int i = 0; i < n; i++) {
-        to_close[i] = g_open_dir_locks[i];
-    }
-    g_open_dir_lock_count = 0;
-    pthread_mutex_unlock(&g_dir_lock_mu);
-    for (int i = 0; i < n; i++) {
-        dir_lock_close_raw(to_close[i]);
-    }
+#endif
+    accts_mu_unlock();
 }
 
 void pion_core_log_warn(const char *msg, int64_t len) {
@@ -318,7 +644,6 @@ static void bridge_on_stop(void *user_ctx) {
     bsh_on_say(NULL, NULL);
     bsh_on_wake(NULL, NULL);
     pion_core_runtime_stop();
-    pion_core_dir_lock_release_all();
 }
 
 static int bridge_on_screen_ack(double call, double ts, void *user_ctx) {

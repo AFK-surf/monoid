@@ -5,6 +5,8 @@
 
 pub struct FrameOutbox[T] {
   mut queue : Array[T]
+  mut stamps : Array[Int]
+  mut stamp_fn : Option[(T) -> Int]
   wake_fn : () -> Unit
   mut asked : Bool
   mut wakes_count : Int
@@ -14,11 +16,20 @@ pub struct FrameOutbox[T] {
 pub fn FrameOutbox::new[T](wake : () -> Unit) -> FrameOutbox[T] {
   FrameOutbox::{
     queue: [],
+    stamps: [],
+    stamp_fn: None,
     wake_fn: wake,
     asked: false,
     wakes_count: 0,
     takes_count: 0,
   }
+}
+
+/// Configure an optional synchronous stamper run at enqueue time (`tell`) so consumers can bind
+/// each queued frame to its enqueue-time generation (e.g., workspace `authGen`) and reject
+/// pre-purge frames even if the workspace is later rejoined in the same turn.
+pub fn FrameOutbox::set_stamp_fn[T](self : FrameOutbox[T], f : (T) -> Int) -> Unit {
+  self.stamp_fn = Some(f)
 }
 
 fn FrameOutbox::ask[T](self : FrameOutbox[T]) -> Unit {
@@ -33,47 +44,97 @@ fn FrameOutbox::ask[T](self : FrameOutbox[T]) -> Unit {
 
 /// Enqueue a typed change for the next frame, coalescing wake requests.
 pub fn FrameOutbox::tell[T](self : FrameOutbox[T], change : T) -> Unit {
+  let st = match self.stamp_fn {
+    Some(f) => f(change)
+    None => 0
+  }
   self.queue.push(change)
+  self.stamps.push(st)
   self.ask()
 }
 
-/// Drain pending changes in FIFO order, taking at most `most` when specified.
+/// Drain pending changes with their enqueue-time stamps in FIFO order, taking at most `most`.
 /// If items remain, immediately requests the next frame.
-pub fn FrameOutbox::take[T](self : FrameOutbox[T], most : Option[Int] = None) -> Array[T] {
+pub fn FrameOutbox::take_stamped[T](self : FrameOutbox[T], most : Option[Int] = None) -> Array[(T, Int)] {
   self.asked = false
   self.takes_count += 1
   match most {
     Some(raw_m) => {
       if raw_m < self.queue.length() {
         let m = if raw_m < 0 { 0 } else { raw_m }
-        let out : Array[T] = []
+        let out : Array[(T, Int)] = []
         for i in 0..<m {
-          out.push(self.queue[i])
+          let s = if i < self.stamps.length() { self.stamps[i] } else { 0 }
+          out.push((self.queue[i], s))
         }
-        let rest : Array[T] = []
+        let rest_q : Array[T] = []
+        let rest_s : Array[Int] = []
         for i in m..<self.queue.length() {
-          rest.push(self.queue[i])
+          rest_q.push(self.queue[i])
+          let s = if i < self.stamps.length() { self.stamps[i] } else { 0 }
+          rest_s.push(s)
         }
-        self.queue = rest
+        self.queue = rest_q
+        self.stamps = rest_s
         self.ask()
         out
       } else {
-        let out = self.queue
+        let out : Array[(T, Int)] = []
+        for i in 0..<self.queue.length() {
+          let s = if i < self.stamps.length() { self.stamps[i] } else { 0 }
+          out.push((self.queue[i], s))
+        }
         self.queue = []
+        self.stamps = []
         out
       }
     }
     None => {
-      let out = self.queue
+      let out : Array[(T, Int)] = []
+      for i in 0..<self.queue.length() {
+        let s = if i < self.stamps.length() { self.stamps[i] } else { 0 }
+        out.push((self.queue[i], s))
+      }
       self.queue = []
+      self.stamps = []
       out
     }
+  }
+}
+
+/// Drain pending changes in FIFO order, taking at most `most` when specified.
+/// If items remain, immediately requests the next frame.
+pub fn FrameOutbox::take[T](self : FrameOutbox[T], most : Option[Int] = None) -> Array[T] {
+  let pairs = self.take_stamped(most=most)
+  let out : Array[T] = []
+  for i in 0..<pairs.length() {
+    out.push(pairs[i].0)
+  }
+  out
+}
+
+/// Keep only queued changes satisfying `keep`, dropping revoked/stale frames immediately.
+pub fn FrameOutbox::retain_where[T](self : FrameOutbox[T], keep : (T) -> Bool) -> Unit {
+  let next_q : Array[T] = []
+  let next_s : Array[Int] = []
+  for i in 0..<self.queue.length() {
+    if keep(self.queue[i]) {
+      next_q.push(self.queue[i])
+      let s = if i < self.stamps.length() { self.stamps[i] } else { 0 }
+      next_s.push(s)
+    }
+  }
+  self.queue = next_q
+  self.stamps = next_s
+  if self.queue.length() == 0 {
+    self.asked = false
   }
 }
 
 /// Discard all queued changes without waking or delivering them (used on logout / account switch).
 pub fn FrameOutbox::clear[T](self : FrameOutbox[T]) -> Unit {
   self.queue = []
+  self.stamps = []
   self.asked = false
 }
 

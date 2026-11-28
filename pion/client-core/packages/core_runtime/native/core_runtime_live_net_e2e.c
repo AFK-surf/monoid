@@ -270,7 +270,9 @@ static void *handle_client_thread(void *arg) {
         assert(strstr(body, "\"code_verifier\":\"") != NULL);
         assert(strstr(body, "\"redirect_uri\":\"stillfail://auth/callback\"") != NULL);
         atomic_fetch_add(&g_srv.got_auth_token, 1);
-        if (strstr(body, "\"code\":\"live_oauth_code_slow_cancel\"") != NULL) {
+        if (strstr(body, "\"code\":\"live_oauth_code_slow_cancel\"") != NULL ||
+            strstr(body, "\"code\":\"live_oauth_code_slow_alice\"") != NULL) {
+            int is_alice = strstr(body, "\"code\":\"live_oauth_code_slow_alice\"") != NULL;
             pthread_mutex_lock(&g_srv.mu);
             g_srv.slow_token_entered = 1;
             pthread_cond_broadcast(&g_srv.cv);
@@ -278,12 +280,21 @@ static void *handle_client_thread(void *arg) {
                 pthread_cond_wait(&g_srv.cv, &g_srv.mu);
             }
             pthread_mutex_unlock(&g_srv.mu);
-            send_http_json(
-                fd,
-                200,
-                "OK",
-                "{\"access_token\":\"acc-slow-1\",\"refresh_token\":\"ref-slow-1\","
-                "\"subject\":\"u-slow\",\"email\":\"slow@still.fail\",\"name\":\"Slow\",\"expires_at\":1900000000}");
+            if (is_alice) {
+                send_http_json(
+                    fd,
+                    200,
+                    "OK",
+                    "{\"access_token\":\"acc-alice-cancelled\",\"refresh_token\":\"ref-alice-cancelled\","
+                    "\"subject\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"expires_at\":1900000000}");
+            } else {
+                send_http_json(
+                    fd,
+                    200,
+                    "OK",
+                    "{\"access_token\":\"acc-slow-1\",\"refresh_token\":\"ref-slow-1\","
+                    "\"subject\":\"u-slow\",\"email\":\"slow@still.fail\",\"name\":\"Slow\",\"expires_at\":1900000000}");
+            }
         } else if (strstr(body, "\"code\":\"live_oauth_code_bob\"") != NULL) {
             send_http_json(
                 fd,
@@ -800,6 +811,135 @@ int main(void) {
     send_json("{\"id\":407,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
     wait_for_matching_msg(&g_host, "\"id\":407,", "persisted-alice-draft", 10);
     assert(!file_exists(default_db_path));
+
+    // ── PHASE 8 (R5 Primitives A & B): Same-account re-login cancel preserves disk tuple +
+    //    Active account A + sibling B -> A 401 -> A re-login puts A at index 0, groups workspaces
+    //    under A, default auth.refresh targets A, and restart opens account-u-live.db! ──
+    printf("[live_net_e2e] Phase 8: same-account re-login cancel preservation & active account [A, B] ordering\n");
+    {
+        // 8a. Re-login of SAME signed-in account `u-live` interrupted by `auth.cancel` MUST preserve `ref-exchanged-42`!
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_token_entered = 0;
+        g_srv.slow_token_release = 0;
+        pthread_mutex_unlock(&g_srv.mu);
+
+        send_json("{\"id\":501,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_re_b = wait_for_matching_msg(&g_host, "\"id\":501,", "\"state\":\"", 10);
+        const char *rsp = strstr(m_re_b, "\"state\":\"");
+        assert(rsp != NULL);
+        rsp += 9;
+        char re_state[128];
+        size_t ri = 0;
+        while (rsp[ri] != '\0' && rsp[ri] != '"' && ri + 1 < sizeof(re_state)) {
+            re_state[ri] = rsp[ri];
+            ri++;
+        }
+        re_state[ri] = '\0';
+        char re_complete[512];
+        snprintf(re_complete, sizeof(re_complete),
+                 "{\"id\":502,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_slow_alice\"}}",
+                 re_state);
+        send_json(re_complete);
+        pthread_mutex_lock(&g_srv.mu);
+        while (!g_srv.slow_token_entered) {
+            pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+        }
+        pthread_mutex_unlock(&g_srv.mu);
+        send_json("{\"id\":503,\"call\":\"auth.cancel\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":503,", "\"ok\":", 10);
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_token_release = 1;
+        pthread_cond_broadcast(&g_srv.cv);
+        pthread_mutex_unlock(&g_srv.mu);
+        wait_for_matching_msg(&g_host, "\"id\":502,", "login_expired", 10);
+
+        // Disk `accounts` MUST still contain `u-live` with original `ref-exchanged-42`!
+        char accts_path[256];
+        snprintf(accts_path, sizeof(accts_path), "%s/accounts", data_dir);
+        FILE *af = fopen(accts_path, "r");
+        assert(af != NULL);
+        char abuf[2048];
+        size_t an = fread(abuf, 1, sizeof(abuf) - 1, af);
+        fclose(af);
+        abuf[an] = '\0';
+        assert(strstr(abuf, "\"sub\":\"u-live\"") != NULL && strstr(abuf, "\"refresh\":\"ref-exchanged-42\"") != NULL);
+        assert(strstr(abuf, "ref-alice-cancelled") == NULL);
+
+        // 8b. Seed sibling Bob alongside active Alice on disk (`[u-live, u-bob]`), restart,
+        //     401-remove Alice (leaving `[u-bob]` on disk), then re-login as Alice:
+        //     Alice MUST be persisted at index 0 (`[u-live, u-bob]`), workspaces MUST belong to Alice,
+        //     and cold restart MUST open `account-u-live.db`!
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+        assert(atomic_load(&g_host.post_stop_count) == 0);
+
+        af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+              "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"},"
+              "{\"sub\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"picture\":\"\","
+              "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FBW\"}]", af);
+        fclose(af);
+
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+
+        // Default `auth.refresh` (no `sub` param!) MUST target active Alice (`u-live`), removing Alice & leaving `[u-bob]`:
+        send_json("{\"id\":504,\"call\":\"auth.refresh\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":504,", "\"error\"", 10);
+
+        // Now Alice re-logs in while `[u-bob]` is on disk:
+        send_json("{\"id\":505,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_a2_b = wait_for_matching_msg(&g_host, "\"id\":505,", "\"state\":\"", 10);
+        const char *a2p = strstr(m_a2_b, "\"state\":\"");
+        assert(a2p != NULL);
+        a2p += 9;
+        char a2_state[128];
+        size_t a2i = 0;
+        while (a2p[a2i] != '\0' && a2p[a2i] != '"' && a2i + 1 < sizeof(a2_state)) {
+            a2_state[a2i] = a2p[a2i];
+            a2i++;
+        }
+        a2_state[a2i] = '\0';
+        char a2_complete[512];
+        snprintf(a2_complete, sizeof(a2_complete),
+                 "{\"id\":506,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_42\"}}",
+                 a2_state);
+        send_json(a2_complete);
+        wait_for_matching_msg(&g_host, "\"id\":506,", "\"email\":\"alice@still.fail\"", 10);
+
+        // Verify disk `accounts` has `u-live` BEFORE `u-bob` (index 0 == active account)!
+        af = fopen(accts_path, "r");
+        assert(af != NULL);
+        an = fread(abuf, 1, sizeof(abuf) - 1, af);
+        fclose(af);
+        abuf[an] = '\0';
+        const char *pos_alice = strstr(abuf, "\"sub\":\"u-live\"");
+        const char *pos_bob = strstr(abuf, "\"sub\":\"u-bob\"");
+        assert(pos_alice != NULL && pos_bob != NULL && pos_alice < pos_bob);
+
+        // Subscribe `workspaces` and verify WS1 belongs to `u-live` (NOT `u-bob`)!
+        send_json("{\"id\":507,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
+        char *m_ws_grp = wait_for_matching_msg(&g_host, "\"id\":507,", WS1_ID, 10);
+        const char *grp_alice = strstr(m_ws_grp, "\"sub\":\"u-live\"");
+        const char *grp_ws1 = strstr(m_ws_grp, WS1_ID);
+        const char *grp_bob = strstr(m_ws_grp, "\"sub\":\"u-bob\"");
+        assert(grp_alice != NULL && grp_ws1 != NULL && grp_bob != NULL && grp_alice < grp_ws1 && grp_ws1 < grp_bob);
+
+        // Restart cleanly and verify cold restart opens `account-u-live.db` (Alice's draft survives)!
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+        assert(atomic_load(&g_host.post_stop_count) == 0);
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":508,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":508,", "persisted-alice-draft", 10);
+        printf("[live_net_e2e] Phase 8 PASSED (active [A,B] ordering + same-account cancel preservation + restart account-A.db)\n");
+    }
 
     atomic_store(&g_host.stopped, 1);
     mb_core_stop();
