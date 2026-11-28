@@ -317,3 +317,74 @@ test("a put whose start could not ask the account asks it again on its next trie
   assert.equal(readFileSync(join(bucket, "android_stillfail-beta-8300.apk"), "utf8"), "apk");
   assert.equal(readFileSync(`${log}.accounts`, "utf8").trim(), "3");
 });
+
+// When STILLFAIL_STAGED_LIST is set, release-put.sh records staged keys instead of deleting them inline so a partial
+// put (e.g. desktop-build failed on attempt 1) leaves both staged files and handover tars available for a `--failed`
+// rerun of put, and a final `--drop` removes them all once every sibling release job succeeds.
+test("STILLFAIL_STAGED_LIST defers staged deletion so a rerun of put still takes staged files back before final --drop", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "release-staged-list-test-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const bin = join(tmp, "bin");
+  const bucket = join(tmp, "bucket");
+  mkdirSync(bin);
+  mkdirSync(bucket);
+  writeFileSync(join(bin, "curl"), `#!/bin/sh
+out= upload= method=GET url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) shift; out=$1 ;; -T) shift; upload=$1 ;; -X) shift; method=$1 ;; https://*) url=$1 ;; esac
+  shift
+done
+object="$FAKE_BUCKET/$(printf %s "\${url#*/objects/}" | tr / _)"
+if [ -n "$upload" ]; then cp "$upload" "$object"
+elif [ "$method" = DELETE ]; then rm "$object"
+elif [ -n "$out" ]; then [ -f "$object" ] || exit 22; cp "$object" "$out"
+fi
+`);
+  writeFileSync(join(bin, "pnpm"), "#!/bin/sh\nexit 1\n");
+  writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n");
+  for (const name of ["curl", "pnpm", "sleep"]) chmodSync(join(bin, name), 0o755);
+  const run = (extraEnv: Record<string, string>, ...args: string[]) => spawnSync("sh", [join(root, "scripts/release-put.sh"), ...args], {
+    cwd: root, encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: "fake", CLOUDFLARE_ACCOUNT_ID: "fake",
+      STILLFAIL_DIRECT_DNS: "", FAKE_BUCKET: bucket, ...extraEnv },
+  });
+
+  const made = join(tmp, "made");
+  mkdirSync(join(made, "beta"), { recursive: true });
+  writeFileSync(join(made, "beta/stillfail-station-linux-x64.tar.gz"), "archive");
+  writeFileSync(join(made, "station-beta.json"), '{"build":1}');
+
+  let result = run({}, "--stage", made);
+  assert.equal(result.status, 0, result.stderr);
+  const stagedKey = readFileSync(join(made, "beta/stillfail-station-linux-x64.tar.gz.staged"), "utf8").trim();
+  result = run({}, "--hand", made);
+  assert.equal(result.status, 0, result.stderr);
+  const handKey = result.stdout.trim().split("\n").at(-1)!;
+
+  // Attempt 1 (partial release): STILLFAIL_STAGED_LIST defers staged deletion; caller skips --drop.
+  const list1 = join(tmp, "staged-keys-1");
+  const dir1 = join(tmp, "attempt-1");
+  result = run({}, "--unhand", dir1, handKey);
+  assert.equal(result.status, 0, result.stderr);
+  result = run({ STILLFAIL_STAGED_LIST: list1 }, dir1);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(bucket, "beta_stillfail-station-linux-x64.tar.gz"), "utf8"), "archive");
+  assert.equal(readFileSync(join(bucket, "station-beta.json"), "utf8"), '{"build":1}');
+  assert.equal(readFileSync(list1, "utf8").trim(), stagedKey);
+  assert.equal(existsSync(join(bucket, stagedKey.replaceAll("/", "_"))), true, "staged archive kept for rerun");
+  assert.equal(existsSync(join(bucket, handKey.replaceAll("/", "_"))), true, "handover tar kept for rerun");
+
+  // Attempt 2 (--failed rerun): unhand and release-put both still succeed without 404, then final --drop cleans all.
+  const list2 = join(tmp, "staged-keys-2");
+  const dir2 = join(tmp, "attempt-2");
+  result = run({}, "--unhand", dir2, handKey);
+  assert.equal(result.status, 0, result.stderr);
+  result = run({ STILLFAIL_STAGED_LIST: list2 }, dir2);
+  assert.equal(result.status, 0, result.stderr);
+  const dropKeys = [handKey, ...readFileSync(list2, "utf8").trim().split("\n").filter(Boolean)];
+  result = run({}, "--drop", ...dropKeys);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(bucket, stagedKey.replaceAll("/", "_"))), false);
+  assert.equal(existsSync(join(bucket, handKey.replaceAll("/", "_"))), false);
+});

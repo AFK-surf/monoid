@@ -15,6 +15,8 @@
 # station's archives: scripts/release-deltas.ts); a put after takes the marker as taken, and deletes the staged copy.
 # STILLFAIL_UNSTAGE_MATCH=<words>: only the files whose names have them (a deltas-station job's own platform's
 # package, not the other three's, ~135 MB), the other markers left as they are.
+# STILLFAIL_STAGED_LIST=<path>: append staged keys to <path> instead of deleting them inline, so a caller (CI put)
+# drops them only after the whole job and its sibling release jobs succeed (leaving --failed reruns intact).
 #   release-put.sh [--files | --feeds | --stage | --unstage] <dir>…
 #   release-put.sh --hand <dir> | --unhand <dir> <name>… | --drop <name>…
 #   release-put.sh --clean-uploaded <name> <local copy>
@@ -241,4 +243,8 @@ for dir in "$@"; do
     for pid in $pids; do wait "$pid" || { echo "not all of $dir was put" >&2; exit 1; }; done
   done
 done
-for key in $staged; do drop "$key" || echo "deleting $key failed: scripts/release-prune.ts deletes it in two days" >&2; done
+if [ -n "${STILLFAIL_STAGED_LIST:-}" ]; then
+  for key in $staged; do printf '%s\n' "$key" >> "$STILLFAIL_STAGED_LIST"; done
+else
+  for key in $staged; do drop "$key" || echo "deleting $key failed: scripts/release-prune.ts deletes it in two days" >&2; done
+fi

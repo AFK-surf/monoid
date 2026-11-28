@@ -2283,13 +2283,14 @@ jobs:
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
       - if: github.ref == 'refs/heads/main'
         run: bash scripts/git-history.sh main
-      # Leave 42 s before JOB_END, which already leaves 5 s before the job timeout.
-      # Job 136144444377 took 44 s after the build: bundle 29 s, upload 5 s, cache save 6 s and cleanup 4 s.
-      # GitHub cancelled it during Complete job with the artifact and cache already saved.
+      # Leave 30 s before JOB_END, which already leaves 5 s before the job timeout.
+      # Bundle + upload now take 18-20 s (140875637141, 140884789818) and post-success cache saves are guarded below
+      # (14 s for STORE_KEY, 20 s for MOON_KEY); on a cut build upload is skipped and stop + both cache saves + cleanup
+      # take ~21 s (140889373930 was cut at 975/1015 units with reserve=42 and exited 25 s before 5 m).
       - name: Finish the Mac app build
         id: finish
         run: |
-          reserve=42
+          reserve=30
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
@@ -2379,7 +2380,7 @@ jobs:
             # (the app built, bundled and handed over: its store not saved where too little is left for it, rather
             # than the save carrying the job past its five minutes, its release skipped; a cut build's is always saved)
             left=$(( JOB_END - $(date +%s) ))
-            [ "$left" -ge 10 ] || { echo "the store not saved: ${left} s left"; exit 0; }
+            [ "$left" -ge 14 ] || { echo "the store not saved: ${left} s left"; exit 0; }
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
             # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
@@ -3026,11 +3027,10 @@ jobs:
         name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
+          STILLFAIL_STAGED_LIST: ${{ runner.temp }}/staged-keys
         run: |
+          rm -f "$STILLFAIL_STAGED_LIST"
           sh scripts/release-put.sh "$RUNNER_TEMP/release"
-          # shellcheck disable=SC2086 # names, one word each
-          [ -z "$(echo $HANDED)" ] || sh scripts/release-put.sh --drop $HANDED
       # monoid's cloud reads its own account's bucket, and answers for still.fail too once CLOUD_MOVED is on: the same
       # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13). Both side by
       # side, each with its own account's token. Put before telling the clouds so stations and apps woken by
@@ -3053,6 +3053,20 @@ jobs:
       - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
         if: ${{ !cancelled() && steps.put-releases.outcome == 'success' }}
         run: sh scripts/release-told.sh https://app.still.fail
+      # Drop staged handovers and station archives only once put and every sibling release/delta job succeeded: when a
+      # sibling (e.g. desktop-build) fails on attempt 1, attempt 1's put publishes the other parts without deleting
+      # their staged/hand-*.tar objects, so a `--failed` rerun of the missing part does not 404 in `--unhand` (main
+      # 46115801267, 2026-11-28). Unrerun staged objects are still pruned after 2 days by scripts/release-prune.ts.
+      - name: Drop staged handovers
+        if: ${{ success() && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-station.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-android.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-desktop.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-desktop-win.result) }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
+        run: |
+          keys="$HANDED"
+          [ ! -f "$RUNNER_TEMP/staged-keys" ] || keys="$keys $(tr '\n' ' ' < "$RUNNER_TEMP/staged-keys")"
+          # shellcheck disable=SC2086 # names, one word each
+          [ -z "$(echo $keys)" ] || sh scripts/release-put.sh --drop $keys
 
   # Old installers and beta blockmaps deleted (scripts/release-prune.ts says which stay), after put and beside done and
   # station-update, never before them: the release is put and told by then, and an old file Cloudflare's API would not
