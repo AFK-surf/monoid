@@ -16,7 +16,9 @@ import "sql_db"
 import "station_api"
 import "station_browser"
 import "station_jobs"
+import "station_ops"
 import "station_screens"
+import "station_store"
 import "station_sys"
 
 // ============================================================================
@@ -291,18 +293,112 @@ fn signin_theirs(
   Ok(ask)
 }
 
-/// Handles `signins.fill`, `signins.self`, and `signins.deny` (1:1 with `station/src/vault/signin.ts`).
+fn signin_save_raw_json(db : sql_db::Db, a : SignInAskRecord, raw_obj : base_codec::Json, close_card : Bool) -> Result[Unit, String] {
+  match ensure_signin_asks_schema(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let updated = json_obj_set(
+    json_obj_set(raw_obj, "status", Some(base_codec::json_str(a.status))),
+    "why",
+    match a.why {
+      Some(w) => Some(base_codec::json_str(w))
+      None => None
+    },
+  )
+  let body_str = base_codec::json_stringify(updated)
+  let thread_opt = ro_json_i64_field(updated, "thread")
+  let card_ts_opt = json_field_str(updated, "cardTs")
+  match (thread_opt, card_ts_opt) {
+    (Some(tid), Some(cts)) if tid > 0L && cts.length() > 0 => {
+      let outcome_fs : Array[(String, base_codec::Json)] = [("status", base_codec::json_str(a.status))]
+      match a.why { Some(w) => outcome_fs.push(("why", base_codec::json_str(w))), None => () }
+      match json_field_str(updated, "said") { Some(s) => outcome_fs.push(("said", base_codec::json_str(s))), None => () }
+      match json_field_bool(updated, "keep") { Some(k) => outcome_fs.push(("keep", base_codec::json_bool(k))), None => () }
+      match json_field_str(updated, "save") { Some(s) => outcome_fs.push(("save", base_codec::json_str(s))), None => () }
+      match json_field_str(updated, "kept") { Some(s) => outcome_fs.push(("kept", base_codec::json_str(s))), None => () }
+      let outcome_json = base_codec::json_stringify(base_codec::json_obj(outcome_fs))
+      match station_store::save_with_card_outcome(
+        db,
+        tid,
+        cts,
+        a.session,
+        "signin",
+        close_card,
+        outcome_json,
+        fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+          match txdb.run(
+            "INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?1, ?2, ?3, ?4, ?5) " +
+            "ON CONFLICT (id) DO UPDATE SET status = excluded.status, body = excluded.body",
+            [
+              base_codec::json_str(a.id),
+              base_codec::json_str(a.session),
+              base_codec::json_str(ro_ascii_lower(a.owner)),
+              base_codec::json_str(a.status),
+              base_codec::json_str(body_str),
+            ],
+          ) {
+            Ok(_) => Ok(())
+            Err(e) => Err(e)
+          }
+        },
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    }
+    _ => match db.run(
+      "INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?1, ?2, ?3, ?4, ?5) " +
+      "ON CONFLICT (id) DO UPDATE SET status = excluded.status, body = excluded.body",
+      [
+        base_codec::json_str(a.id),
+        base_codec::json_str(a.session),
+        base_codec::json_str(ro_ascii_lower(a.owner)),
+        base_codec::json_str(a.status),
+        base_codec::json_str(body_str),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+  }
+}
+
+fn signin_get_with_raw(db : sql_db::Db, id : String) -> Option[(SignInAskRecord, base_codec::Json)] {
+  match ensure_signin_asks_schema(db) {
+    Ok(_) => ()
+    Err(_) => return None
+  }
+  match db.first("SELECT body FROM signin_asks WHERE id = ?1", [base_codec::json_str(id)]) {
+    Ok(Some(row)) => match row.get("body") {
+      Some(base_codec::Json::Str(s)) => match base_codec::json_parse(s) {
+        base_codec::JsonParseResult::Ok(j) => match signin_ask_from_json(j) {
+          Some(a) => Some((a, j))
+          None => None
+        }
+        _ => None
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+/// Handles `signins.self` and `signins.deny` (1:1 with `station/src/vault/signin.ts`).
+/// `signins.fill` returns honest 501 until real async CDP autofill is wired (never accepts or stores plaintext passwords).
 pub fn dispatch_signins_interactive(
   store : SignInAsksStore,
   db : sql_db::Db,
   session_ws_of : (String) -> Option[String],
   notify_session : (String, String) -> Unit,
-  form_port_of : (String, String) -> Option[station_browser::SignInFormPort],
   op : String,
   params : Array[String],
   body : base_codec::Json,
   now_ms : Int64,
 ) -> Result[base_codec::Json, station_api::ApiError] {
+  if op == "signins.fill" {
+    return Err(err_not_implemented(op))
+  }
   let id = if params.length() > 0 { params[0] } else { "" }
   if id.length() == 0 {
     return Err(signin_refused_error("no such sign-in"))
@@ -312,95 +408,27 @@ pub fn dispatch_signins_interactive(
   if viewer_email.length() == 0 {
     return Err(signin_refused_error("only the person the chat's agent works for signs it in"))
   }
-  let ask = match signin_theirs(store, db, session_ws_of, viewer_email, viewer_ws, id, now_ms) {
-    Ok(a) => a
-    Err(e) => return Err(e)
+  let (ask, raw_obj) = match signin_get_with_raw(db, id) {
+    Some(pair) => pair
+    None => return Err(signin_refused_error("no such sign-in"))
   }
-
-  if op == "signins.fill" {
-    if ask.status == "filling" {
-      return Err(signin_refused_error("the sign-in is being filled"))
-    }
-    let clean_field = fn(k : String) -> Option[String] {
-      match json_field_str(body, k) {
-        Some(v) => if v.length() > 0 && v.to_bytes().length() <= SIGNIN_MAX_VALUE_LEN { Some(v) } else { None }
-        None => None
-      }
-    }
-    let given_user = clean_field("username")
-    let given_pass = clean_field("password")
-    let given_code = clean_field("code")
-    if given_user is None && given_pass is None && given_code is None {
-      return Err(signin_refused_error("nothing to fill: give username, password or code"))
-    }
-    let held = match store.held.get(id) {
-      Some(h) => h
-      None => HeldSignInCreds::{ username: None, password: None, code: None, used: Map::new() }
-    }
-    match given_user { Some(u) => held.username = Some(u), None => () }
-    match given_pass { Some(p) => held.password = Some(p), None => () }
-    match given_code {
-      Some(c) => {
-        held.used.remove("code")
-        held.code = Some(c)
-      }
-      None => ()
-    }
-    store.held.set(id, held)
-    match json_field_bool(body, "keep") {
-      Some(k) => ask.keep = Some(k)
-      None => ()
-    }
-    ask.status = "filling"
+  match session_ws_of(ask.session) {
+    Some(sws) => if sws != viewer_ws { return Err(signin_refused_error("no such sign-in")) }
+    None => return Err(signin_refused_error("no such sign-in"))
+  }
+  if ro_ascii_lower(ask.owner) != ro_ascii_lower(viewer_email) {
+    return Err(signin_refused_error("only the person the chat's agent works for signs it in"))
+  }
+  if !signin_is_open_status(ask.status) {
+    return Err(signin_refused_error("the sign-in is " + ask.status + " already"))
+  }
+  let now_secs = now_ms / 1000L
+  if ask.status == "pending" && ask.at + SIGNIN_PENDING_SECS < now_secs {
+    ask.status = "expired"
     ask.why = None
-    match store.save(db, ask) {
-      Ok(_) => ()
-      Err(e) => return Err(station_api::ApiError::new(500, e))
-    }
-    // Drive the form port if a live browser tab form is attached; otherwise hand off to person screen.
-    match form_port_of(ask.session, ask.tab) {
-      Some(port) => {
-        let values = station_browser::FormValues::{
-          username: held.username,
-          password: held.password,
-          code: held.code,
-        }
-        let driven = station_browser::drive_signin_form(port, ask.site, values, held.used, fn(_ms : Int64) -> Unit { () })
-        match driven {
-          station_browser::Driven::Code => {
-            ask.status = "code"
-            ask.why = None
-            let _ = store.save(db, ask)
-          }
-          station_browser::Driven::Person(why) => {
-            let why_s = match why {
-              station_browser::DrivenWhy::Blocked => "blocked"
-              station_browser::DrivenWhy::Refused => "refused"
-              station_browser::DrivenWhy::Stuck => "stuck"
-              station_browser::DrivenWhy::Elsewhere => "elsewhere"
-            }
-            ask.status = "person"
-            ask.why = Some(why_s)
-            let _ = store.save(db, ask)
-          }
-          station_browser::Driven::Left => {
-            ask.status = "left"
-            ask.why = None
-            let _ = store.save(db, ask)
-            notify_session(
-              ask.session,
-              "The sign-in form of " + ask.site + " on tab " + ask.tab + " was filled and sent, and the page has left its sign-in.",
-            )
-          }
-        }
-      }
-      None => {
-        ask.status = "person"
-        ask.why = Some("stuck")
-        let _ = store.save(db, ask)
-      }
-    }
-    return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    let _ = signin_save_raw_json(db, ask, raw_obj, true)
+    store.held.remove(id)
+    return Err(signin_refused_error("the sign-in was let go (a day undecided)"))
   }
 
   if op == "signins.self" {
@@ -408,14 +436,14 @@ pub fn dispatch_signins_interactive(
     if !done {
       ask.status = "person"
       ask.why = Some("self")
-      match store.save(db, ask) {
+      match signin_save_raw_json(db, ask, raw_obj, false) {
         Ok(_) => return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
         Err(e) => return Err(station_api::ApiError::new(500, e))
       }
     }
     ask.status = "left"
     ask.why = None
-    match store.save(db, ask) {
+    match signin_save_raw_json(db, ask, raw_obj, false) {
       Ok(_) => {
         notify_session(
           ask.session,
@@ -431,7 +459,7 @@ pub fn dispatch_signins_interactive(
     ask.status = "denied"
     ask.why = None
     store.held.remove(id)
-    match store.save(db, ask) {
+    match signin_save_raw_json(db, ask, raw_obj, true) {
       Ok(_) => {
         notify_session(ask.session, ask.owner + " chose not to sign in to " + ask.site + " (" + ask.id + ").")
         return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
@@ -565,7 +593,7 @@ fn migrate_projects_jsonl_rename_merge(
   (out, changed)
 }
 
-fn rewrite_preset_projects_json(raw_json : String, from_name : String, to_name : String) -> Option[String] {
+fn rewrite_preset_projects_json(raw_json : String, from_name : String, to_name : String, renamed_at~ : Int64 = 0L) -> Option[String] {
   let j = match base_codec::json_parse(raw_json) {
     base_codec::JsonParseResult::Ok(v) => v
     _ => return None
@@ -577,6 +605,23 @@ fn rewrite_preset_projects_json(raw_json : String, from_name : String, to_name :
       for i in 0..<entries.length() {
         let (k, v) = entries[i]
         match v {
+          // Production object format: `{ project, rev, at, ren? }`
+          base_codec::Json::Obj(_) => {
+            match json_field_str(v, "project") {
+              Some(p) if p == from_name => {
+                changed = true
+                let next_p : base_codec::Json = if to_name.length() > 0 { base_codec::json_str(to_name) } else { base_codec::json_str("") }
+                let updated_obj = json_obj_set(
+                  json_obj_set(v, "project", Some(next_p)),
+                  "ren",
+                  if renamed_at > 0L { Some(base_codec::json_int64(renamed_at)) } else { None },
+                )
+                out.push((k, updated_obj))
+              }
+              _ => out.push((k, v))
+            }
+          }
+          // Legacy plain string format
           base_codec::Json::Str(s) => {
             if s == from_name {
               changed = true
@@ -626,18 +671,34 @@ pub fn execute_project_rename_merge(
   let op_key : Option[String] = match idem_key {
     Some(k) => {
       let tk = k.trim()
-      if tk.length() > 0 { Some(action + "\u{0000}" + tk) } else { None }
+      if tk.length() == 0 {
+        None
+      } else if tk.contains("\u{0000}") {
+        Some(tk)
+      } else {
+        Some(action + "\u{0000}" + tk)
+      }
     }
     None => None
   }
-  // 1. Check idempotency key in `project_rename_events`
+  // 1. Check viewer-scoped idempotency key in `project_rename_op_keys` / `project_rename_events`
   match op_key {
     Some(ok_str) => {
-      match st.db.first(
-        "SELECT action, from_name, to_name FROM project_rename_events WHERE workspace = ?1 AND op_key = ?2 LIMIT 1",
+      let prev_row_opt = match st.db.first(
+        "SELECT e.action, e.from_name, e.to_name, e.local_updated FROM project_rename_op_keys k JOIN project_rename_events e ON e.seq = k.event_seq WHERE k.workspace = ?1 AND k.op_key = ?2 LIMIT 1",
         [base_codec::json_str(ws), base_codec::json_str(ok_str)],
       ) {
-        Ok(Some(row)) => {
+        Ok(Some(row)) => Some(row)
+        _ => match st.db.first(
+          "SELECT action, from_name, to_name, local_updated FROM project_rename_events WHERE workspace = ?1 AND op_key = ?2 LIMIT 1",
+          [base_codec::json_str(ws), base_codec::json_str(ok_str)],
+        ) {
+          Ok(Some(row)) => Some(row)
+          _ => None
+        }
+      }
+      match prev_row_opt {
+        Some(row) => {
           let prev_act = match row.get("action") { Some(base_codec::Json::Str(s)) => s, _ => "" }
           let prev_from = match row.get("from_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
           let prev_to = match row.get("to_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
@@ -655,10 +716,21 @@ pub fn execute_project_rename_merge(
             ("peers", base_codec::json_arr([])),
           ]))
         }
-        _ => ()
+        None => ()
       }
     }
     None => ()
+  }
+
+  // 1b. Reject if there is an unfinished rename/merge originating from `from_name` (hasUnfinishedRenameFrom -> 409)
+  match st.db.first(
+    "SELECT 1 AS hit FROM project_rename_events WHERE workspace = ?1 AND from_name = ?2 AND (pending_peers != '[]' OR pending_info != 0) LIMIT 1",
+    [base_codec::json_str(ws), base_codec::json_str(from_name)],
+  ) {
+    Ok(Some(_)) => {
+      return Err(station_api::ApiError::new(409, "a rename/merge from \"" + from_name + "\" is still pending"))
+    }
+    _ => ()
   }
 
   let fake_viewer = station_api::Viewer::{
@@ -677,6 +749,47 @@ pub fn execute_project_rename_merge(
     Err(e) => return Err(e)
   }
 
+  let ws_scope_check_sql =
+  " (CASE" +
+  " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?2) = ?3)" +
+  " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?3 = ?2" +
+  " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?2) = ?3) END)"
+
+  // 1c. `assertKnownProject`: `from_name` must exist in `PROJECTS.jsonl`, local `threads`, or `preset_projects` (404)
+  let mut from_known = false
+  for i in 0..<parsed_info.entries.length() {
+    if parsed_info.entries[i].name == from_name {
+      from_known = true
+      break
+    }
+  }
+  if !from_known {
+    match st.db.first(
+      "SELECT 1 AS hit FROM threads WHERE project = ?1 AND" + ws_scope_check_sql + " LIMIT 1",
+      [base_codec::json_str(from_name), base_codec::json_str(home_ws), base_codec::json_str(ws)],
+    ) {
+      Ok(Some(_)) => from_known = true
+      _ => ()
+    }
+  }
+  if !from_known {
+    match st.db.all("SELECT json FROM preset_projects WHERE workspace = ?1", [base_codec::json_str(ws)]) {
+      Ok(prows) => {
+        for pi in 0..<prows.length() {
+          let raw = match prows[pi].get("json") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if !(rewrite_preset_projects_json(raw, from_name, to_name) is None) {
+            from_known = true
+            break
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  if !from_known {
+    return Err(station_api::ApiError::new(404, "unknown project \"" + from_name + "\""))
+  }
+
   // 2. For `rename`, reject if `to_name` already exists in local threads or PROJECTS.jsonl
   if action == "rename" {
     let mut exists_in_info = false
@@ -688,10 +801,7 @@ pub fn execute_project_rename_merge(
     }
     let mut exists_in_db = false
     match st.db.first(
-      "SELECT 1 AS hit FROM threads WHERE project = ?1 AND (CASE" +
-      " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?2) = ?3)" +
-      " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?3 = ?2" +
-      " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?2) = ?3) END) LIMIT 1",
+      "SELECT 1 AS hit FROM threads WHERE project = ?1 AND" + ws_scope_check_sql + " LIMIT 1",
       [base_codec::json_str(to_name), base_codec::json_str(home_ws), base_codec::json_str(ws)],
     ) {
       Ok(Some(_)) => exists_in_db = true
@@ -702,15 +812,31 @@ pub fn execute_project_rename_merge(
     }
   }
 
-  // 3. Atomic SQLite transaction: threads.project + preset_projects + monotonic project_rename_events
+  // 3. Atomic SQLite transaction: threads.project + preset_projects + monotonic project_rename_events + op_keys
   let updated_cell : Array[Int] = [0]
   let renamed_at_cell : Array[Int64] = [now_ms]
+  let event_seq_cell : Array[Int64] = [0L]
   let ws_scope_sql =
   " (CASE" +
   " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?3) = ?4)" +
   " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?4 = ?3" +
   " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?3) = ?4) END)"
   let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    // Strictly monotonic `renamed_at` per workspace
+    let mut last_at = 0L
+    match txdb.first(
+      "SELECT MAX(renamed_at) AS mx FROM project_rename_events WHERE workspace = ?1",
+      [base_codec::json_str(ws)],
+    ) {
+      Ok(Some(row)) => match row.get("mx") {
+        Some(base_codec::Json::Num(n, _)) => last_at = n.to_int64()
+        _ => ()
+      }
+      _ => ()
+    }
+    let eff_at = if now_ms > last_at { now_ms } else { last_at + 1L }
+    renamed_at_cell[0] = eff_at
+
     match txdb.first(
       "SELECT COUNT(*) AS cnt FROM threads WHERE project = ?1 AND" + ws_scope_sql,
       [
@@ -744,7 +870,7 @@ pub fn execute_project_rename_merge(
       Ok(_) => ()
       Err(e) => return Err(e)
     }
-    // Update carried `preset_projects` defaults pointing to `from_name`
+    // Update carried `preset_projects` defaults (handles both `{project, rev, at, ren?}` objects and legacy strings)
     match txdb.all(
       "SELECT sub, json FROM preset_projects WHERE workspace = ?1",
       [base_codec::json_str(ws)],
@@ -754,7 +880,7 @@ pub fn execute_project_rename_merge(
           let sub = match prows[pi].get("sub") { Some(base_codec::Json::Str(s)) => s, _ => "" }
           let raw = match prows[pi].get("json") { Some(base_codec::Json::Str(s)) => s, _ => "" }
           if sub.length() > 0 && raw.length() > 0 {
-            match rewrite_preset_projects_json(raw, from_name, to_name) {
+            match rewrite_preset_projects_json(raw, from_name, to_name, renamed_at=eff_at) {
               Some(next_json) => {
                 match txdb.run(
                   "UPDATE preset_projects SET json = ?1 WHERE workspace = ?2 AND sub = ?3",
@@ -771,26 +897,13 @@ pub fn execute_project_rename_merge(
       }
       Err(_) => ()
     }
-    // Strictly monotonic `renamed_at` per workspace
-    let mut last_at = 0L
-    match txdb.first(
-      "SELECT MAX(renamed_at) AS mx FROM project_rename_events WHERE workspace = ?1",
-      [base_codec::json_str(ws)],
-    ) {
-      Ok(Some(row)) => match row.get("mx") {
-        Some(base_codec::Json::Num(n, _)) => last_at = n.to_int64()
-        _ => ()
-      }
-      _ => ()
-    }
-    let eff_at = if now_ms > last_at { now_ms } else { last_at + 1L }
-    renamed_at_cell[0] = eff_at
     let op_key_val : base_codec::Json = match op_key {
       Some(s) => base_codec::json_str(s)
       None => base_codec::json_null()
     }
+    let op_id_str = "ren-" + eff_at.to_string()
     match txdb.run(
-      "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, op_key, local_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_info, local_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, '[]', 0, ?9)",
       [
         base_codec::json_str(ws),
         base_codec::json_str(action),
@@ -799,19 +912,44 @@ pub fn execute_project_rename_merge(
         sql_db::int64_to_json(eff_at),
         sql_db::int64_to_json(now_ms),
         op_key_val,
+        base_codec::json_str(op_id_str),
         base_codec::json_int(updated_cell[0]),
       ],
     ) {
-      Ok(_) => Ok(())
-      Err(e) => Err(e)
+      Ok(_) => ()
+      Err(e) => return Err(e)
     }
+    match txdb.first("SELECT last_insert_rowid() AS seq", []) {
+      Ok(Some(r)) => match r.get("seq") {
+        Some(base_codec::Json::Num(n, _)) => {
+          let seq = n.to_int64()
+          event_seq_cell[0] = seq
+          let _ = txdb.run(
+            "UPDATE project_rename_events SET origin_seq = ?1 WHERE seq = ?1",
+            [sql_db::int64_to_json(seq)],
+          )
+          match op_key {
+            Some(ok_s) => {
+              let _ = txdb.run(
+                "INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)",
+                [base_codec::json_str(ws), base_codec::json_str(ok_s), sql_db::int64_to_json(seq)],
+              )
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      _ => ()
+    }
+    Ok(())
   })
   match tx_res {
     Ok(_) => ()
     Err(e) => return Err(station_api::ApiError::new(500, e.message))
   }
 
-  // 4. Atomically update `PROJECTS.jsonl`
+  // 4. Atomically update `PROJECTS.jsonl`; mark `pending_info = 1` on write failure
   let (migrated_info, _) = migrate_projects_jsonl_rename_merge(parsed_info, from_name, to_name, renamed_at_cell[0])
   let mut info_error : Option[String] = None
   match station_api::serialize_projects_jsonl(migrated_info) {
@@ -828,12 +966,35 @@ pub fn execute_project_rename_merge(
     }
     Err(e) => info_error = Some(e)
   }
+  if !(info_error is None) && event_seq_cell[0] > 0L {
+    let _ = st.db.run(
+      "UPDATE project_rename_events SET pending_info = 1 WHERE seq = ?1",
+      [sql_db::int64_to_json(event_seq_cell[0])],
+    )
+  }
 
-  // 5. Cross-station peer sync hook & SSE notification
+  // 5. Cross-station peer sync hook, persist any pending peers, & SSE notification
   let peer_results = on_peer_sync(ws, action, from_name, to_name, renamed_at_cell[0])
   let peers_j : Array[base_codec::Json] = []
+  let pending_peer_ids : Array[base_codec::Json] = []
+  let mut remote_upd = 0
   for i in 0..<peer_results.length() {
-    peers_j.push(project_rename_peer_to_json(peer_results[i]))
+    let pr = peer_results[i]
+    peers_j.push(project_rename_peer_to_json(pr))
+    remote_upd = remote_upd + pr.updated
+    if pr.status != "ok" && pr.status != "rig" {
+      pending_peer_ids.push(base_codec::json_str(pr.id))
+    }
+  }
+  if event_seq_cell[0] > 0L && (pending_peer_ids.length() > 0 || remote_upd > 0) {
+    let _ = st.db.run(
+      "UPDATE project_rename_events SET pending_peers = ?1, remote_updated = ?2 WHERE seq = ?3",
+      [
+        base_codec::json_str(base_codec::json_stringify(base_codec::json_arr(pending_peer_ids))),
+        base_codec::json_int(remote_upd),
+        sql_db::int64_to_json(event_seq_cell[0]),
+      ],
+    )
   }
   ro_emit_projects_event(events, ws, now_ms)
 
@@ -1136,18 +1297,8 @@ pub fn parse_link_preview_html(html : String, final_url : String) -> base_codec:
   }
   let desc_opt = find_meta(["og:description", "description", "twitter:description"])
   let site_opt = find_meta(["og:site_name"])
-  let img_raw = find_meta(["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"])
-  let img_opt : Option[String] = match img_raw {
-    Some(raw) => match resolve_redirect_url(final_url, raw) {
-      Some(resolved) => match validate_link_preview_url(resolved) {
-        Ok(_) => Some(resolved)
-        Err(_) => None
-      }
-      None => None
-    }
-    None => None
-  }
 
+  // Never echo raw third-party remote `image` URLs directly (would leak client IP to third-party servers).
   let fields : Array[(String, base_codec::Json)] = [
     ("kind", base_codec::json_str("page")),
     ("url", base_codec::json_str(final_url)),
@@ -1155,7 +1306,6 @@ pub fn parse_link_preview_html(html : String, final_url : String) -> base_codec:
   ]
   match desc_opt { Some(d) => fields.push(("description", base_codec::json_str(lp_truncate(d, 300)))), None => () }
   match site_opt { Some(s) => fields.push(("site", base_codec::json_str(lp_truncate(s, 60)))), None => () }
-  match img_opt { Some(img) => fields.push(("image", base_codec::json_str(img))), None => () }
   base_codec::json_obj(fields)
 }
 
@@ -1223,7 +1373,7 @@ pub fn fetch_link_preview_with_ports(
       return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
     }
     let ct = ro_ascii_lower(resp.content_type)
-    if ct.length() > 0 && !ct.contains("text/html") && !ct.contains("application/xhtml") {
+    if !ct.contains("text/html") && !ct.contains("application/xhtml") {
       return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
     }
     let capped = if resp.body.length() > LINK_PREVIEW_MAX_BYTES {
@@ -1303,20 +1453,35 @@ pub fn prepare_feedback_notice_report(
         sess_prof = match srow.get("profile") { Some(base_codec::Json::Str(s)) => Some(s), _ => None }
         sess_model = match srow.get("model") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
         match st.db.first(
-          "SELECT detail FROM turns WHERE session = ?1 AND outcome = 'failed' ORDER BY ended_at DESC LIMIT 1",
-          [base_codec::json_str(sk)],
+          "SELECT detail FROM turns WHERE session_key = ?1 AND outcome = 'failed' AND ended_at >= ?2 AND ended_at <= ?3 ORDER BY ABS(ended_at - ?4) ASC LIMIT 1",
+          [
+            base_codec::json_str(sk),
+            sql_db::int64_to_json(entry_at - 600000L),
+            sql_db::int64_to_json(entry_at + 5000L),
+            sql_db::int64_to_json(entry_at),
+          ],
         ) {
           Ok(Some(trow)) => {
             match trow.get("detail") {
-              Some(base_codec::Json::Str(d)) if d.trim().length() > 0 => turn_detail = Some(d.trim())
+              Some(base_codec::Json::Str(d)) if d.trim().length() > 0 => {
+                turn_detail = Some(station_ops::scrub_text(d.trim(), home_dir))
+              }
               _ => ()
             }
           }
-          _ => ()
+          Ok(None) => ()
+          Err(e) => return Err(station_api::ApiError::new(500, e.message))
         }
       }
     }
-    _ => ()
+    Ok(None) => ()
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+
+  let scrubbed_entry_text = station_ops::scrub_text(entry_text, home_dir)
+  let scrubbed_log_tail : Option[String] = match log_tail {
+    Some(lt) => Some(station_ops::scrub_text(lt, home_dir))
+    None => None
   }
 
   let report = station_api::build_notice_report(station_api::NoticeReportInput::{
@@ -1324,7 +1489,7 @@ pub fn prepare_feedback_notice_report(
     thread_channel: t_channel,
     thread_ts: t_ts,
     entry_n: entry_n,
-    entry_text: entry_text,
+    entry_text: scrubbed_entry_text,
     entry_at_ms: entry_at,
     session_key: sess_key,
     session_ws: sess_ws,
@@ -1336,7 +1501,7 @@ pub fn prepare_feedback_notice_report(
     viewer_email: viewer.email,
     os: os_name,
     arch: arch_name,
-    log_tail: log_tail,
+    log_tail: scrubbed_log_tail,
     home: home_dir,
   })
   Ok((report, sess_ws))
@@ -1470,46 +1635,57 @@ pub fn run_w17d3_sqlite_selftest(root_tmp : String) -> Result[Unit, String] {
   let _ = st.db.run("INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (1, 1, 'message', 'station', 'station', '⚠️ Turn failed: boom', 200)", [])
   let _ = st.db.run("INSERT INTO preset_projects (workspace, sub, json) VALUES ('ws-main', 'u1', '{\"p1\":\"Alpha\"}')", [])
 
-  // 1. Real SQLite `signins.fill` / `self` / `deny` + zero password persistence
+  // 1. Real SQLite `signins.fill` (honest 501, never stores password) / `signins.deny` (preserves extra JSON fields)
   let si_store = SignInAsksStore::new()
-  let ask = SignInAskRecord::{
-    id: "g_smoke1", session: "s1", chat: "CHAT/1", owner: "alice@example.com",
-    site: "github.com", tab: "t1", reason: "login", at: 1700000000L, status: "pending", why: None, keep: None,
-  }
-  match si_store.save(st.db, ask) {
+  match ensure_signin_asks_schema(st.db) {
     Ok(_) => ()
-    Err(e) => return Err("signins save failed: " + e)
+    Err(e) => return Err("ensure_signin_asks_schema failed: " + e)
+  }
+  match st.db.run(
+    "INSERT OR REPLACE INTO signin_asks (id, session, owner, status, body) VALUES ('g_smoke1', 's1', 'alice@example.com', 'pending', '{\"id\":\"g_smoke1\",\"session\":\"s1\",\"chat\":\"CHAT/1\",\"owner\":\"alice@example.com\",\"site\":\"github.com\",\"tab\":\"t1\",\"reason\":\"login\",\"at\":1700000000,\"status\":\"pending\",\"customField\":\"keep-me\"}')",
+    [],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("seed signin_asks failed: " + e.message)
   }
   let ws_of = fn(k : String) -> Option[String] { if k == "s1" { Some("ws-main") } else { None } }
-  let no_form = fn(_s : String, _t : String) -> Option[station_browser::SignInFormPort] { None }
   let fill_b = base_codec::json_obj([
     ("_viewerEmail", base_codec::json_str("alice@example.com")),
     ("_viewerWorkspace", base_codec::json_str("ws-main")),
     ("password", base_codec::json_str("SMOKE_SECRET_PW")),
   ])
-  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, no_form, "signins.fill", ["g_smoke1"], fill_b, 1700000010000L) {
-    Ok(r) => if base_codec::json_stringify(r).contains("SMOKE_SECRET_PW") { return Err("signins response leaked password") }
-    Err(e) => return Err("signins.fill failed: " + e.message)
+  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, "signins.fill", ["g_smoke1"], fill_b, 1700000010000L) {
+    Err(e) if e.status == 501 => ()
+    Err(e) => return Err("signins.fill expected honest 501, got " + e.status.to_string() + ": " + e.message)
+    Ok(_) => return Err("signins.fill must return honest 501 without storing credentials")
+  }
+  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, "signins.deny", ["g_smoke1"], fill_b, 1700000020000L) {
+    Ok(_) => ()
+    Err(e) => return Err("signins.deny failed: " + e.message)
   }
   match st.db.first("SELECT body FROM signin_asks WHERE id = 'g_smoke1'", []) {
     Ok(Some(row)) => match row.get("body") {
-      Some(base_codec::Json::Str(raw)) => if raw.contains("SMOKE_SECRET_PW") { return Err("SQLite leaked password") }
+      Some(base_codec::Json::Str(raw)) => {
+        if raw.contains("SMOKE_SECRET_PW") { return Err("SQLite leaked password") }
+        if !raw.contains("\"customField\":\"keep-me\"") { return Err("signins.deny dropped unknown JSON fields") }
+        if !raw.contains("\"status\":\"denied\"") { return Err("signins.deny did not persist status=denied") }
+      }
       _ => return Err("missing signin_asks body")
     }
     _ => return Err("missing signin_asks row")
   }
-  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, no_form, "signins.deny", ["g_smoke1"], fill_b, 1700000020000L) {
-    Ok(_) => if si_store.has_held("g_smoke1") { return Err("signins.deny did not wipe held creds") }
-    Err(e) => return Err("signins.deny failed: " + e.message)
-  }
 
-  // 2. Real SQLite + atomic `PROJECTS.jsonl` `projects.rename` & `projects.merge`
+  // 2. Real SQLite + atomic `PROJECTS.jsonl` `projects.rename` & `projects.merge` + `assertKnownProject` 404
   let events = station_api::EventsHub::new("st-smoke", station_api::EventKeeps::default())
   let write_atomic = fn(p : String, b : Bytes) -> Result[Unit, String] {
     if station_sys::write_file_atomic(p, b, 420) { Ok(()) } else { Err("write failed") }
   }
   let peer_sync = fn(_ws : String, _act : String, _f : String, _t : String, _at : Int64) -> Array[ProjectRenamePeerResult] { [] }
-  match execute_project_rename_merge(store, fs, d_root, "ws-main", events, write_atomic, peer_sync, "ws-main", "rename", "Alpha", "Gamma", Some("sm-1"), 2000L) {
+  match execute_project_rename_merge(store, fs, d_root, "ws-main", events, write_atomic, peer_sync, "ws-main", "rename", "NoSuchProj", "Gamma", None, 1500L) {
+    Err(e) if e.status == 404 => ()
+    _ => return Err("projects.rename unknown source must return 404")
+  }
+  match execute_project_rename_merge(store, fs, d_root, "ws-main", events, write_atomic, peer_sync, "ws-main", "rename", "Alpha", "Gamma", Some("u1\u{0000}rename\u{0000}sm-1"), 2000L) {
     Ok(r) => if !base_codec::json_stringify(r).contains("\"updated\":1") { return Err("projects.rename expected updated:1") }
     Err(e) => return Err("projects.rename failed: " + e.message)
   }

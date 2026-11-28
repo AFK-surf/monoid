@@ -112,9 +112,13 @@ test "w17d3: links.preview blocks SSRF (literal, DNS, redirect) and extracts HTM
   }
   w17d3_assert(!fetch_called, "SSRF literal hosts must NEVER reach fetch_hop")
 
-  // 3. DNS resolving to metadata IP `169.254.169.254` blocked before fetch
+  // 3. DNS resolving to metadata IP `169.254.169.254` (alone OR mixed with a public IP!) blocked before fetch
   match fetch_link_preview_with_ports("https://rebind.example.com/", fn(_h) { ["169.254.169.254"] }, fn(_u, _ips) { fetch_called = true; None }) {
     Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "DNS metadata IP must yield kind:none")
+    Err(_) => panic("unexpected error")
+  }
+  match fetch_link_preview_with_ports("https://dual-a.example.com/", fn(_h) { ["93.184.216.34", "10.0.0.5"] }, fn(_u, _ips) { fetch_called = true; None }) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "multi-A record containing private IP must yield kind:none")
     Err(_) => panic("unexpected error")
   }
   w17d3_assert(!fetch_called, "DNS-blocked host must NEVER reach fetch_hop")
@@ -140,7 +144,7 @@ test "w17d3: links.preview blocks SSRF (literal, DNS, redirect) and extracts HTM
     Err(_) => panic("unexpected error")
   }
 
-  // 5. Public HTML page extracts title/description/site/image and decodes entities
+  // 5. Public HTML page extracts title/description/site, decodes entities, and omits raw third-party image URL
   let ok_html =
   "<html><head>" +
   "<meta property=\"og:title\" content=\"Pion &amp; Monoid &#39;Docs&#39;\">" +
@@ -163,9 +167,24 @@ test "w17d3: links.preview blocks SSRF (literal, DNS, redirect) and extracts HTM
       w17d3_assert(json_field_str(j, "title") == Some("Pion & Monoid 'Docs'"), "title decode mismatch")
       w17d3_assert(json_field_str(j, "description") == Some("Fast system language"), "desc mismatch")
       w17d3_assert(json_field_str(j, "site") == Some("Monoid"), "site mismatch")
-      w17d3_assert(json_field_str(j, "image") == Some("https://public.example.com/hero.png"), "image resolve mismatch")
+      w17d3_assert(json_field_str(j, "image") is None, "raw third-party image URL must be omitted")
     }
     Err(e) => panic("valid preview failed: " + e.message)
+  }
+
+  // 5b. Empty or non-HTML Content-Type must return kind:none
+  let empty_ct_fetch = fn(_u : String, _ips : Array[String]) -> Option[LinkPreviewHopResponse] {
+    Some(LinkPreviewHopResponse::{
+      status: 200,
+      content_type: "",
+      content_encoding: "identity",
+      location: None,
+      body: ok_html,
+    })
+  }
+  match fetch_link_preview_with_ports("https://public.example.com/raw", fn(_h) { ["93.184.216.34"] }, empty_ct_fetch) {
+    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "empty Content-Type must yield kind:none")
+    Err(_) => panic("unexpected error")
   }
 }
 
@@ -258,6 +277,10 @@ test "w17d3: hub.session.retry/compact, projects.rename/merge, signins, links.pr
   w17d3_assert(merged.tombstones.length() == 1 && merged.tombstones[0].0 == "Alpha", "merge must tombstone Alpha")
   w17d3_assert(
     rewrite_preset_projects_json("{\"p1\":\"Alpha\",\"p2\":\"Keep\"}", "Alpha", "Beta") == Some("{\"p1\":\"Beta\",\"p2\":\"Keep\"}"),
-    "rewrite_preset_projects_json mismatch",
+    "rewrite_preset_projects_json legacy string mismatch",
   )
+  match rewrite_preset_projects_json("{\"p1\":{\"project\":\"Alpha\",\"rev\":2,\"at\":1000},\"p2\":{\"project\":\"Keep\",\"rev\":1,\"at\":900}}", "Alpha", "Beta", renamed_at=5000L) {
+    Some(s) => w17d3_assert(s.contains("\"project\":\"Beta\"") && s.contains("\"ren\":5000") && s.contains("\"project\":\"Keep\""), "rewrite_preset_projects_json object mismatch: " + s)
+    None => panic("rewrite_preset_projects_json object returned None")
+  }
 }

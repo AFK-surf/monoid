@@ -196,6 +196,7 @@ extern "C" fn sts_resolve_host_for_tunnel_async(
   host : Ptr,
   reject_loopback_or_unspec : Int,
 ) -> Int
+extern "C" fn sts_resolve_host_all_async(event_id : Int64, host : Ptr) -> Int
 extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
 extern "C" fn sts_utimes_now(path : Ptr) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
@@ -1663,6 +1664,14 @@ pub fn resolve_host_for_tunnel_async(
     host.as_cstr(),
     if reject_loopback_or_unspec { 1 } else { 0 },
   )
+  let _ = host.length()
+  ok != 0
+}
+
+/// Spawn a detached worker thread to resolve ALL A/AAAA addresses for `host` via OS `getaddrinfo`.
+/// Emits `SysEvent::DnsResolved(rc, ips_newline_joined)` (`rc == 1` ok, `-1` error).
+pub fn resolve_host_all_async(event_id : Int64, host : String) -> Bool {
+  let ok = sts_resolve_host_all_async(event_id, host.as_cstr())
   let _ = host.length()
   ok != 0
 }

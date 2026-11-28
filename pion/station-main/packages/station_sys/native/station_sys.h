@@ -325,6 +325,12 @@ int32_t sts_resolve_host_for_tunnel_async(
     const char *host,
     int32_t reject_loopback_or_unspec);
 
+// Non-blocking async DNS resolution returning ALL A/AAAA addresses separated by '\n'
+// via `STS_EV_DNS_RESOLVED` (`[60][rc:i32 le][ip1\nip2...]`, rc=1 ok, -1 error).
+int32_t sts_resolve_host_all_async(
+    uint64_t event_id,
+    const char *host);
+
 // Replace the current process in-place:
 // - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).
 // - Windows: `CreateProcessW` with `bInheritHandles=TRUE` inside a `KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK`

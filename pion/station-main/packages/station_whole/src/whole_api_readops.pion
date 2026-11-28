@@ -2658,7 +2658,14 @@ pub fn dispatch_wave17c3a_call_op(
         if from_name == to_name {
           return Some(Err(station_api::ApiError::new(400, "from and to must be different project names")))
         }
-        return Some(f(req.viewer.workspace, action, from_name, to_name, req.header("idempotency-key")))
+        let viewer_idem : Option[String] = match req.header("idempotency-key") {
+          Some(k) if k.trim().length() > 0 => {
+            let who = if req.viewer.sub.length() > 0 { req.viewer.sub } else { req.viewer.email }
+            Some(who + "\u{0000}" + action + "\u{0000}" + k.trim())
+          }
+          _ => None
+        }
+        return Some(f(req.viewer.workspace, action, from_name, to_name, viewer_idem))
       }
       // Honest 501 when cross-station peer fan-out hook is not wired (never hardcode `peers: []` fake 200).
       None => return Some(Err(err_not_implemented(op)))

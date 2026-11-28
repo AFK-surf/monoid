@@ -19,6 +19,7 @@ import "station_devices"
 import "station_jobs"
 import "station_mesh"
 import "station_ops"
+import "station_sessions"
 import "station_sys"
 import "station_vault"
 import "station_whole"
@@ -756,26 +757,10 @@ pub fn wire_whole_core_runtime_hooks(
       fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
     )
   })
-  // Wave 17D-3: Wire `screens.browser.open` (`BrowserOsManager` + `ScreenHub` + strict URL policy).
-  core.api.hooks.on_screens_browser_open = Some(fn(
-    url : String,
-    tab_id : Option[String],
-  ) -> Result[String, station_api::ApiError] {
-    station_whole::open_browser_screen_interactive(
-      browser,
-      core.api.screens,
-      url,
-      tab_id,
-      host_shim::wall_ms(),
-      fn(n : Int) -> String {
-        match station_sys::random_bytes(n) {
-          Ok(b) => base_codec::hex_encode(b)
-          Err(_) => "000000000000"
-        }
-      },
-    )
-  })
-  // Wave 17D-3: Wire `signins.fill` / `signins.self` / `signins.deny` (SQLite `signin_asks` + memory-only creds).
+  let _ = browser
+  // `screens.browser.open` remains None (honest 501) until real Chrome/Farview CDP target creation is wired in Wave 17E.
+  core.api.hooks.on_screens_browser_open = None
+  // Wave 17D-3: Wire `signins.self` / `signins.deny` (`signins.fill` returns honest 501 until real async CDP autofill is wired).
   core.api.hooks.on_signins_op = Some(fn(
     op : String,
     params : Array[String],
@@ -799,7 +784,8 @@ pub fn wire_whole_core_runtime_hooks(
       match st.get_session(skey) {
         Ok(Some(row)) => {
           let actor = core.agents.hub.ensure_actor(skey, row.runtime)
-          let _ = actor.submit_input(msg)
+          actor.enqueue(station_sessions::ActorWork::InternalPrompt("[station] " + msg))
+          actor.pump_next_prompt()
         }
         _ => ()
       }
@@ -809,14 +795,13 @@ pub fn wire_whole_core_runtime_hooks(
       st.db,
       session_ws_of,
       notify_session,
-      fn(_s : String, _t : String) -> Option[station_browser::SignInFormPort] { None },
       op,
       params,
       body,
       host_shim::wall_ms(),
     )
   })
-  // Wave 17D-3: Wire `projects.rename` & `projects.merge` (atomic SQLite + `PROJECTS.jsonl` + peer sync hook).
+  // Wave 17D-3: Wire `projects.rename` & `projects.merge` (rig gate, atomic SQLite + mode-preserving `PROJECTS.jsonl` + real `thread.classify` peer RPC).
   core.api.hooks.on_project_rename_merge = Some(fn(
     ws : String,
     action : String,
@@ -824,10 +809,26 @@ pub fn wire_whole_core_runtime_hooks(
     to_name : String,
     idem_key : Option[String],
   ) -> Result[base_codec::Json, station_api::ApiError] {
+    if ctx.cloud.rig_in(ws).is_some() {
+      return Err(station_api::ApiError::new(403, "a rig does not manage workspace projects"))
+    }
     let write_atomic = fn(path : String, data : Bytes) -> Result[Unit, String] {
+      // Reject symlinks and preserve existing file mode (default 0600, never widen to 0644).
+      let mut mode = 384
+      match (core.agents.jobs.fs.lstat)(path) {
+        Some(lst) => {
+          if lst.kind == "link" {
+            return Err("refusing to write PROJECTS.jsonl through symlink")
+          }
+          if lst.mode > 0 {
+            mode = lst.mode & 511
+          }
+        }
+        None => ()
+      }
       let dir = nodepath::dirname(ctx.sep, path)
       let _ = station_sys::mkdir_p(dir)
-      if station_sys::write_file_atomic(path, data, 420) {
+      if station_sys::write_file_atomic(path, data, mode) {
         Ok(())
       } else {
         Err("failed to atomically write " + path)
@@ -835,10 +836,10 @@ pub fn wire_whole_core_runtime_hooks(
     }
     let peer_sync = fn(
       target_ws : String,
-      _act : String,
-      _from_n : String,
-      _to_n : String,
-      _renamed_at : Int64,
+      act : String,
+      from_n : String,
+      to_n : String,
+      renamed_at : Int64,
     ) -> Array[station_whole::ProjectRenamePeerResult] {
       let out : Array[station_whole::ProjectRenamePeerResult] = []
       let self_id = core.config.station_id
@@ -856,14 +857,48 @@ pub fn wire_whole_core_runtime_hooks(
               Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s)
               _ => None
             }
+            let is_rig = match base_codec::json_get(pj, "rig") {
+              Some(base_codec::Json::Bool(true)) => true
+              _ => false
+            }
+            let is_online = match base_codec::json_get(pj, "online") {
+              Some(base_codec::Json::Bool(true)) => true
+              _ => false
+            }
             if pid.length() > 0 && pid != self_id {
-              out.push(station_whole::ProjectRenamePeerResult::{
-                id: pid,
-                name: pname,
-                status: "queued",
-                updated: 0,
-                error: None,
-              })
+              if is_rig {
+                out.push(station_whole::ProjectRenamePeerResult::{
+                  id: pid,
+                  name: pname,
+                  status: "rig",
+                  updated: 0,
+                  error: None,
+                })
+              } else if !is_online {
+                out.push(station_whole::ProjectRenamePeerResult::{
+                  id: pid,
+                  name: pname,
+                  status: "offline",
+                  updated: 0,
+                  error: None,
+                })
+              } else {
+                let rpc_req = base_codec::json_obj([
+                  ("method", base_codec::json_str("thread.classify")),
+                  ("action", base_codec::json_str(act)),
+                  ("from", base_codec::json_str(from_n)),
+                  ("to", base_codec::json_str(to_n)),
+                  ("renamedAt", base_codec::json_int64(renamed_at)),
+                ])
+                ctx.ask_peer_rpc(pid, target_ws, rpc_req, fn(_res : Result[base_codec::Json, String]) -> Unit { () })
+                out.push(station_whole::ProjectRenamePeerResult::{
+                  id: pid,
+                  name: pname,
+                  status: "offline",
+                  updated: 0,
+                  error: Some("async peer fan-out dispatched; retry to verify convergence"),
+                })
+              }
             }
           }
           break
@@ -1104,9 +1139,9 @@ pub fn AsyncUpkeepRunner::new(
   }
 }
 
-/// PR #9161 P2: Clean up stale `<data>/tmp/tar-extract-*` temporary files/directories left by
-/// interrupted archived-upload extractions. At startup pass `min_age_ms=0L`; during periodic
-/// upkeep pass `min_age_ms=3600000L` so in-flight extractions are untouched.
+/// PR #9161 P2: Single-layer non-recursive cleanup of stale regular `<data>/tmp/tar-extract-*.bin`
+/// files left by interrupted archived-upload extractions. Never follows symlinks and never recurses.
+/// Called at `on_predecessor_gone` (`min_age_ms=0L`) and during periodic upkeep (`min_age_ms=3600000L`).
 pub fn AsyncUpkeepRunner::cleanup_stale_tar_extracts(
   self : AsyncUpkeepRunner,
   now_ms : Int64,
@@ -1120,26 +1155,22 @@ pub fn AsyncUpkeepRunner::cleanup_stale_tar_extracts(
   let mut removed = 0
   for i in 0..<names.length() {
     let name = names[i]
-    if !name.starts_with("tar-extract-") {
+    if !name.starts_with("tar-extract-") || !name.ends_with(".bin") || name.contains("/") || name.contains("\\") {
       continue
     }
     let full = nodepath::join(self.sep, [tmp_dir, name])
-    let mut is_dir = false
-    let mut stale = min_age_ms <= 0L
     match (self.fs.lstat)(full) {
       Some(st) => {
-        is_dir = st.kind == "dir"
-        if !stale && now_ms - st.mtime_ms >= min_age_ms {
-          stale = true
+        // Strictly regular non-symlink files only; never touch directories or symlinks.
+        if st.kind != "file" {
+          continue
+        }
+        let stale = min_age_ms <= 0L || now_ms - st.mtime_ms >= min_age_ms
+        if stale && (self.fs.remove_file)(full) {
+          removed = removed + 1
         }
       }
-      None => stale = false
-    }
-    if stale {
-      let ok = if is_dir { (self.fs.remove_dir_all)(full) } else { (self.fs.remove_file)(full) }
-      if ok {
-        removed = removed + 1
-      }
+      None => ()
     }
   }
   removed

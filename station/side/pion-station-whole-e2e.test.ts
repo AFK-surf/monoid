@@ -3052,16 +3052,15 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
   assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
 
-  // 4. Wave 17D-3: Live Admin/1 interactive ops (screens.browser.open, signins.*, projects.rename, links.preview SSRF, feedback.report, retry/compact)
-  const brwBad = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "file:///etc/passwd" })));
-  assert.equal(brwBad.status, 400, `file:// browser open must return 400, got ${brwBad.status}`);
-  const brwOk = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
-  assert.equal(brwOk.status, 200, `POST /screens/browser failed: ${brwOk.status} ${brwOk.body.toString()}`);
-  assert.ok(brwOk.body.toString().includes("browser:u_"), `expected browser:u_ screen id: ${brwOk.body.toString()}`);
+  // 4. Wave 17D-3: Live Admin/1 interactive ops (honest 501 for unbacked screens.browser.open & signins.fill; live signins.deny, projects.rename 404, links.preview SSRF, feedback.report, retry/compact)
+  const brwOpen = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
+  assert.equal(brwOpen.status, 501, `POST /screens/browser without real CDP launcher must return honest 501, got ${brwOpen.status}`);
 
-  const siMiss = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
-  assert.equal(siMiss.status, 409, `signins.fill unknown id must return 409 (not 501), got ${siMiss.status}`);
-  assert.ok(siMiss.body.toString().includes("signin_refused"), `expected signin_refused: ${siMiss.body.toString()}`);
+  const siFill = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
+  assert.equal(siFill.status, 501, `signins.fill without real CDP form driver must return honest 501, got ${siFill.status}`);
+  const siDeny = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/deny", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(siDeny.status, 409, `signins.deny unknown id must return 409 (not 501), got ${siDeny.status}`);
+  assert.ok(siDeny.body.toString().includes("signin_refused"), `expected signin_refused: ${siDeny.body.toString()}`);
 
   const lpSsrf = await adminCall(conn, "GET", "/link-preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F");
   assert.equal(lpSsrf.status, 200, `links.preview SSRF must return 200 kind:none, got ${lpSsrf.status}`);
@@ -3073,8 +3072,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(fbMiss.status, 404, `feedback.report unknown thread must return 404 (not 501), got ${fbMiss.status}`);
 
   const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
-  assert.equal(projRen.status, 200, `POST /projects/rename failed: ${projRen.status} ${projRen.body.toString()}`);
-  assert.equal(JSON.parse(projRen.body.toString()).action, "rename");
+  assert.equal(projRen.status, 404, `POST /projects/rename unknown source must return 404 (assertKnownProject, not 501), got ${projRen.status} ${projRen.body.toString()}`);
 
   const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
   assert.equal(retryMiss.status, 404, `hub.session.retry unknown session must return 404 (not 501), got ${retryMiss.status}`);

@@ -3081,6 +3081,7 @@ fn live_runner_finish_turn(
   sess.last_turn_ended_at = now_ms
 
   let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
+  actor.compacting = false
   // Check whether this is an in-turn Reprompt on a STILL-READY runner (turn does NOT end yet)
   // vs a real turn end that MUST durably commit SQLite `endTurn` BEFORE advancing actor/ACK!
   let mut reprompt_reminder : Option[String] = None
@@ -3281,6 +3282,7 @@ fn live_runner_commit_end_turn(
           // 3. Advance actor state & pump next queued prompt (single decision: when reprompt
           //    budget is exhausted, finalize Idle cleanly without re-entering Reprompt!).
           let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
+          actor.compacting = false
           if pend.was_completed {
             match pend.reprompt_reminder {
               Some(rem) => {
@@ -3694,6 +3696,7 @@ fn live_runner_handle_agent_line(
   wall_ms : Int64,
 ) -> Unit {
   let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
+  actor.compacting = false
   actor.on_live_event(now_ms)
   if sess.is_acp {
     let _ = sess.acp_guard.on_output_heard(now_ms)
@@ -6023,6 +6026,24 @@ pub fn LiveRunnerManager::retry_failed_session(
     }
     _ => return Err(station_api::ApiError::new(404, "unknown failure notice"))
   }
+  // Verify target notice `(thread_id, seq)` matches THIS session's last failed turn
+  // (`about_thread` & `about_n` on the latest turn row) so stale notices or other agents'
+  // warnings in the same thread can never trigger a spurious retry.
+  match st.db.first(
+    "SELECT outcome, about_thread, about_n FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(trow)) => {
+      let outc = match trow.get("outcome") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let at_id = match trow.get("about_thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
+      let an_seq = match trow.get("about_n") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
+      if outc != "failed" || at_id != thread_id || an_seq != seq {
+        return Err(station_api::ApiError::new(409, "failure notice is no longer the latest failed turn for this session"))
+      }
+    }
+    Ok(None) => return Err(station_api::ApiError::new(409, "no failed turn to retry for this session"))
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
   let actor = core.agents.hub.ensure_actor(session_key, srow.runtime)
   if actor.is_busy() || srow.running {
     return Err(station_api::ApiError::new(409, "session is already running"))
@@ -6038,7 +6059,11 @@ pub fn LiveRunnerManager::retry_failed_session(
     None => ()
   }
   actor.start_failed = false
-  let _ = actor.submit_input("Retry the previous failed turn from where it stopped.")
+  // Enqueue as an internal station recovery notice (`ActorWork::InternalPrompt`, NEVER a fake user prompt).
+  actor.enqueue(station_sessions::ActorWork::InternalPrompt(
+    "[station] Your previous turn stopped after an error and the person asked to retry from where it left off. Continue the task and finish with chat_post or chat_state.",
+  ))
+  actor.pump_next_prompt()
   let _ = st.db.run(
     "UPDATE sessions SET last_active_at = ?1 WHERE key = ?2",
     [sql_db::int64_to_json(wall_ms), base_codec::json_str(session_key)],
@@ -6084,6 +6109,19 @@ pub fn LiveRunnerManager::compact_session(
     Some(k) => k
     None => return Err(station_api::ApiError::new(409, "unsupported runtime: " + srow.runtime))
   }
+  let rsid = match st.db.first(
+    "SELECT runtime_session_id FROM sessions WHERE key = ?1 LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(r)) => match r.get("runtime_session_id") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    _ => ""
+  }
+  if rsid.length() == 0 {
+    return Err(station_api::ApiError::new(409, "station.context.empty"))
+  }
   match rkind {
     station_drivers::RuntimeKind::Claude => {
       actor.compacting = true
@@ -6096,7 +6134,7 @@ pub fn LiveRunnerManager::compact_session(
               return Err(station_api::ApiError::new(409, "session policy or profile changed; runner reclaimed"))
             }
             sess.prompt_seq = sess.prompt_seq + 1
-            let frame = encode_runtime_prompt(station_drivers::RuntimeKind::Claude, "/compact", "", sess.prompt_seq)
+            let frame = encode_runtime_prompt(station_drivers::RuntimeKind::Claude, "/compact", rsid, sess.prompt_seq)
             if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
               actor.compacting = false
               return Err(station_api::ApiError::new(500, "failed to send compact command to runner"))
@@ -6107,21 +6145,14 @@ pub fn LiveRunnerManager::compact_session(
         }
         None => ()
       }
-      let _ = actor.submit_input("/compact")
+      actor.enqueue(station_sessions::ActorWork::InternalPrompt("/compact"))
+      actor.pump_next_prompt()
       self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
       Ok(())
     }
     station_drivers::RuntimeKind::Codex => {
-      let rsid = match st.db.first(
-        "SELECT runtime_session_id FROM sessions WHERE key = ?1 LIMIT 1",
-        [base_codec::json_str(session_key)],
-      ) {
-        Ok(Some(r)) => match r.get("runtime_session_id") {
-          Some(base_codec::Json::Str(s)) if s.trim().length() > 0 => s.trim()
-          _ => return Err(station_api::ApiError::new(409, "nothing to compact yet"))
-        }
-        _ => return Err(station_api::ApiError::new(409, "nothing to compact yet"))
-      }
+      // Codex app-server requires an active live runner for `thread/compact/start`;
+      // never send literal "/compact" as a user prompt to a cold Codex session.
       match self.sessions.get(session_key) {
         Some(sess) => match sess.phase {
           LiveRunnerPhase::Ready(_, sock_id) => {
@@ -6141,16 +6172,12 @@ pub fn LiveRunnerManager::compact_session(
               actor.compacting = false
               return Err(station_api::ApiError::new(500, "failed to send thread/compact/start to codex runner"))
             }
-            return Ok(())
+            Ok(())
           }
-          _ => ()
+          _ => Err(station_api::ApiError::new(409, "codex runner is not ready for compaction"))
         }
-        None => ()
+        None => Err(station_api::ApiError::new(409, "codex runner is not active; start a turn before compacting"))
       }
-      actor.compacting = true
-      let _ = actor.submit_input("/compact")
-      self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
-      Ok(())
     }
     _ => Err(station_api::ApiError::new(409, "compact is not supported for runtime " + srow.runtime))
   }

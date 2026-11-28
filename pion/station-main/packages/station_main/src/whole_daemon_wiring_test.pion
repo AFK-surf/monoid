@@ -294,11 +294,11 @@ test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" 
   }
 }
 
-test "w17d3 PR #9161 P2: AsyncUpkeepRunner cleans stale tar-extract-* entries on startup and upkeep" {
+test "w17d3 PR #9161 P2: AsyncUpkeepRunner cleans stale regular tar-extract-*.bin files only (skips dirs & symlinks)" {
   let removed_files : Array[String] = []
   let removed_dirs : Array[String] = []
   let dirs : Map[String, Array[String]] = Map::new()
-  dirs.set("/data/tmp", ["tar-extract-old.bin", "tar-extract-fresh.bin", "tar-extract-dir", "keep-other.bin"])
+  dirs.set("/data/tmp", ["tar-extract-old.bin", "tar-extract-fresh.bin", "tar-extract-dir", "tar-extract-link.bin", "keep-other.bin"])
   let fs = station_jobs::FsPort::{
     sep: "/",
     lstat: fn(p : String) -> Option[station_jobs::FsStat] {
@@ -308,6 +308,8 @@ test "w17d3 PR #9161 P2: AsyncUpkeepRunner cleans stale tar-extract-* entries on
         Some(station_jobs::FsStat::{ kind: "file", size: 10L, executable: false, mode: 420, mtime_ms: 9999000L, dev: 1L, ino: 2L })
       } else if p == "/data/tmp/tar-extract-dir" {
         Some(station_jobs::FsStat::{ kind: "dir", size: 0L, executable: true, mode: 493, mtime_ms: 1000L, dev: 1L, ino: 3L })
+      } else if p == "/data/tmp/tar-extract-link.bin" {
+        Some(station_jobs::FsStat::{ kind: "symlink", size: 10L, executable: false, mode: 511, mtime_ms: 1000L, dev: 1L, ino: 5L })
       } else if p == "/data/tmp/keep-other.bin" {
         Some(station_jobs::FsStat::{ kind: "file", size: 10L, executable: false, mode: 420, mtime_ms: 1000L, dev: 1L, ino: 4L })
       } else {
@@ -337,20 +339,20 @@ test "w17d3 PR #9161 P2: AsyncUpkeepRunner cleans stale tar-extract-* entries on
     now_ms: fn() -> Int64 { 10000000L },
   }
   let runner = AsyncUpkeepRunner::new("/data", "/", fs, 10000000L)
-  // Periodic upkeep (`min_age_ms=3600000L`): removes old file + old dir, skips fresh file and non-tar-extract file
+  // Periodic upkeep (`min_age_ms=3600000L`): removes ONLY old regular `tar-extract-*.bin`, skips dir, symlink, fresh, other
   let n_periodic = runner.cleanup_stale_tar_extracts(10000000L, min_age_ms=3600000L)
-  if n_periodic != 2 || removed_files.length() != 1 || removed_dirs.length() != 1 {
-    panic("periodic cleanup expected 2 removed (1 file + 1 dir), got " + n_periodic.to_string())
+  if n_periodic != 1 || removed_files.length() != 1 || removed_dirs.length() != 0 {
+    panic("periodic cleanup expected 1 regular file removed and 0 dirs, got " + n_periodic.to_string())
   }
-  if removed_files[0] != "/data/tmp/tar-extract-old.bin" || removed_dirs[0] != "/data/tmp/tar-extract-dir" {
-    panic("periodic cleanup removed wrong paths")
+  if removed_files[0] != "/data/tmp/tar-extract-old.bin" {
+    panic("periodic cleanup removed wrong path: " + removed_files[0])
   }
-  // Startup cleanup (`min_age_ms=0L`): removes all 3 tar-extract-* entries, still spares keep-other.bin
+  // Post-handover startup cleanup (`min_age_ms=0L`): removes both regular `tar-extract-*.bin`, still skips dir & symlink
   removed_files.clear()
   removed_dirs.clear()
   let n_startup = runner.cleanup_stale_tar_extracts(10000000L, min_age_ms=0L)
-  if n_startup != 3 || removed_files.length() != 2 || removed_dirs.length() != 1 {
-    panic("startup cleanup expected 3 removed (2 files + 1 dir), got " + n_startup.to_string())
+  if n_startup != 2 || removed_files.length() != 2 || removed_dirs.length() != 0 {
+    panic("startup cleanup expected 2 regular files removed and 0 dirs, got " + n_startup.to_string())
   }
 }
 

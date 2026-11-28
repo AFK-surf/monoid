@@ -252,10 +252,10 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
   }
 }
 
-/// Returns true if the actor is currently busy (starting, running, stopping, or has queued work).
+/// Returns true if the actor is currently busy (starting, running, stopping, compacting, or has queued work).
 pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
   match self.phase {
-    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start
+    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start || self.compacting
     ActorPhase::Closed => false
     _ => true
   }

@@ -10713,21 +10713,145 @@ int32_t sts_utimes_now(const char *path) {
     if (wp == NULL) return 0;
     HANDLE h = CreateFileW(
         wp,
-        FILE_WRITE_ATTRIBUTES,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
         NULL);
     free(wp);
     if (h == INVALID_HANDLE_VALUE) return 0;
+    FILE_ATTRIBUTE_TAG_INFO ati;
+    if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
+        if ((ati.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+            (ati.ReparseTag & 0x20000000u) != 0) {
+            CloseHandle(h);
+            return 0;
+        }
+    }
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     BOOL ok = SetFileTime(h, NULL, &ft, &ft);
     CloseHandle(h);
     return ok ? 1 : 0;
 #else
-    return utimensat(AT_FDCWD, path, NULL, 0) == 0 ? 1 : 0;
+    return utimensat(AT_FDCWD, path, NULL, AT_SYMLINK_NOFOLLOW) == 0 ? 1 : 0;
+#endif
+}
+
+typedef struct {
+    uint64_t event_id;
+    char *host;
+} sts_dns_all_task_t;
+
+static void sts_dns_all_run_task(sts_dns_all_task_t *task) {
+#ifdef _WIN32
+    static atomic_int g_sts_resolve_all_wsa = 0;
+    if (atomic_load(&g_sts_resolve_all_wsa) == 0) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+            atomic_store(&g_sts_resolve_all_wsa, 1);
+        }
+    }
+#endif
+    uint8_t payload[5 + 4096];
+    size_t pos = 5;
+    int32_t out_rc = -1;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(task->host, NULL, &hints, &res) == 0 && res != NULL) {
+        int count = 0;
+        for (struct addrinfo *ai = res; ai != NULL && count < 64; ai = ai->ai_next) {
+            if (ai->ai_addr == NULL) continue;
+            char buf[INET6_ADDRSTRLEN];
+            buf[0] = '\0';
+            if (ai->ai_family == AF_INET) {
+                const struct sockaddr_in *sin = (const struct sockaddr_in *)ai->ai_addr;
+                if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) == NULL) buf[0] = '\0';
+            } else if (ai->ai_family == AF_INET6) {
+                const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ai->ai_addr;
+                if (inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf)) == NULL) buf[0] = '\0';
+            }
+            if (buf[0] == '\0') continue;
+            size_t blen = strlen(buf);
+            size_t need = blen + (count > 0 ? 1u : 0u);
+            if (pos + need > sizeof(payload)) break;
+            if (count > 0) {
+                payload[pos++] = (uint8_t)'\n';
+            }
+            memcpy(payload + pos, buf, blen);
+            pos += blen;
+            count++;
+        }
+        freeaddrinfo(res);
+        if (count > 0) out_rc = 1;
+    }
+    payload[0] = (uint8_t)STS_EV_DNS_RESOLVED;
+    uint32_t u = (uint32_t)out_rc;
+    payload[1] = (uint8_t)(u & 0xFFu);
+    payload[2] = (uint8_t)((u >> 8) & 0xFFu);
+    payload[3] = (uint8_t)((u >> 16) & 0xFFu);
+    payload[4] = (uint8_t)((u >> 24) & 0xFFu);
+    sth_push_sys(task->event_id, payload, (int64_t)(out_rc == 1 ? pos : 5));
+    free(task->host);
+    free(task);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI sts_dns_all_worker_win(LPVOID arg) {
+    sts_dns_all_run_task((sts_dns_all_task_t *)arg);
+    sts_detached_end();
+    return 0;
+}
+#else
+static void *sts_dns_all_worker_posix(void *arg) {
+    sts_dns_all_run_task((sts_dns_all_task_t *)arg);
+    sts_detached_end();
+    return NULL;
+}
+#endif
+
+int32_t sts_resolve_host_all_async(uint64_t event_id, const char *host) {
+    if (host == NULL || host[0] == '\0') return 0;
+    size_t hlen = strlen(host);
+    if (hlen >= 512) return 0;
+    sts_dns_all_task_t *task = (sts_dns_all_task_t *)calloc(1, sizeof(sts_dns_all_task_t));
+    if (task == NULL) return 0;
+    task->host = (char *)malloc(hlen + 1);
+    if (task->host == NULL) {
+        free(task);
+        return 0;
+    }
+    memcpy(task->host, host, hlen + 1);
+    task->event_id = event_id;
+    sts_detached_begin();
+#ifdef _WIN32
+    HANDLE th = CreateThread(NULL, 0, sts_dns_all_worker_win, task, 0, NULL);
+    if (th == NULL) {
+        sts_detached_end();
+        free(task->host);
+        free(task);
+        return 0;
+    }
+    CloseHandle(th);
+    return 1;
+#else
+    pthread_t th;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&th, &attr, sts_dns_all_worker_posix, task);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        sts_detached_end();
+        free(task->host);
+        free(task);
+        return 0;
+    }
+    return 1;
 #endif
 }
 
