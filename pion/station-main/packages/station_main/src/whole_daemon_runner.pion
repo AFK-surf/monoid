@@ -1786,6 +1786,7 @@ struct LiveRunnerSession {
   mut codex_active_turn_id : Option[String]
   mut dropping_oversized_out_line : Bool
   mut stopping : Bool
+  mut spawn_proc_exited : Bool
   mut runner_exited : Bool
   mut identity_verified : Bool
   mut adopted_passive_only : Bool
@@ -1912,6 +1913,31 @@ fn parse_i64_decimal(s : String) -> Option[Int64] {
     acc = acc * 10L + (b - 48).to_int64()
   }
   Some(acc)
+}
+
+/// R24 P1-1: `ProcStdoutEof` without a ready line is NEVER treated as confirmed process exit
+/// unless `SysEvent::ProcExit` already arrived or OS kernel verification returns `ConfirmedDeadOrReused`.
+pub fn spawn_stdout_eof_confirmed_dead(
+  spawn_proc_exited : Bool,
+  verdict : SpawnIdentityVerdict,
+) -> Bool {
+  spawn_proc_exited || (verdict is SpawnIdentityVerdict::ConfirmedDeadOrReused)
+}
+
+/// R24 P1-3: Full shutdown succeeds iff zero `Spawning` runners remain unresolved (neither confirmed
+/// exited nor stopped via `<rid>.sock`) AND any unconfirmed stop markers were durably persisted.
+pub fn evaluate_shutdown_spawning_ok(
+  unresolved_spawning_count : Int,
+  has_unconfirmed_markers : Bool,
+  saved_ok : Bool,
+) -> Bool {
+  if unresolved_spawning_count > 0 {
+    return false
+  }
+  if has_unconfirmed_markers && !saved_ok {
+    return false
+  }
+  true
 }
 
 /// R23: 3-state OS kernel process identity verdict shared by startup adoption (`is_draining_stop_target`
@@ -4127,6 +4153,7 @@ pub fn LiveRunnerManager::adopt_live_runner(
     codex_active_turn_id: restored_codex_tid,
     dropping_oversized_out_line: false,
     stopping: unauthorized_stop,
+    spawn_proc_exited: false,
     runner_exited: false,
     identity_verified: identity_verified,
     adopted_passive_only: open_turn_id is None && !row.running && match launch_rec_opt {
@@ -4866,6 +4893,7 @@ fn LiveRunnerManager::dispatch_prompt(
         codex_active_turn_id: None,
         dropping_oversized_out_line: false,
         stopping: false,
+        spawn_proc_exited: false,
         runner_exited: false,
         identity_verified: true,
         adopted_passive_only: false,
@@ -4968,8 +4996,9 @@ pub fn LiveRunnerManager::handle_sys_event(
           sess.phase = LiveRunnerPhase::Spawning(cur_ev, child, out_buf, next_err, deadline)
         }
         station_sys::SysEvent::ProcExit(_) => {
-          // POSIX: ProcExit can arrive BEFORE the stdout pipe reader delivers ProcStdout / ProcStdoutEof!
-          // Keep waiting for `ProcStdout` (`{"ready":true}`) or `ProcStdoutEof` (bounded by 30s deadline).
+          // R24 P1-1: Record genuine OS process exit; keep waiting for ProcStdout / ProcStdoutEof
+          // because POSIX pipe readers can deliver stdout frames after ProcExit.
+          sess.spawn_proc_exited = true
         }
         station_sys::SysEvent::ProcStdoutEof => {
           let _ = child.close()
@@ -4977,6 +5006,27 @@ pub fn LiveRunnerManager::handle_sys_event(
           let out_str = bytes_to_str_local(out_buf, out_buf.length())
           match parse_runner_ready_line(out_str) {
             Some(info) => {
+              let inst_id = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
+              if !sess.stopping && !is_draining {
+                match core.agents.record_runner_launch(
+                  station_whole::RunnerLaunchRecord::{
+                    instance_id: inst_id,
+                    session_key: sess.session_key,
+                    ws: sess.ws,
+                    profile_id: sess.profile_id,
+                    runtime: sess.runtime_str,
+                    cwd: sess.cwd,
+                    created_at: wall_ms,
+                    reused: true,
+                  },
+                ) {
+                  Ok(_) => ()
+                  Err(e) => {
+                    ctx.log("[live-runner] record_runner_launch failed for " + sess.session_key + " (" + e + "); fail-closed stopping runner")
+                    sess.stopping = true
+                  }
+                }
+              }
               sess.phase = LiveRunnerPhase::Connecting(info)
               let _ = ctx.mux_role.call_async_raw(
                 builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
@@ -4986,23 +5036,107 @@ pub fn LiveRunnerManager::handle_sys_event(
               )
             }
             None => {
-              let err_str = bytes_to_str_local(err_buf, err_buf.length())
-              let detail = if err_str.trim().length() > 0 { err_str.trim() } else { out_str.trim() }
-              ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
-              sess.runner_exited = true
-              sess.phase = LiveRunnerPhase::Exited
-              if is_draining {
-                self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=true)
-              } else {
-                self.by_conn_id.remove(sess.conn_id)
-                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-                actor.has_process = false
+              // R24 P1-1: `ProcStdoutEof` without ready line may happen when `stillfail-runner`
+              // detached stdio (or exceeded 256 KiB stdout) while still alive!
+              // 1. First probe `<rid>.json` with positive OS identity verification (`ConfirmedSame`):
+              //    if already published, connect via `<rid>.sock` directly.
+              let os_verdict = verify_spawn_os_identity(
+                sess.spawn_pid,
+                sess.spawn_os_start_ms,
+                sess.spawn_boot_id,
+                sess.spawn_start_ticks,
+              )
+              let mut connected_live = false
+              if os_verdict is SpawnIdentityVerdict::ConfirmedSame {
+                match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, sess.runner_id) {
+                  RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+                    if rinfo.id == sess.runner_id
+                    && rinfo.runner_pid == sess.spawn_pid
+                    && rinfo.started_at > 0L
+                    && rinfo.socket.length() > 0 {
+                      if !sess.stopping && !is_draining {
+                        let inst_id = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
+                        match core.agents.record_runner_launch(
+                          station_whole::RunnerLaunchRecord::{
+                            instance_id: inst_id,
+                            session_key: sess.session_key,
+                            ws: sess.ws,
+                            profile_id: sess.profile_id,
+                            runtime: sess.runtime_str,
+                            cwd: sess.cwd,
+                            created_at: wall_ms,
+                            reused: true,
+                          },
+                        ) {
+                          Ok(_) => ()
+                          Err(e) => {
+                            ctx.log("[live-runner] record_runner_launch failed on stdout-eof fallback for " + sess.session_key + " (" + e + "); fail-closed stopping runner")
+                            sess.stopping = true
+                          }
+                        }
+                      }
+                      sess.phase = LiveRunnerPhase::Connecting(rinfo)
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
+                        "unix.open",
+                        base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                        None,
+                      )
+                      ctx.log("[live-runner] runner stdout closed without ready line, but <rid>.json is live & ConfirmedSame; connecting via " + rinfo.socket)
+                      connected_live = true
+                    }
+                  }
+                  _ => ()
+                }
               }
-              if sess.current_turn_id is Some(_) {
-                live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
-              }
-              if is_draining {
-                self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
+              if !connected_live {
+                let err_str = bytes_to_str_local(err_buf, err_buf.length())
+                let detail = if err_str.trim().length() > 0 { err_str.trim() } else { out_str.trim() }
+                let os_dead = spawn_stdout_eof_confirmed_dead(sess.spawn_proc_exited, os_verdict)
+                if os_dead {
+                  ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
+                  sess.runner_exited = true
+                  sess.phase = LiveRunnerPhase::Exited
+                  if is_draining {
+                    self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=true)
+                  } else {
+                    self.by_conn_id.remove(sess.conn_id)
+                    self.sessions.remove(skey)
+                    let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                    actor.has_process = false
+                  }
+                  if sess.current_turn_id is Some(_) {
+                    live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
+                  }
+                  if is_draining {
+                    self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
+                  }
+                } else {
+                  // NEVER treat stdout EOF alone as confirmed process exit! Persist `spawn:` marker
+                  // so `tick()` keeps probing `<rid>.json` and waits for `ConfirmedDeadOrReused`.
+                  ctx.log("[live-runner] runner stdout EOF without ready or OS exit for " + skey + "; persisting spawn: stop marker: " + detail)
+                  sess.stopping = true
+                  match encode_spawn_stop_key_for_session(sess) {
+                    Some(sk) => {
+                      self.record_draining_stop_marker(sk, skey)
+                      let _ = self.sync_handover_state_with_ctx(ctx)
+                    }
+                    None => ()
+                  }
+                  sess.phase = LiveRunnerPhase::Exited
+                  if sess.current_turn_id is Some(_) {
+                    live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner stdout closed without ready: " + detail), now_ms, wall_ms)
+                  }
+                  self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
+                  if is_draining {
+                    self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
+                  } else {
+                    self.by_conn_id.remove(sess.conn_id)
+                    self.sessions.remove(skey)
+                    let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                    actor.has_process = false
+                  }
+                }
               }
             }
           }
@@ -5810,6 +5944,60 @@ fn LiveRunnerManager::reclaim_session(
   }
 }
 
+/// R24 P1-2: Unified `Spawning` 30s timeout handler for `draining` sessions (both originally
+/// draining and active sessions moved into `draining` on timeout):
+/// 1. Preserves any uncommitted `pending_end_turn` before touching ownership;
+/// 2. Persists `spawn:` stop marker to `whole-live-runners.json`;
+/// 3. If `<rid>.json` is already published & `ConfirmedSame`, calls `adopt_live_runner` FIRST and
+///    ONLY releases the old bootstrap `child` / `by_spawn_ev` / `draining[cid]` when `adopted == true`!
+fn LiveRunnerManager::handle_draining_spawn_timeout(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  cid : Int,
+  dsess : LiveRunnerSession,
+  ev_id : Int64,
+  child : station_sys::ChildProcess,
+  out_buf : Bytes,
+  err_buf : Bytes,
+  now_ms : Int64,
+  wall_ms : Int64,
+) -> Unit {
+  self.preserve_pending_end_turn(dsess, ctx_opt=Some(ctx))
+  match encode_spawn_stop_key_for_session(dsess) {
+    Some(sk) => {
+      self.record_draining_stop_marker(sk, dsess.session_key)
+      let _ = self.sync_handover_state_with_ctx(ctx)
+    }
+    None => ()
+  }
+  let mut adopted_for_stop = false
+  if verify_spawn_os_identity(dsess.spawn_pid, dsess.spawn_os_start_ms, dsess.spawn_boot_id, dsess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
+    match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, dsess.runner_id) {
+      RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+        if rinfo.id == dsess.runner_id
+        && rinfo.runner_pid == dsess.spawn_pid
+        && rinfo.started_at > 0L
+        && rinfo.socket.length() > 0 {
+          let late_cfg = live_config_raw(core, ctx.cfg_raw)
+          let adopted = self.adopt_live_runner(ctx, core, late_cfg, rinfo, dsess.session_key, now_ms, wall_ms)
+          if adopted {
+            let _ = child.close()
+            self.by_spawn_ev.remove(ev_id)
+            dsess.phase = LiveRunnerPhase::Exited
+            self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
+            adopted_for_stop = true
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  if !adopted_for_stop {
+    dsess.phase = LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, 0L)
+  }
+}
+
 /// Periodic tick enforcing draining `Stopping` escalation (5s TERM -> 1s KILL flush -> strict fallback),
 /// spawn timeouts, `OwnProcessStopGuard`, `AcpTurnGuard`, `check_steer_silent`, deferred
 /// `pending_end_turn` SQLite retries, archived/deleted reclamation, and warm idle runner eviction.
@@ -5965,10 +6153,6 @@ pub fn LiveRunnerManager::tick(
         }
       }
       LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, deadline) => {
-        // R23 P1-2: NEVER blindly kill `stillfail-runner` (which would orphan its child agent process group)!
-        // One-shot timeout (`deadline > 0L`): mark stopping, persist `spawn:` marker, adopt via `<rid>.sock`
-        // if `<rid>.json` already published & `ConfirmedSame`, else keep holding `child` & `by_spawn_ev`
-        // (`deadline = 0L`) until `{ready}` or `ProcStdoutEof`.
         if deadline > 0L && now_ms >= deadline {
           dsess.stopping = true
           if dsess.current_turn_id is Some(_) {
@@ -5978,36 +6162,7 @@ pub fn LiveRunnerManager::tick(
             Some(actor) => actor.has_process = false
             None => ()
           }
-          match encode_spawn_stop_key_for_session(dsess) {
-            Some(sk) => {
-              self.record_draining_stop_marker(sk, dsess.session_key)
-              let _ = self.sync_handover_state_with_ctx(ctx)
-            }
-            None => ()
-          }
-          let mut adopted_for_stop = false
-          if verify_spawn_os_identity(dsess.spawn_pid, dsess.spawn_os_start_ms, dsess.spawn_boot_id, dsess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
-            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, dsess.runner_id) {
-              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-                if rinfo.id == dsess.runner_id
-                && rinfo.runner_pid == dsess.spawn_pid
-                && rinfo.started_at > 0L
-                && rinfo.socket.length() > 0 {
-                  let _ = child.close()
-                  self.by_spawn_ev.remove(ev_id)
-                  dsess.phase = LiveRunnerPhase::Exited
-                  self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
-                  let late_cfg = live_config_raw(core, ctx.cfg_raw)
-                  let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, dsess.session_key, now_ms, wall_ms)
-                  adopted_for_stop = true
-                }
-              }
-              _ => ()
-            }
-          }
-          if !adopted_for_stop {
-            dsess.phase = LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, 0L)
-          }
+          self.handle_draining_spawn_timeout(ctx, core, cid, dsess, ev_id, child, out_buf, err_buf, now_ms, wall_ms)
         }
       }
       LiveRunnerPhase::Exited => self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=dsess.runner_exited)
@@ -6049,47 +6204,14 @@ pub fn LiveRunnerManager::tick(
         self.move_to_draining(skey, sess)
       }
       LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, deadline) => {
-        // R23 P1-2: NEVER blindly kill `stillfail-runner` on 30s spawn timeout!
-        // Fail the turn, persist `spawn:` marker, adopt via `<rid>.sock` if published & `ConfirmedSame`,
-        // otherwise move into `draining` holding `child` & `by_spawn_ev` (`deadline = 0L`) until `{ready}` or EOF.
         if deadline > 0L && now_ms >= deadline {
           ctx.log("[live-runner] runner spawn timed out for " + skey + "; moving to draining without blind kill")
           sess.stopping = true
           let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
           actor.has_process = false
           live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start within 30s"), now_ms, wall_ms)
-          match encode_spawn_stop_key_for_session(sess) {
-            Some(sk) => {
-              self.record_draining_stop_marker(sk, skey)
-              let _ = self.sync_handover_state_with_ctx(ctx)
-            }
-            None => ()
-          }
-          let mut adopted_for_stop = false
-          if verify_spawn_os_identity(sess.spawn_pid, sess.spawn_os_start_ms, sess.spawn_boot_id, sess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
-            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, sess.runner_id) {
-              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-                if rinfo.id == sess.runner_id
-                && rinfo.runner_pid == sess.spawn_pid
-                && rinfo.started_at > 0L
-                && rinfo.socket.length() > 0 {
-                  let _ = child.close()
-                  self.by_spawn_ev.remove(ev_id)
-                  self.by_conn_id.remove(sess.conn_id)
-                  self.sessions.remove(skey)
-                  sess.phase = LiveRunnerPhase::Exited
-                  let late_cfg = live_config_raw(core, ctx.cfg_raw)
-                  let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, skey, now_ms, wall_ms)
-                  adopted_for_stop = true
-                }
-              }
-              _ => ()
-            }
-          }
-          if !adopted_for_stop {
-            sess.phase = LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, 0L)
-            self.move_to_draining(skey, sess)
-          }
+          self.move_to_draining(skey, sess)
+          self.handle_draining_spawn_timeout(ctx, core, sess.conn_id, sess, ev_id, child, out_buf, err_buf, now_ms, wall_ms)
         }
       }
       LiveRunnerPhase::AcpInit(_, sock_id)
@@ -6605,7 +6727,7 @@ pub fn LiveRunnerManager::detach_all_for_handover(
 pub fn LiveRunnerManager::stop_all_on_shutdown(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
-) -> Unit {
+) -> Bool {
   let all_sess : Array[LiveRunnerSession] = []
   let keys = self.sessions.keys()
   for i in 0..<keys.length() {
@@ -6623,7 +6745,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
   }
   let mut need_flush = false
   let to_close : Array[(Int, Int64)] = []
-  let spawning_stops : Map[Int, String] = Map::new()
+  let pending_spawns : Array[(LiveRunnerSession, Int64, station_sys::ChildProcess, String)] = []
   let term_only_payload = station_drivers::encode_runner_signal("TERM", true)
   let term_and_done_payload = term_only_payload + station_drivers::encode_runner_done()
   let mut persisted_spawn_marker = false
@@ -6637,9 +6759,8 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     let _ = sess.agy_tracker.on_dispose()
     match sess.phase {
       LiveRunnerPhase::Spawning(ev_id, child, _, _, _) => {
-        // R23 P1-2: NEVER blindly kill `stillfail-runner` on shutdown!
-        // Persist `spawn:` marker so any restart stops it cleanly, probe `<rid>.json` & if published
-        // + `ConfirmedSame` send `attach + signal TERM group:true (+ done)` over `<rid>.sock`, then close handle.
+        // R24 P1-3: Persist `spawn:` marker first, keep `child` open during bounded 2s wait for
+        // `<rid>.json` publication or confirmed exit, and stop via verified `<rid>.sock` (NEVER blind kill!).
         match encode_spawn_stop_key_for_session(sess) {
           Some(sk) => {
             self.record_draining_stop_marker(sk, sess.session_key)
@@ -6647,31 +6768,11 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
           }
           None => ()
         }
-        if verify_spawn_os_identity(sess.spawn_pid, sess.spawn_os_start_ms, sess.spawn_boot_id, sess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
-          match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, sess.runner_id) {
-            RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-              if rinfo.id == sess.runner_id
-              && rinfo.runner_pid == sess.spawn_pid
-              && rinfo.started_at > 0L
-              && rinfo.socket.length() > 0 {
-                let _ = ctx.mux_role.call_async_raw(
-                  builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
-                  "unix.open",
-                  base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
-                  None,
-                )
-                spawning_stops.set(sess.conn_id, station_drivers::encode_runner_attach() + stop_payload)
-                need_flush = true
-              }
-            }
-            _ => ()
-          }
-        }
-        let _ = child.close()
-        self.by_spawn_ev.remove(ev_id)
+        pending_spawns.push((sess, ev_id, child, station_drivers::encode_runner_attach() + stop_payload))
       }
       LiveRunnerPhase::Connecting(info) => {
         safe_kill_runner_info(info)
+        sess.phase = LiveRunnerPhase::Exited
       }
       LiveRunnerPhase::AcpInit(_, sock_id)
       | LiveRunnerPhase::AcpOpening(_, sock_id)
@@ -6682,36 +6783,87 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
         live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, stop_payload)
         need_flush = true
         to_close.push((sess.conn_id, sock_id))
+        sess.phase = LiveRunnerPhase::Exited
       }
       LiveRunnerPhase::Exited => ()
     }
-    sess.phase = LiveRunnerPhase::Exited
   }
   if persisted_spawn_marker {
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
-  if need_flush {
-    let deadline = host_shim::now_ms() + 150L
-    for _ in 0..<8 {
-      if host_shim::now_ms() >= deadline {
+  let spawn_open_inflight : Map[Int, String] = Map::new()
+  let spawn_socket_sent : Map[Int, Bool] = Map::new()
+  let spawn_confirmed_dead : Map[Int, Bool] = Map::new()
+  if pending_spawns.length() > 0 {
+    // timer: bounded 2s wait for Spawning runners to publish <rid>.sock or exit on full shutdown
+    let spawn_deadline = host_shim::now_ms() + 2000L
+    while true {
+      for pi in 0..<pending_spawns.length() {
+        let (psess, _, _, attach_payload) = pending_spawns[pi]
+        let cid = psess.conn_id
+        if spawn_confirmed_dead.contains(cid) || spawn_socket_sent.contains(cid) || spawn_open_inflight.contains(cid) {
+          continue
+        }
+        match verify_spawn_os_identity(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks) {
+          SpawnIdentityVerdict::ConfirmedDeadOrReused => {
+            spawn_confirmed_dead.set(cid, true)
+            let _ = self.clear_draining_stop_target(None, psess.runner_id, psess.spawn_pid)
+          }
+          SpawnIdentityVerdict::ConfirmedSame => {
+            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, psess.runner_id) {
+              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+                if rinfo.id == psess.runner_id
+                && rinfo.runner_pid == psess.spawn_pid
+                && rinfo.started_at > 0L
+                && rinfo.socket.length() > 0 {
+                  let _ = ctx.mux_role.call_async_raw(
+                    builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
+                    "unix.open",
+                    base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                    None,
+                  )
+                  spawn_open_inflight.set(cid, attach_payload)
+                }
+              }
+              _ => ()
+            }
+          }
+          SpawnIdentityVerdict::Unknown => ()
+        }
+      }
+      let mut all_resolved = true
+      for pi in 0..<pending_spawns.length() {
+        let (psess, _, _, _) = pending_spawns[pi]
+        let cid = psess.conn_id
+        if !spawn_confirmed_dead.contains(cid) && !spawn_socket_sent.contains(cid) {
+          all_resolved = false
+          break
+        }
+      }
+      if all_resolved && spawn_open_inflight.length() == 0 {
+        break
+      }
+      if host_shim::now_ms() >= spawn_deadline {
         break
       }
       let _ = ctx.edge_hub.pump_one(20L)
-      if spawning_stops.length() > 0 {
+      if spawn_open_inflight.length() > 0 {
         let _ = ctx.edge_hub.drain_deferred_done(fn(tok, d) -> Bool {
           match tok {
             builders_core::MuxToken::Tagged(cid, kind, _) => {
               if kind == LIVE_RUNNER_TOK_UNIX_OPEN {
-                match spawning_stops.get(cid) {
+                match spawn_open_inflight.get(cid) {
                   Some(payload) => {
-                    spawning_stops.remove(cid)
+                    spawn_open_inflight.remove(cid)
                     match builders_core::decode_shell_done(d) {
                       Ok((Some(v), _)) => match base_codec::json_get(v, "id") {
                         Some(base_codec::Json::Num(n, _)) => {
                           let sid = n.to_int64()
                           if sid >= 0L {
                             live_runner_send_sock_raw(ctx, cid, sid, payload)
+                            spawn_socket_sent.set(cid, true)
                             to_close.push((cid, sid))
+                            need_flush = true
                           }
                         }
                         _ => ()
@@ -6730,13 +6882,55 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
         })
       }
     }
+    for pi in 0..<pending_spawns.length() {
+      let (psess, ev_id, child, _) = pending_spawns[pi]
+      let _ = child.close()
+      self.by_spawn_ev.remove(ev_id)
+      psess.phase = LiveRunnerPhase::Exited
+    }
+  }
+  if need_flush {
+    // timer: bounded 150ms flush for outbound runner TERM/done socket frames before close
+    let deadline = host_shim::now_ms() + 150L
+    for _ in 0..<8 {
+      if host_shim::now_ms() >= deadline {
+        break
+      }
+      let _ = ctx.edge_hub.pump_one(20L)
+    }
     for ci in 0..<to_close.length() {
       let (cid, sid) = to_close[ci]
       live_runner_close_sock(ctx, cid, sid)
     }
   }
+  let mut unresolved_spawns = 0
+  for pi in 0..<pending_spawns.length() {
+    let (psess, _, _, _) = pending_spawns[pi]
+    let cid = psess.conn_id
+    if !spawn_confirmed_dead.contains(cid) && !spawn_socket_sent.contains(cid) {
+      unresolved_spawns = unresolved_spawns + 1
+    }
+  }
+  let has_unconfirmed_markers = self.draining_stopping_ids.length() > 0
+  let saved_ok = if self.has_handover_carry_state() || self.handover_state_dirty {
+    self.sync_handover_state_with_ctx(ctx).is_ok()
+  } else {
+    true
+  }
+  let all_ok = evaluate_shutdown_spawning_ok(unresolved_spawns, has_unconfirmed_markers, saved_ok)
+  if !all_ok {
+    ctx.log(
+      "[live-runner] shutdown stop incomplete: unresolved_spawns="
+      + unresolved_spawns.to_string()
+      + " unconfirmed_markers="
+      + self.draining_stopping_ids.length().to_string()
+      + " saved_ok="
+      + saved_ok.to_string(),
+    )
+  }
   self.sessions.clear()
   self.draining.clear()
   self.by_conn_id.clear()
   self.by_spawn_ev.clear()
+  all_ok
 }

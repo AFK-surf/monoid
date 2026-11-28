@@ -3839,6 +3839,7 @@ fn build_upstream_http_request(
 /// Entrypoint for `stillfail-station-pion run --whole-daemon ...` (or `STILLFAIL_PION_WHOLE_DAEMON=1`).
 pub fn run_whole_daemon(argv : Array[String]) -> Int {
   let mut state_opt : Option[WholeRuntimeState] = None
+  let mut shutdown_exit_code = 0
 
   let pump_admin_body_chunk = fn(
     ctx : DaemonCtx,
@@ -8806,7 +8807,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             st.live_runners.detach_all_for_handover(ctx, st.core, host_shim::wall_ms())
             st.core.agents.jobs.detach_all_for_handover()
           } else {
-            st.live_runners.stop_all_on_shutdown(ctx)
+            let runner_stop_ok = st.live_runners.stop_all_on_shutdown(ctx)
+            if !runner_stop_ok {
+              ctx.log("[whole-daemon] ERROR: full shutdown failed to confirm stop/persistence of all spawning runners")
+              shutdown_exit_code = 1
+            }
             let jobs_list = st.core.agents.jobs.list()
             let w_end = host_shim::wall_ms()
             for ji in 0..<jobs_list.length() {
@@ -8834,7 +8839,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     },
   }
 
-  run_daemon(argv, hooks)
+  let rc = run_daemon(argv, hooks)
+  if rc != 0 { rc } else { shutdown_exit_code }
 }
 
 fn test_wd_assert(cond : Bool, msg : String = "assertion failed") -> Unit {

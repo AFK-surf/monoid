@@ -2292,6 +2292,7 @@ test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_d
     codex_active_turn_id: None,
     dropping_oversized_out_line: false,
     stopping: true,
+    spawn_proc_exited: false,
     runner_exited: false,
     identity_verified: false,
     adopted_passive_only: false,
@@ -2314,4 +2315,131 @@ test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_d
   mgr2.finish_draining(100, confirmed_exited=true)
   assert_true(!mgr2.draining_stopping_ids.contains(inst), "confirmed exit MUST clear stop marker")
   assert_true(!mgr2.has_live_session_instance(inst), "after finish_draining instance is no longer live")
+}
+
+test "W17C-1 R24: ProcStdoutEof without OS exit preserves spawn marker, timeout preserves pending_end_turn, and shutdown status fails closed" {
+  // 1. P1-1: `ProcStdoutEof` without `ProcExit` or `ConfirmedDeadOrReused` MUST NOT clear `spawn:` marker!
+  assert_true(
+    !spawn_stdout_eof_confirmed_dead(false, SpawnIdentityVerdict::ConfirmedSame),
+    "stdout EOF while OS ConfirmedSame != confirmed dead",
+  )
+  assert_true(
+    !spawn_stdout_eof_confirmed_dead(false, SpawnIdentityVerdict::Unknown),
+    "stdout EOF while OS Unknown != confirmed dead",
+  )
+  assert_true(
+    spawn_stdout_eof_confirmed_dead(true, SpawnIdentityVerdict::Unknown),
+    "ProcExit arrived => confirmed dead",
+  )
+  assert_true(
+    spawn_stdout_eof_confirmed_dead(false, SpawnIdentityVerdict::ConfirmedDeadOrReused),
+    "OS ConfirmedDeadOrReused => confirmed dead",
+  )
+  let mgr_eof = LiveRunnerManager::new()
+  let spawn_k = match encode_spawn_stop_key_pure("r-eof-r24", 4401, 1700000003000L, Some("boot-r24"), Some(555L)) {
+    Some(k) => k
+    None => panic("expected spawn key")
+  }
+  mgr_eof.record_draining_stop_marker(spawn_k, "s-eof-r24")
+  let eof_sess = LiveRunnerSession::{
+    conn_id: 201,
+    session_key: "s-eof-r24",
+    ws: "ws-a",
+    profile_id: "default",
+    model_opt: None,
+    person_opt: None,
+    thread_id_opt: None,
+    runtime_kind: station_drivers::RuntimeKind::Claude,
+    runtime_str: "claude",
+    runner_id: "r-eof-r24",
+    spawn_pid: 4401,
+    spawn_os_start_ms: 1700000003000L,
+    spawn_boot_id: Some("boot-r24"),
+    spawn_start_ticks: Some(555L),
+    is_acp: false,
+    is_codex: false,
+    is_adopted: false,
+    adopted_instance_id: None,
+    adopted_db_initialized: false,
+    phase: LiveRunnerPhase::Exited,
+    pending_prompt: None,
+    pending_steers: [],
+    runtime_session_id: None,
+    current_turn_id: None,
+    turn_started_at: 0L,
+    turn_start_out_offset: 0L,
+    pending_ack_out: 0L,
+    last_turn_ended_at: 0L,
+    stop_guard: station_drivers::OwnProcessStopGuard::new(station_drivers::RuntimeKind::Claude),
+    acp_guard: station_drivers::AcpTurnGuard::new(station_drivers::RuntimeKind::Claude),
+    agy_tracker: station_drivers::AgyStateTracker::new("", None),
+    claude_turn: parse_claude::Turn::new(),
+    codex_live: parse_codex::Live::new(),
+    mcp_config_json: None,
+    codex_thread_params_json: None,
+    cwd: "/tmp",
+    rx_chunks: [],
+    rx_total_bytes: 0,
+    out_line_buf: Bytes::new(0),
+    err_line_buf: Bytes::new(0),
+    acked_out: 0L,
+    acked_err: 0L,
+    out_at: 0L,
+    err_at: 0L,
+    prompt_seq: 0,
+    kill_escalate_at: None,
+    detached_for_handover: false,
+    close_after_write: false,
+    attached: false,
+    write_inflight: false,
+    write_inflight_bytes: 0,
+    write_queue: [],
+    write_queue_bytes: 0,
+    codex_active_turn_id: None,
+    dropping_oversized_out_line: false,
+    stopping: true,
+    spawn_proc_exited: false,
+    runner_exited: false,
+    identity_verified: false,
+    adopted_passive_only: false,
+    prompt_write_pending: false,
+    pending_end_turn: Some(PendingEndTurn::{
+      turn_id: Some("t-r24-timeout"),
+      outcome: "failed",
+      detail: Some("runner did not start within 30s"),
+      declared_str: None,
+      need_opt: None,
+      wait_secs_opt: None,
+      wait_for_opt: None,
+      wait_watch_opt: None,
+      wall_ms: 1700000033000L,
+      was_completed: false,
+      reprompt_reminder: None,
+    }),
+    adopted_db_out: 0L,
+  }
+  mgr_eof.draining.set(201, eof_sess)
+  // Simulate stdout EOF without OS exit: `confirmed_exited = false`, `runner_exited` stays `false`,
+  // `pending_end_turn` is preserved in manager, and `spawn:` marker stays in `draining_stopping_ids`!
+  mgr_eof.preserve_pending_end_turn(eof_sess)
+  mgr_eof.finish_draining(201, confirmed_exited=false)
+  assert_true(!eof_sess.runner_exited, "stdout EOF without OS exit must NOT set runner_exited")
+  assert_true(mgr_eof.draining_stopping_ids.contains(spawn_k), "stdout EOF without OS exit must keep spawn: marker")
+  assert_true(mgr_eof.pending_end_turns.contains("s-eof-r24"), "R24 P1-2: timeout/EOF preserves uncommitted pending_end_turn")
+  // Simulate failed adopt_live_runner leaving draining session intact for retry:
+  mgr_eof.draining.set(202, eof_sess)
+  let adopted_ok = false
+  if adopted_ok {
+    mgr_eof.finish_draining(202, confirmed_exited=false)
+  }
+  assert_true(mgr_eof.draining.contains(202), "R24 P1-2: adopt_live_runner=false retains draining ownership for retry")
+  // Only once ProcExit / ConfirmedDeadOrReused arrives does finish_draining(confirmed_exited=true) clear spawn: marker:
+  mgr_eof.finish_draining(202, confirmed_exited=true)
+  assert_true(!mgr_eof.draining_stopping_ids.contains(spawn_k), "confirmed OS exit clears spawn: marker")
+
+  // 2. P1-3: `evaluate_shutdown_spawning_ok` fail-closed matrix
+  assert_true(evaluate_shutdown_spawning_ok(0, false, true), "no unresolved spawns & no markers => ok")
+  assert_true(evaluate_shutdown_spawning_ok(0, true, true), "all spawns sent TERM & markers durably saved => ok")
+  assert_true(!evaluate_shutdown_spawning_ok(1, true, true), "unresolved Spawning runner => MUST return false")
+  assert_true(!evaluate_shutdown_spawning_ok(0, true, false), "unconfirmed marker failed to persist => MUST return false")
 }
