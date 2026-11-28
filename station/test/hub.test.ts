@@ -1452,6 +1452,238 @@ test("a stopped turn that had said it waits stays stopped on a 401: no wait is k
   await r.close();
 });
 
+test("a trailing 401 after need_human, all_done, or waiting requeues an unread steered message or card reply onto a fresh process", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    // Case A: web chat card confirmation steered while trailing 401 is retrying after need_human.
+    const { r: rw, driver: dw } = await authRig(runtime);
+    try {
+      const [wkey, wthread] = await newSession(rw.hub, { runtime, createdBy: "ada@x.com" });
+      const wto = `CHAT/${wthread.threadTs}`;
+      sayIn(rw.hub, wthread.id, "ada@x.com", "更新客服手册");
+      await settle();
+      const first = dw.last();
+      await rw.call(wkey, "chat_post", {
+        to: wto,
+        text: "确认按这版更新吗？",
+        kind: "need_human",
+        need: "确认更新方案",
+        card: { type: "options", options: [{ label: "确认更新" }] },
+      });
+      // User clicks the card while the runtime retries its trailing 401 (no `requesting` emitted).
+      sayIn(rw.hub, wthread.id, "ada@x.com", "确认更新");
+      await settle();
+      assert.ok(first.steers.some((s) => s.includes("确认更新")), `${runtime}: card reply steered into dying turn`);
+      first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(first.disposed, `${runtime}: stale process ended`);
+      assert.ok(!rw.said(wthread.id).some((e) => e.text.includes("认证失败")), `${runtime}: no false auth notice`);
+      assert.equal(dw.count(), 2, `${runtime}: fresh process opened immediately for unread card reply`);
+      assert.ok(dw.last().prompts[0]!.includes("确认更新"), `${runtime}: card reply delivered to fresh process: ${dw.last().prompts[0]}`);
+      assert.deepEqual(rw.store.pendingMessages(wkey), [], `${runtime}: card reply now delivered`);
+      const turns = rw.store.listTurns(wkey);
+      assert.equal(turns[0]!.summary.outcome, "completed", runtime);
+      assert.equal(turns[0]!.summary.declared, "block", runtime);
+    } finally {
+      await rw.close();
+    }
+
+    // Case B: Slack reply steered while trailing 401 is retrying after all_done or waiting.
+    for (const decl of [
+      { kind: "all_done", done: "第一轮已完成" },
+      { kind: "waiting", seconds: 600, for: "CI" },
+    ] as const) {
+      const { r, driver } = await authRig(runtime);
+      try {
+        const m = message();
+        await r.accept(m);
+        await settle();
+        const first = driver.last();
+        const key = first.options.route;
+        await r.call(key, "chat_state", decl);
+        await r.accept(reply(m, "9999.2", `follow-up after ${decl.kind}`));
+        await settle();
+        assert.ok(first.steers.some((s) => s.includes(`follow-up after ${decl.kind}`)), `${runtime}/${decl.kind}: steered`);
+        first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+        await settle();
+        assert.ok(first.disposed, `${runtime}/${decl.kind}: stale process ended`);
+        assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), `${runtime}/${decl.kind}: no false auth notice`);
+        assert.equal(driver.count(), 2, `${runtime}/${decl.kind}: fresh process opened for unread steered reply`);
+        assert.ok(driver.last().prompts[0]!.includes(`follow-up after ${decl.kind}`), `${runtime}/${decl.kind}: ${driver.last().prompts[0]}`);
+      } finally {
+        await r.close();
+      }
+    }
+  }
+});
+
+test("a trailing 401 does not replay a steered message that the model already read before declaring its state", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    const { r, driver } = await authRig(runtime);
+    try {
+      const m = message();
+      await r.accept(m);
+      await settle();
+      const first = driver.last();
+      const key = first.options.route;
+      await r.accept(reply(m, "9999.2", "already handled before declare"));
+      await settle();
+      assert.equal(first.steers.length, 1, runtime);
+      first.events({ type: "live", event: { kind: "phase", phase: "requesting" } });
+      await settle();
+      await r.call(key, "chat_state", { kind: "all_done", done: "两条消息都已处理完" });
+      first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(first.disposed, runtime);
+      assert.equal(driver.count(), 1, `${runtime}: already-read steered message must not be replayed`);
+      assert.deepEqual(r.store.pendingMessages(key), [], runtime);
+      assert.ok(!r.chat.texts().some((s) => s.includes("认证失败")), runtime);
+      const last = r.store.lastTurn(key)!;
+      assert.deepEqual([last.outcome, last.ending], ["completed", "all_done"], runtime);
+    } finally {
+      await r.close();
+    }
+  }
+});
+
+test("a letter (apart: true) steered after waiting clears the stale declaration once read, and is requeued if a trailing 401 kills the process before it is read", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    // Subcase A: letter steered after `waiting`, model reads it (`phase: requesting`), then hits 401 mid-work.
+    const { r: rRead, driver: dRead } = await authRig(runtime);
+    try {
+      const [a, b] = [say("<@UBOT> sender"), say("<@UBOT> worker")];
+      await rRead.accept(a);
+      await rRead.accept(b);
+      await settle();
+      const [keyA, keyB] = [sessionKey("cl", "C1", a.threadTs), sessionKey("cl", "C1", b.threadTs)];
+      const firstB = opened(dRead, keyB)!;
+      await rRead.call(keyB, "chat_state", { kind: "waiting", seconds: 600, for: "subtasks" });
+      await rRead.call(keyA, "session_send", { to: keyB, text: "证书已拿到，请继续处理" });
+      await settle();
+      assert.ok(firstB.steers.some((s) => s.includes("证书已拿到")), `${runtime}: letter steered into B`);
+      // Model reads the letter and finishes a tool call -> emits `phase: requesting`.
+      firstB.events({ type: "live", event: { kind: "phase", phase: "requesting" } });
+      await settle();
+      // Mid-work LLM call hits 401: must NOT be swallowed as trailing auth failure!
+      firstB.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(firstB.disposed, `${runtime}: stale process ended`);
+      const bSessions = dRead.sessions.filter((s) => s.options.route === keyB);
+      assert.equal(bSessions.length, 2, `${runtime}: mid-work 401 after reading letter must enter auth_retry`);
+      assert.deepEqual(bSessions[1]!.prompts.map(untimed), [GO_ON_AFTER_AUTH], runtime);
+      const turnsB = rRead.store.listTurns(keyB);
+      assert.equal(turnsB[0]!.summary.outcome, "failed", `${runtime}: first turn failed, not completed(waiting)`);
+      assert.equal(turnsB[0]!.summary.declared, null, `${runtime}: stale waiting declaration was cleared`);
+    } finally {
+      await rRead.close();
+    }
+
+    // Subcase B: letter steered during trailing 401 (never read before 401 ends the turn) -> requeued to fresh process.
+    const { r: rUnread, driver: dUnread } = await authRig(runtime);
+    try {
+      const [a, b] = [say("<@UBOT> sender unread"), say("<@UBOT> worker unread")];
+      await rUnread.accept(a);
+      await rUnread.accept(b);
+      await settle();
+      const [keyA, keyB] = [sessionKey("cl", "C1", a.threadTs), sessionKey("cl", "C1", b.threadTs)];
+      const firstB = opened(dUnread, keyB)!;
+      await rUnread.call(keyB, "chat_state", { kind: "waiting", seconds: 600, for: "subtasks" });
+      await rUnread.call(keyA, "session_send", { to: keyB, text: "未读来信内容" });
+      await settle();
+      assert.ok(firstB.steers.some((s) => s.includes("未读来信内容")), `${runtime}: unread letter steered into B`);
+      firstB.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(firstB.disposed, `${runtime}: stale process ended`);
+      assert.ok(!rUnread.chat.texts().some((s) => s.includes("认证失败")), `${runtime}: no false auth notice`);
+      const bSessions = dUnread.sessions.filter((s) => s.options.route === keyB);
+      assert.equal(bSessions.length, 2, `${runtime}: fresh process opened immediately for unread letter`);
+      assert.ok(bSessions[1]!.prompts[0]!.includes("未读来信内容"), `${runtime}: ${bSessions[1]!.prompts[0]}`);
+      assert.deepEqual(rUnread.store.pendingMessages(keyB), [], `${runtime}: letter now delivered`);
+      const turnsB = rUnread.store.listTurns(keyB);
+      assert.equal(turnsB[0]!.summary.outcome, "completed", runtime);
+      assert.equal(turnsB[0]!.summary.declared, "waiting", runtime);
+    } finally {
+      await rUnread.close();
+    }
+  }
+});
+
+test("a station notice steered after a declared state is restored on trailing 401 and clears the state once read", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    // Subcase A: unread station notice during trailing 401 -> restored and delivered in a fresh process.
+    const { r: rUnread, driver: dUnread } = await authRig(runtime);
+    try {
+      await rUnread.accept(message());
+      await settle();
+      const first = dUnread.last();
+      const key = first.options.route;
+      await rUnread.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "job" });
+      rUnread.hub.notify(key, "job finished while 401 retrying");
+      await settle();
+      assert.ok(first.steers.some((s) => s.includes("job finished while 401 retrying")), runtime);
+      first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(first.disposed, runtime);
+      assert.ok(!rUnread.chat.texts().some((s) => s.includes("认证失败")), runtime);
+      assert.equal(dUnread.count(), 2, `${runtime}: fresh process opened for restored station notice`);
+      assert.ok(dUnread.last().prompts[0]!.includes("job finished while 401 retrying"), `${runtime}: ${dUnread.last().prompts[0]}`);
+    } finally {
+      await rUnread.close();
+    }
+
+    // Subcase B: station notice steered after waiting, read (`phase: requesting`), then 401 -> enters auth_retry.
+    const { r: rRead, driver: dRead } = await authRig(runtime);
+    try {
+      await rRead.accept(message());
+      await settle();
+      const first = dRead.last();
+      const key = first.options.route;
+      await rRead.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "job" });
+      rRead.hub.notify(key, "job finished and read before 401");
+      await settle();
+      assert.ok(first.steers.some((s) => s.includes("job finished and read before 401")), runtime);
+      first.events({ type: "live", event: { kind: "phase", phase: "requesting" } });
+      await settle();
+      first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(first.disposed, runtime);
+      assert.equal(dRead.count(), 2, `${runtime}: mid-work 401 after reading notice enters auth_retry`);
+      assert.deepEqual(dRead.last().prompts.map(untimed), [GO_ON_AFTER_AUTH], runtime);
+      assert.equal(rRead.store.listTurns(key)[0]!.summary.outcome, "failed", runtime);
+    } finally {
+      await rRead.close();
+    }
+  }
+});
+
+test("an unread message steered into a mid-turn 401 retry is delivered to the fresh process without looping on a broken account", async () => {
+  for (const runtime of ["claude", "agy"] as const) {
+    const { r, driver } = await authRig(runtime);
+    try {
+      const m = message();
+      await r.accept(m);
+      await settle();
+      const first = driver.last();
+      await r.accept(reply(m, "9999.2", "do not drop during mid-turn 401"));
+      await settle();
+      assert.ok(first.steers.some((s) => s.includes("do not drop during mid-turn 401")), runtime);
+      first.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.ok(first.disposed, runtime);
+      assert.equal(driver.count(), 2, `${runtime}: auth_retry opens fresh process`);
+      const second = driver.last();
+      assert.deepEqual(second.prompts.map(untimed), [GO_ON_AFTER_AUTH], runtime);
+      assert.ok(second.steers.some((s) => s.includes("do not drop during mid-turn 401")), `${runtime}: unread steered reply forwarded to retry process`);
+      // A persistent broken account still stops after the retry without looping.
+      second.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+      await settle();
+      assert.equal(driver.count(), 2, `${runtime}: persistent auth failure stops without infinite loop`);
+      assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), `${runtime}: ${r.chat.lastText()}`);
+    } finally {
+      await r.close();
+    }
+  }
+});
+
 test("claude auth's retry budget and whom the turn is for survive a handover", async () => {
   const r = new Rig();
   await r.accept(message());

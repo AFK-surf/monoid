@@ -666,6 +666,31 @@ static void test_win_cli_prims(void) {
     printf("  [PASS] win cli prims (200B atomic write + dangling dir/file symlink)\n");
 }
 
+static void test_win_utimes_now(void) {
+    int64_t tlen = 0;
+    char *tmp = (char *)sts_tmpdir(&tlen);
+    assert(tmp != NULL && tlen > 0);
+    char dir[512], fpath[1024], miss[1024];
+    int dn = snprintf(dir, sizeof(dir), "%s\\sts-utimes-%lu", tmp, (unsigned long)GetCurrentProcessId());
+    assert(dn > 0 && dn < (int)sizeof(dir));
+    int fn = snprintf(fpath, sizeof(fpath), "%s\\file.txt", dir);
+    assert(fn > 0 && fn < (int)sizeof(fpath));
+    int mn = snprintf(miss, sizeof(miss), "%s\\missing.txt", dir);
+    assert(mn > 0 && mn < (int)sizeof(miss));
+    sts_free(tmp);
+    assert(sts_mkdir_p(dir) == 1);
+    const uint8_t msg[] = "utimes";
+    assert(sts_write_file_atomic(fpath, msg, (int64_t)(sizeof(msg) - 1), 420) == 1);
+    assert(sts_utimes_now(fpath) == 1);
+    assert(sts_utimes_now(dir) == 1);
+    assert(sts_utimes_now(miss) == 0);
+    assert(sts_utimes_now(NULL) == 0);
+    assert(sts_utimes_now("") == 0);
+    assert(DeleteFileA(fpath) != 0);
+    assert(RemoveDirectoryA(dir) != 0);
+    printf("  [PASS] win sts_utimes_now (file, dir, missing, null/empty)\n");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_win_fs_watch();
@@ -674,6 +699,7 @@ int main(void) {
     test_win_udp_and_info();
     test_win_drive_io_and_reparse();
     test_win_cli_prims();
+    test_win_utimes_now();
     test_js_lower_utf8();
     assert(sts_selftest_verified_send_cancel() == 0);
     printf("  [PASS] verified_send cancel state machine selftest\n");
@@ -2456,6 +2482,68 @@ int main(void) {
         free(payload);
         assert(unlink(sym) == 0 && unlink(dst) == 0 && unlink(src) == 0 && rmdir(cdir) == 0);
         printf("  [PASS] CoW clone primitives (clones_at=%d, clone_file, clone_tree, extent sharing)\n", can_clone);
+    }
+
+    {
+        char udir[256], uf[300], umiss[300];
+        snprintf(udir, sizeof(udir), "/tmp/sts-utimes-%ld", (long)getpid());
+        snprintf(uf, sizeof(uf), "%s/file.txt", udir);
+        snprintf(umiss, sizeof(umiss), "%s/missing.txt", udir);
+        assert(sts_mkdir_p(udir) == 1);
+        const uint8_t msg[] = "utimes";
+        assert(sts_write_file_atomic(uf, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        struct timespec old_ts[2];
+        old_ts[0].tv_sec = 1000000000;
+        old_ts[0].tv_nsec = 0;
+        old_ts[1].tv_sec = 1000000000;
+        old_ts[1].tv_nsec = 0;
+        assert(utimensat(AT_FDCWD, uf, old_ts, 0) == 0);
+        struct stat st_before, st_after;
+        assert(stat(uf, &st_before) == 0 && st_before.st_mtime == 1000000000);
+        assert(sts_utimes_now(uf) == 1);
+        assert(stat(uf, &st_after) == 0 && st_after.st_mtime > 1000000000);
+        assert(sts_utimes_now(udir) == 1);
+        assert(sts_utimes_now(umiss) == 0);
+        assert(sts_utimes_now(NULL) == 0);
+        assert(sts_utimes_now("") == 0);
+        // Symlink target mtime MUST remain untouched (`AT_SYMLINK_NOFOLLOW`).
+        char usym[300], utgt[300];
+        snprintf(utgt, sizeof(utgt), "%s/target.txt", udir);
+        snprintf(usym, sizeof(usym), "%s/link.txt", udir);
+        assert(sts_write_file_atomic(utgt, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        assert(utimensat(AT_FDCWD, utgt, old_ts, 0) == 0);
+        assert(symlink(utgt, usym) == 0);
+        (void)sts_utimes_now(usym);
+        struct stat st_tgt;
+        assert(stat(utgt, &st_tgt) == 0 && st_tgt.st_mtime == 1000000000);
+        // Dirfd-relative `sts_utimes_dir_children_now`: refreshes child & dir, rejects symlinked parent dir.
+        char ulinkdir[300];
+        snprintf(ulinkdir, sizeof(ulinkdir), "%s_sym", udir);
+        assert(symlink(udir, ulinkdir) == 0);
+        assert(sts_utimes_dir_children_now(ulinkdir) == 0);
+        assert(sts_utimes_dir_children_now(udir) == 1);
+        assert(unlink(ulinkdir) == 0);
+        // Dirfd-relative `sts_cleanup_stale_tar_extracts_dir`: unlinks regular tar-extract-*.bin, skips dir/symlink, rejects symlink parent.
+        char tfile[300], tkeep[300], tsym[300], tsub[300];
+        snprintf(tfile, sizeof(tfile), "%s/tar-extract-stale.bin", udir);
+        snprintf(tkeep, sizeof(tkeep), "%s/keep.bin", udir);
+        snprintf(tsym, sizeof(tsym), "%s/tar-extract-sym.bin", udir);
+        snprintf(tsub, sizeof(tsub), "%s/tar-extract-sub.bin", udir);
+        assert(sts_write_file_atomic(tfile, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        assert(sts_write_file_atomic(tkeep, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        assert(symlink(tkeep, tsym) == 0);
+        assert(mkdir(tsub, 0755) == 0);
+        assert(symlink(udir, ulinkdir) == 0);
+        assert(sts_cleanup_stale_tar_extracts_dir(ulinkdir, 2000000000000LL, 0) == -1);
+        assert(sts_cleanup_stale_tar_extracts_dir(udir, 2000000000000LL, 0) == 1);
+        assert(access(tfile, F_OK) != 0);
+        assert(access(tkeep, F_OK) == 0);
+        assert(access(tsym, F_OK) == 0);
+        assert(access(tsub, F_OK) == 0);
+        assert(unlink(ulinkdir) == 0 && unlink(tsym) == 0 && rmdir(tsub) == 0 && unlink(tkeep) == 0);
+        assert(unlink(usym) == 0 && unlink(utgt) == 0);
+        assert(unlink(uf) == 0 && rmdir(udir) == 0);
+        printf("  [PASS] sts_utimes_now & dirfd-relative cleanup/utimes (symlink parent/child nofollow)\n");
     }
 
     assert(sts_selftest_verified_send_cancel() == 0);

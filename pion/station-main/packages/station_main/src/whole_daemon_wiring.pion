@@ -1061,10 +1061,15 @@ pub fn AsyncUpkeepRunner::tick(
   if clones_active {
     return
   }
-  // 2. Schedule periodic discovery pass
+  // 2. Schedule periodic discovery pass & dirfd-safe stale tar-extract cleanup
   if self.pending_repos.length() == 0 && now_ms >= self.next_pass_ms {
     // timer: periodic async shared-clone pack upkeep interval (1h)
     self.next_pass_ms = now_ms + ASYNC_UPKEEP_INTERVAL_MS
+    let _ = station_sys::cleanup_stale_tar_extracts_dir(
+      nodepath::join(self.sep, [self.data_dir, "tmp"]),
+      host_shim::wall_ms(),
+      3600000L,
+    )
     let _ = self.discover_repos(false)
   }
   // 3. Pop next repo and spawn async `git gc --auto --quiet`

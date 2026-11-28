@@ -730,11 +730,11 @@ let narrow_tools_gap : Double = 4.0
 let narrow_tool_on : Double = 0.07
 
 ///|
-/// The sheets' share of the page: the contents and the search 72%, the layout half.
+/// The sheets' share of the page: the contents and the search 72%, the layout 64% cap (hugs content with concentric 24pt bottom room on 360×740 and 390×844).
 let narrow_sheet_tall : Double = 0.72
 
 ///|
-let narrow_sheet_half : Double = 0.5
+let narrow_sheet_half : Double = 0.64
 
 ///|
 // kept across runs: a value (no field of it changes)

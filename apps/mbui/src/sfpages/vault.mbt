@@ -1285,7 +1285,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
   let topic_of = fn(rv : Json?) { (core.topic)("vaultItems", { "workspace": str(ws()), "vault": str(text(rv, "id")) }).get() }
   // (each worked out once for each change of what it reads, read by all that shows it: the card's rows, whether there
   // are any, what is said in their place)
-  let reading = @signals.computed(fn(_) { vaults().iter().any(fn(r) { topic_of(Some(r)).value is None }) })
+  let reading = @signals.computed(fn(_) { let mut a = false; for r in vaults() { if topic_of(Some(r)).value is None { a = true; break } }; a })
   // each vault's secrets, by name (the core's order); those it does not name, a row
   let rows = @signals.computed(fn(_) {
     let plain = flag(view(), "plain")

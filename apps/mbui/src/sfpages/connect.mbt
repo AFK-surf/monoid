@@ -384,10 +384,10 @@ fn cd_run_node(b : @view.View, src : Source, core : Core, here : () -> Here, sta
   // whether its station runs a model on its runtime (on any, where its runtime may change): the runtimes its page says
   // it runs, each with its models (the core's `station`)
   let runs_none = fn() {
-    let runtime = text(field(cv(), "bind"), "runtime")
+    let runtime = text(field(cv(), "bind"), "runtime"); let ch = changes()
     !items(@settings.station_of(core, here(), station), "runtimes")
     .iter()
-    .any(fn(r) { (changes() || text(Some(r), "runtime") == runtime) && strings(Some(r), "models").length() > 0 })
+    .any(fn(r) { (ch || text(Some(r), "runtime") == runtime) && strings(Some(r), "models").length() > 0 })
   }
   let bind_on = [("station", station), ("connect", id)]
   let binding = fn() { is_doing(core, ["connect.bindSession"], bind_on) }

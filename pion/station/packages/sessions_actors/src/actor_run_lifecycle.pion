@@ -1852,10 +1852,17 @@ pub fn ActorsGen::suspend_k(
             a.working_for = []
             a.stop_requested = false
             let steered = a.steered
+            let steered_notices : Array[String] = []
+            for i in 0..<a.steered_notices.length() {
+              steered_notices.push(a.steered_notices[i].text)
+            }
             a.steered = []
             a.steered_for = []
             a.unread = []
             a.unread_preparing = 0
+            a.steered_unread = []
+            a.steered_unread_preparing = 0
+            a.steered_notices = []
             if !is_some(agent) && !is_some(turn) {
               finish(effect::Exit::Succeeded(()))
               return
@@ -1917,6 +1924,16 @@ pub fn ActorsGen::suspend_k(
                                 }
                               }
                               if is_some(turn) || busy {
+                                if steered_notices.length() > 0 {
+                                  let next_n : Array[String] = []
+                                  for i in 0..<steered_notices.length() {
+                                    next_n.push(steered_notices[i])
+                                  }
+                                  for i in 0..<a.notices.length() {
+                                    next_n.push(a.notices[i])
+                                  }
+                                  a.notices = next_n
+                                }
                                 self.store_k(
                                   a,
                                   "markUndelivered",

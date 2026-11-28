@@ -10706,4 +10706,384 @@ int32_t sts_runner_sock_send_verified(
 #endif
 }
 
+int32_t sts_utimes_now(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    if (wp == NULL) return 0;
+    HANDLE h = CreateFileW(
+        wp,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    free(wp);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FILE_ATTRIBUTE_TAG_INFO ati;
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
+        // Fail-closed: if we cannot inspect reparse/symlink attributes, refuse to touch timestamps.
+        CloseHandle(h);
+        return 0;
+    }
+    if ((ati.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+        (ati.ReparseTag & 0x20000000u) != 0) {
+        CloseHandle(h);
+        return 0;
+    }
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    BOOL ok = SetFileTime(h, NULL, &ft, &ft);
+    CloseHandle(h);
+    return ok ? 1 : 0;
+#else
+    return utimensat(AT_FDCWD, path, NULL, AT_SYMLINK_NOFOLLOW) == 0 ? 1 : 0;
+#endif
+}
+
+int32_t sts_utimes_dir_children_now(const char *dir_path) {
+    if (dir_path == NULL || dir_path[0] == '\0') return 0;
+#ifdef _WIN32
+    // Windows: verify directory itself is not a reparse point, then touch children + dir.
+    wchar_t *wd = utf8_to_wide(dir_path);
+    if (wd == NULL) return 0;
+    HANDLE dh = CreateFileW(
+        wd,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    free(wd);
+    if (dh == INVALID_HANDLE_VALUE) return 0;
+    FILE_ATTRIBUTE_TAG_INFO dati;
+    if (!GetFileInformationByHandleEx(dh, FileAttributeTagInfo, &dati, sizeof(dati)) ||
+        ((dati.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && (dati.ReparseTag & 0x20000000u) != 0)) {
+        CloseHandle(dh);
+        return 0;
+    }
+    size_t dlen = strlen(dir_path);
+    char *pat = (char *)malloc(dlen + 3);
+    if (pat != NULL) {
+        memcpy(pat, dir_path, dlen);
+        pat[dlen] = '\\';
+        pat[dlen + 1] = '*';
+        pat[dlen + 2] = '\0';
+        wchar_t *wpat = utf8_to_wide(pat);
+        free(pat);
+        if (wpat != NULL) {
+            WIN32_FIND_DATAW ffd;
+            HANDLE fh = FindFirstFileW(wpat, &ffd);
+            free(wpat);
+            if (fh != INVALID_HANDLE_VALUE) {
+                do {
+                    if (wcscmp(ffd.cFileName, L".") == 0 || wcscmp(ffd.cFileName, L"..") == 0) continue;
+                    if ((ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) continue;
+                    char *cname = wide_to_utf8(ffd.cFileName);
+                    if (cname != NULL) {
+                        size_t clen = strlen(cname);
+                        char *full = (char *)malloc(dlen + 1 + clen + 1);
+                        if (full != NULL) {
+                            memcpy(full, dir_path, dlen);
+                            full[dlen] = '\\';
+                            memcpy(full + dlen + 1, cname, clen + 1);
+                            (void)sts_utimes_now(full);
+                            free(full);
+                        }
+                        free(cname);
+                    }
+                } while (FindNextFileW(fh, &ffd));
+                FindClose(fh);
+            }
+        }
+    }
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    BOOL ok = SetFileTime(dh, NULL, &ft, &ft);
+    CloseHandle(dh);
+    return ok ? 1 : 0;
+#else
+    int dfd = open(dir_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dfd < 0) return 0;
+    int dup_fd = dup(dfd);
+    if (dup_fd < 0) {
+        close(dfd);
+        return 0;
+    }
+    DIR *dp = fdopendir(dup_fd);
+    if (dp == NULL) {
+        close(dup_fd);
+        close(dfd);
+        return 0;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(dp)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        struct stat st;
+        if (fstatat(dfd, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        if (S_ISLNK(st.st_mode)) continue;
+        (void)utimensat(dfd, ent->d_name, NULL, AT_SYMLINK_NOFOLLOW);
+    }
+    closedir(dp);
+    int rc = futimens(dfd, NULL);
+    close(dfd);
+    return rc == 0 ? 1 : 0;
+#endif
+}
+
+static int sts_is_tar_extract_bin_name(const char *name) {
+    if (name == NULL) return 0;
+    size_t len = strlen(name);
+    const char *pref = "tar-extract-";
+    const char *suf = ".bin";
+    size_t plen = 12;
+    size_t slen = 4;
+    if (len <= plen + slen) return 0;
+    if (memcmp(name, pref, plen) != 0) return 0;
+    if (memcmp(name + len - slen, suf, slen) != 0) return 0;
+    return 1;
+}
+
+int32_t sts_cleanup_stale_tar_extracts_dir(const char *tmp_dir, int64_t now_ms, int64_t min_age_ms) {
+    if (tmp_dir == NULL || tmp_dir[0] == '\0') return 0;
+#ifdef _WIN32
+    wchar_t *wd = utf8_to_wide(tmp_dir);
+    if (wd == NULL) return 0;
+    HANDLE dh = CreateFileW(
+        wd,
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    free(wd);
+    if (dh == INVALID_HANDLE_VALUE) return 0;
+    FILE_ATTRIBUTE_TAG_INFO dati;
+    if (!GetFileInformationByHandleEx(dh, FileAttributeTagInfo, &dati, sizeof(dati)) ||
+        ((dati.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && (dati.ReparseTag & 0x20000000u) != 0)) {
+        CloseHandle(dh);
+        return -1;
+    }
+    CloseHandle(dh);
+    int32_t removed = 0;
+    size_t dlen = strlen(tmp_dir);
+    char *pat = (char *)malloc(dlen + 3);
+    if (pat == NULL) return 0;
+    memcpy(pat, tmp_dir, dlen);
+    pat[dlen] = '\\';
+    pat[dlen + 1] = '*';
+    pat[dlen + 2] = '\0';
+    wchar_t *wpat = utf8_to_wide(pat);
+    free(pat);
+    if (wpat == NULL) return 0;
+    WIN32_FIND_DATAW ffd;
+    HANDLE fh = FindFirstFileW(wpat, &ffd);
+    free(wpat);
+    if (fh == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if ((ffd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) continue;
+        char *cname = wide_to_utf8(ffd.cFileName);
+        if (cname == NULL) continue;
+        if (sts_is_tar_extract_bin_name(cname)) {
+            ULARGE_INTEGER uli;
+            uli.LowPart = ffd.ftLastWriteTime.dwLowDateTime;
+            uli.HighPart = ffd.ftLastWriteTime.dwHighDateTime;
+            int64_t mtime_ms = (int64_t)((uli.QuadPart - 116444736000000000ULL) / 10000ULL);
+            if (min_age_ms <= 0 || now_ms - mtime_ms >= min_age_ms) {
+                size_t clen = strlen(cname);
+                char *full = (char *)malloc(dlen + 1 + clen + 1);
+                if (full != NULL) {
+                    memcpy(full, tmp_dir, dlen);
+                    full[dlen] = '\\';
+                    memcpy(full + dlen + 1, cname, clen + 1);
+                    wchar_t *wfull = utf8_to_wide(full);
+                    free(full);
+                    if (wfull != NULL) {
+                        if (DeleteFileW(wfull)) removed++;
+                        free(wfull);
+                    }
+                }
+            }
+        }
+        free(cname);
+    } while (FindNextFileW(fh, &ffd));
+    FindClose(fh);
+    return removed;
+#else
+    int dfd = open(tmp_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dfd < 0) return errno == ENOENT ? 0 : -1;
+    int dup_fd = dup(dfd);
+    if (dup_fd < 0) {
+        close(dfd);
+        return -1;
+    }
+    DIR *dp = fdopendir(dup_fd);
+    if (dp == NULL) {
+        close(dup_fd);
+        close(dfd);
+        return -1;
+    }
+    int32_t removed = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dp)) != NULL) {
+        if (!sts_is_tar_extract_bin_name(ent->d_name)) continue;
+        struct stat st;
+        if (fstatat(dfd, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        if (!S_ISREG(st.st_mode)) continue;
+        int64_t mtime_ms = (int64_t)st.st_mtime * 1000LL;
+        if (min_age_ms <= 0 || now_ms - mtime_ms >= min_age_ms) {
+            if (unlinkat(dfd, ent->d_name, 0) == 0) {
+                removed++;
+            }
+        }
+    }
+    closedir(dp);
+    close(dfd);
+    return removed;
+#endif
+}
+
+static atomic_int g_sts_dns_all_inflight = 0;
+#define STS_DNS_ALL_MAX_INFLIGHT 32
+
+typedef struct {
+    uint64_t event_id;
+    char *host;
+} sts_dns_all_task_t;
+
+static void sts_dns_all_run_task(sts_dns_all_task_t *task) {
+#ifdef _WIN32
+    static atomic_int g_sts_resolve_all_wsa = 0;
+    if (atomic_load(&g_sts_resolve_all_wsa) == 0) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+            atomic_store(&g_sts_resolve_all_wsa, 1);
+        }
+    }
+#endif
+    uint8_t payload[5 + 4096];
+    size_t pos = 5;
+    int32_t out_rc = -1;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(task->host, NULL, &hints, &res) == 0 && res != NULL) {
+        int count = 0;
+        int truncated = 0;
+        for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+            if (ai->ai_addr == NULL) continue;
+            if (count >= 64) {
+                truncated = 1;
+                break;
+            }
+            char buf[INET6_ADDRSTRLEN];
+            buf[0] = '\0';
+            if (ai->ai_family == AF_INET) {
+                const struct sockaddr_in *sin = (const struct sockaddr_in *)ai->ai_addr;
+                if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) == NULL) buf[0] = '\0';
+            } else if (ai->ai_family == AF_INET6) {
+                const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ai->ai_addr;
+                if (inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf)) == NULL) buf[0] = '\0';
+            }
+            if (buf[0] == '\0') continue;
+            size_t blen = strlen(buf);
+            size_t need = blen + (count > 0 ? 1u : 0u);
+            if (pos + need > sizeof(payload)) {
+                truncated = 1;
+                break;
+            }
+            if (count > 0) {
+                payload[pos++] = (uint8_t)'\n';
+            }
+            memcpy(payload + pos, buf, blen);
+            pos += blen;
+            count++;
+        }
+        freeaddrinfo(res);
+        // Fail-closed: if the response had >64 addresses or overflowed buffer, reject (unverifiable).
+        if (count > 0 && !truncated) out_rc = 1;
+    }
+    payload[0] = (uint8_t)STS_EV_DNS_RESOLVED;
+    uint32_t u = (uint32_t)out_rc;
+    payload[1] = (uint8_t)(u & 0xFFu);
+    payload[2] = (uint8_t)((u >> 8) & 0xFFu);
+    payload[3] = (uint8_t)((u >> 16) & 0xFFu);
+    payload[4] = (uint8_t)((u >> 24) & 0xFFu);
+    sth_push_sys(task->event_id, payload, (int64_t)(out_rc == 1 ? pos : 5));
+    free(task->host);
+    free(task);
+    atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI sts_dns_all_worker_win(LPVOID arg) {
+    sts_dns_all_run_task((sts_dns_all_task_t *)arg);
+    sts_detached_end();
+    return 0;
+}
+#else
+static void *sts_dns_all_worker_posix(void *arg) {
+    sts_dns_all_run_task((sts_dns_all_task_t *)arg);
+    sts_detached_end();
+    return NULL;
+}
+#endif
+
+int32_t sts_resolve_host_all_async(uint64_t event_id, const char *host) {
+    if (host == NULL || host[0] == '\0') return 0;
+    size_t hlen = strlen(host);
+    if (hlen >= 512) return 0;
+    int prev = atomic_fetch_add(&g_sts_dns_all_inflight, 1);
+    if (prev >= STS_DNS_ALL_MAX_INFLIGHT) {
+        atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+        return 0;
+    }
+    sts_dns_all_task_t *task = (sts_dns_all_task_t *)calloc(1, sizeof(sts_dns_all_task_t));
+    if (task == NULL) {
+        atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+        return 0;
+    }
+    task->host = (char *)malloc(hlen + 1);
+    if (task->host == NULL) {
+        free(task);
+        atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+        return 0;
+    }
+    memcpy(task->host, host, hlen + 1);
+    task->event_id = event_id;
+    sts_detached_begin();
+#ifdef _WIN32
+    HANDLE th = CreateThread(NULL, 0, sts_dns_all_worker_win, task, 0, NULL);
+    if (th == NULL) {
+        sts_detached_end();
+        free(task->host);
+        free(task);
+        atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+        return 0;
+    }
+    CloseHandle(th);
+    return 1;
+#else
+    pthread_t th;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&th, &attr, sts_dns_all_worker_posix, task);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        sts_detached_end();
+        free(task->host);
+        free(task);
+        atomic_fetch_sub(&g_sts_dns_all_inflight, 1);
+        return 0;
+    }
+    return 1;
+#endif
+}
+
 #include "station_js_lower.h"

@@ -963,12 +963,9 @@ pub fn ReadOpsPort::production(
             let _ = (agents.jobs.fs.remove_dir_all)(dst)
           }
           if station_sys::rename(src, dst) {
-            // Refresh `.gone/<h(draftId)>` directory mtime to `now` so upkeep (`GONE_FILES_MS`)
-            // counts from when the draft became gone rather than when it was first created.
-            let touch = nodepath::join(sep, [dst, ".mtime-touch"])
-            if station_sys::write_file_atomic(touch, Bytes::new(0), 384) {
-              let _ = (agents.jobs.fs.remove_file)(touch)
-            }
+            // PR #9161 P2: refresh mtime of every non-symlink file inside `.gone/<h(draftId)>`
+            // AND the directory itself via dirfd-relative `utimensat`/`futimens` (O_NOFOLLOW).
+            let _ = station_sys::utimes_dir_children_now(dst)
           }
         }
       }
@@ -2741,10 +2738,11 @@ pub fn dispatch_wave17c3a_call_op(
     }
   }
 
-  // ── E. Links Preview & Feedback Report: honest 501 until real SSRF-safe HTTP / cloud ticket hooks are wired ──
+  // ── E. Links Preview & Feedback Report (delegated to `whole_api_interactive_ops.pion`, honest 501 when unhooked) ──
 
-  if op == "links.preview" || op == "feedback.report" {
-    return Some(Err(err_not_implemented(op)))
+  match dispatch_interactive_call_op(op, req, params, body, hooks) {
+    Some(res) => return Some(res)
+    None => ()
   }
 
   // ── F. Resources Process End (Node-aligned visibility + handle-bound stop, zero PID-reuse TOCTOU) ──
@@ -3103,6 +3101,12 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
       }
     }
     _ => return Err("prod PUT /board/drafts gone unexpected action")
+  }
+
+  // 11. Wave 17D-3 real SQLite + real FS selftest (signins, projects rename/merge, feedback, utimes)
+  match run_w17d3_sqlite_selftest(root_tmp) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
   }
 
   let _ = (agents.jobs.fs.remove_dir_all)(root_tmp)

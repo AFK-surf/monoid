@@ -1200,10 +1200,14 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     a.working_for = []
     a.stop_requested = false
     let steered = a.steered
+    let steered_notices = a.steered_notices.map(n => n.text)
     a.steered = []
     a.steered_for = []
     a.unread = []
     a.unread_preparing = 0
+    a.steered_unread = []
+    a.steered_unread_preparing = 0
+    a.steered_notices = []
     if agent is None && turn is None {
       return
     }
@@ -1219,6 +1223,9 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     self.set_running(a, resume)
     if turn is Some(_) || busy {
       ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(steered)]))
+      if steered_notices.length() > 0 {
+        a.notices = steered_notices + a.notices
+      }
     }
     self.live_turn_ended(a)
     self.notify_store(a)
@@ -1521,13 +1528,36 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
     let (reminder, reminded) = self.maybe_progress_reminder(a)
     let body = match reminder { Some(r) => text + "\n\n" + r; None => text }
     let (handed, told) = self.with_choices(a, body)
+    let timed = self.timed(a, handed)
+    // Track steered notices before writing to the runtime so `phase: "requesting"` clears a stale declaration even if
+    // it arrives before `steer` answers, and a dying process can restore unread notices back to `a.notices`.
+    let k = if n > a.notices.length() { a.notices.length() } else { n }
+    let batch_start = a.steered_seq + 1
+    for i in 0..<k {
+      a.steered_seq += 1
+      a.steered_notices.push({ seq: a.steered_seq, text: a.notices[i] })
+    }
+    let batch_end = a.steered_seq
+    let unsteer_notices = () => {
+      if batch_end >= batch_start {
+        a.steered_notices = a.steered_notices.filter(item => item.seq < batch_start || item.seq > batch_end)
+      }
+    }
     // (taken once written: one not taken stays as it was, given with the next turn)
-    if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
+    let steered = truthy(self.agent_do(a, agent, "steer", [jstr(timed)])) catch {
+      e => {
+        unsteer_notices()
+        raise e
+      }
+    }
+    if steered {
       ignore(drain_notices(a, n))
       self.told(a, told)
       if reminded {
         a.progress_reminded_at = self.now
       }
+    } else {
+      unsteer_notices()
     }
     return
   }
@@ -1681,22 +1711,31 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     // it, so Node has it before the mark. Not written yet, a `requesting` leaves it: `unread_preparing`.)
     let before = a.unread.length()
     let mut added = 0
+    let batch_start = a.steered_seq + 1
     for m in d.pending {
       if !(m.value("apart") is Some(True)) {
         a.unread.push(m)
         added += 1
       }
+      a.steered_seq += 1
+      a.steered_unread.push({ seq: a.steered_seq, handed: m.value("handed").unwrap_or(Json::null()) })
     }
+    let batch_end = a.steered_seq
     a.unread_preparing = added
+    a.steered_unread_preparing = d.pending.length()
     if added > 0 {
       self.mirror(a)
     }
     let unsteer = () => {
       a.unread_preparing = 0
+      a.steered_unread_preparing = 0
       if a.unread.length() >= before + added {
         for _ in 0..<added {
           ignore(a.unread.pop())
         }
+      }
+      if batch_end >= batch_start {
+        a.steered_unread = a.steered_unread.filter(item => item.seq < batch_start || item.seq > batch_end)
       }
       if added > 0 {
         self.mirror(a)
@@ -1734,6 +1773,7 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     }
     // (written from here: a `requesting` now is the model's after it)
     a.unread_preparing = 0
+    a.steered_unread_preparing = 0
     let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) catch {
       e => {
         unsteer()
@@ -2180,17 +2220,49 @@ async fn Actors::start_turn_body(
     Some(d) => d.pending.map(m => m.value("handed").unwrap_or(Json::null()))
     None => []
   }
-  if self.busy_of(a, Some(agent)) && truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) {
-    if delivered.length() > 0 {
-      ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
+  if self.busy_of(a, Some(agent)) {
+    let k = if notices_taken > a.notices.length() { a.notices.length() } else { notices_taken }
+    let batch_start = a.steered_seq + 1
+    for h in delivered {
+      a.steered_seq += 1
+      a.steered_unread.push({ seq: a.steered_seq, handed: h })
     }
-    ignore(drain_notices(a, notices_taken))
-    return self.told(a, told_choices)
+    for i in 0..<k {
+      a.steered_seq += 1
+      a.steered_notices.push({ seq: a.steered_seq, text: a.notices[i] })
+    }
+    let batch_end = a.steered_seq
+    let unsteer_start = () => {
+      if batch_end >= batch_start {
+        a.steered_unread = a.steered_unread.filter(item => item.seq < batch_start || item.seq > batch_end)
+        a.steered_notices = a.steered_notices.filter(item => item.seq < batch_start || item.seq > batch_end)
+      }
+    }
+    let steered = truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) catch {
+      e => {
+        unsteer_start()
+        raise e
+      }
+    }
+    if steered {
+      if delivered.length() > 0 {
+        ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(delivered)]))
+        for h in delivered {
+          a.steered.push(h)
+        }
+      }
+      ignore(drain_notices(a, notices_taken))
+      return self.told(a, told_choices)
+    }
+    unsteer_start()
   }
   a.steered = []
   a.steered_for = []
   a.unread = []
   a.unread_preparing = 0
+  a.steered_unread = []
+  a.steered_unread_preparing = 0
+  a.steered_notices = []
   self.begin_turn(a, kind, by, passive~, fresh~)
   if !(retry_about is Null) && a.turn is Some(t) {
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
@@ -2202,13 +2274,33 @@ async fn Actors::start_turn_body(
   // (its notices taken as what it is handed is: given back with it where it never began)
   let drained_notices = drain_notices(a, notices_taken)
   ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)])) catch {
-    // (its runtime began a turn of its own while this one was begun (the awaits of `begin_turn`, after `busy_of` said
-    // idle): what it is handed is steered into that turn, which the turn begun here takes as its own, never the
-    // process ended and the turn it runs lost with it)
-    e if Asked::message(e) == "a turn is already running" &&
-      truthy(self.agent_do(a, agent, "steer", [jstr(prompt)]) catch { _ => Json::boolean(false) }) =>
-      return self.told(a, told_choices)
     e => {
+      // (its runtime began a turn of its own while this one was begun (the awaits of `begin_turn`, after `busy_of` said
+      // idle): what it is handed is steered into that turn, which the turn begun here takes as its own, never the
+      // process ended and the turn it runs lost with it)
+      if Asked::message(e) == "a turn is already running" {
+        let batch_start = a.steered_seq + 1
+        for h in delivered {
+          a.steered_seq += 1
+          a.steered_unread.push({ seq: a.steered_seq, handed: h })
+        }
+        for notice in drained_notices {
+          a.steered_seq += 1
+          a.steered_notices.push({ seq: a.steered_seq, text: notice })
+        }
+        let batch_end = a.steered_seq
+        let steered = truthy(self.agent_do(a, agent, "steer", [jstr(prompt)]) catch { _ => Json::boolean(false) })
+        if steered {
+          for h in delivered {
+            a.steered.push(h)
+          }
+          return self.told(a, told_choices)
+        }
+        if batch_end >= batch_start {
+          a.steered_unread = a.steered_unread.filter(item => item.seq < batch_start || item.seq > batch_end)
+          a.steered_notices = a.steered_notices.filter(item => item.seq < batch_start || item.seq > batch_end)
+        }
+      }
       self.log(a, "warn", "prompt failed, reopening the runtime", fields={ "error": jstr(e.to_string()) })
       try {
         self.set_agent(a, None)
@@ -2693,19 +2785,49 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
       )
     }
     "live" => {
+      if !self.is_current(a, generation) {
+        return
+      }
       let ev = event.value("event").unwrap_or(Json::null())
       if str_of(ev.value("kind")) == Some("phase") && str_of(ev.value("phase")) == Some("requesting") {
         // (what it has been written; what a steer on its way has not been, it has yet to read)
         let keep = a.unread_preparing
         let removable = a.unread.length() - keep
-        if removable > 0 {
-          ignore(self.enqueue(a, async fn() { self.undeclare(a) }))
-          let tail : Array[Json] = []
-          for i in removable..<a.unread.length() {
-            tail.push(a.unread[i])
-          }
-          a.unread = tail
-          self.mirror(a)
+        let keep_steered = a.steered_unread_preparing
+        let removable_steered = a.steered_unread.length() - keep_steered
+        let steered_upto = if removable_steered > 0 { a.steered_unread[removable_steered - 1].seq } else { 0 }
+        let notices_upto = if a.steered_notices.length() > 0 { a.steered_notices[a.steered_notices.length() - 1].seq } else { 0 }
+        if removable > 0 || steered_upto > 0 || notices_upto > 0 {
+          let req_turn_id = a.turn.map(t => t.id)
+          let same_turn = () => a.turn.map(t => t.id) == req_turn_id
+          ignore(
+            self.enqueue(a, async fn() {
+              if !self.is_current(a, generation) || !same_turn() {
+                return
+              }
+              self.undeclare(a)
+              if !self.is_current(a, generation) || !same_turn() {
+                return
+              }
+              if removable > 0 {
+                let drop = if removable > a.unread.length() { a.unread.length() } else { removable }
+                let tail : Array[Json] = []
+                for i in drop..<a.unread.length() {
+                  tail.push(a.unread[i])
+                }
+                a.unread = tail
+              }
+              if steered_upto > 0 {
+                a.steered_unread = a.steered_unread.filter(item => item.seq > steered_upto)
+              }
+              if notices_upto > 0 {
+                a.steered_notices = a.steered_notices.filter(item => item.seq > notices_upto)
+              }
+              if removable > 0 {
+                self.mirror(a)
+              }
+            }),
+          )
         }
       }
       if self.is_current(a, generation) {
@@ -2817,6 +2939,40 @@ fn Actors::hear_words(self : Actors, a : Actor, event : Json) -> Unit {
 }
 
 ///|
+/// Returns steered messages and station notices that the runtime has not yet read (`phase: "requesting"`)
+/// back to the store and `a.notices` when a dying process is closed so the next process delivers them.
+async fn Actors::requeue_unread_steered(self : Actors, a : Actor) -> (Int, Int) raise {
+  let keep = a.steered_unread_preparing
+  let count = a.steered_unread.length() - keep
+  let lost : Array[Json] = []
+  if count > 0 {
+    for i in 0..<count {
+      lost.push(a.steered_unread[i].handed)
+    }
+  }
+  let lost_notices = a.steered_notices.map(n => n.text)
+  let had_unread = a.unread.length() > 0 || a.unread_preparing > 0
+  a.steered = []
+  a.steered_for = []
+  a.unread = []
+  a.unread_preparing = 0
+  a.steered_unread = []
+  a.steered_unread_preparing = 0
+  a.steered_notices = []
+  a.steer_silent_steered = 0
+  if lost.length() > 0 {
+    ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(lost)]))
+  }
+  if lost_notices.length() > 0 {
+    a.notices = lost_notices + a.notices
+  }
+  if had_unread || lost.length() > 0 {
+    self.mirror(a)
+  }
+  (lost.length(), lost_notices.length())
+}
+
+///|
 /// actor.ts `onTurnEnded`. An outcome with `hung` is the station's own, its runtime silent after a steer
 /// (`fire_steer_silent`): its process is ended before anything goes on in it.
 async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outcome : Json) -> Unit raise {
@@ -2914,18 +3070,31 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if !refused {
     a.auth_tried = []
   }
+  let had_steered = a.steered.length() > 0
   // A turn that already declared its end state (all_done, need_human, waiting) only needed the runtime's trailing LLM
   // call to emit unread closing text. If that call fails with auth (an hourly borrowed token expiring right after
   // chat_state returned), close the stale process so the next turn opens fresh, keep the declared state (its waiting
-  // timer too), and post no false auth error. A bad account still fails on the next turn, which declared nothing yet.
+  // timer too), requeue any messages or notices steered in after the model's last request, and post no false auth
+  // error. A bad account still fails on the next turn, which declared nothing yet.
   if kind == "failed" && reason == "auth" && !stop_requested && turn is Some({ declared: Some(_), .. }) {
+    let had_agent = a.agent is Some(_)
     if a.agent is Some(_) {
       let agent = a.agent
       self.set_agent(a, None)
       self.end_process(a, agent)
+    }
+    let (undelivered, restored_notices) = self.requeue_unread_steered(a)
+    if had_agent || undelivered > 0 {
       self.notify_store(a)
     }
-    self.log(a, "info", "trailing auth failure after the turn declared its state; closing the stale process and keeping the state", fields={ "runtime": jstr(a.runtime) })
+    let fields : Map[String, Json] = { "runtime": jstr(a.runtime) }
+    if undelivered > 0 {
+      fields["undelivered"] = jnum(undelivered.to_double())
+    }
+    if restored_notices > 0 {
+      fields["notices"] = jnum(restored_notices.to_double())
+    }
+    self.log(a, "info", "trailing auth failure after the turn declared its state; closing the stale process and keeping the state", fields~)
     kind = "completed"
   }
   // How a turn that said no state ends (2026-11-16, the status refactor): one that posted a card still waiting ends
@@ -2945,7 +3114,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
         self.log(a, "info", "the turn posted and said no state, asked again: it ends done")
       }
     }
-    if kind_of(t.declared) == Some("waiting") && t.asked_before is Some(before) && a.steered.length() == 0 {
+    if kind_of(t.declared) == Some("waiting") && t.asked_before is Some(before) && !had_steered {
       let seconds = num_of(t.declared.unwrap().value("seconds")).unwrap_or(0.0)
       if truthy(self.rpc(a.key, "node.keepAsk", [jstr(t.id), before])) {
         t.declared = Some({ "kind": "need_help" })
@@ -3048,6 +3217,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     self.set_agent(a, None)
     self.log(a, "warn", "ending the process that lost the station's tools; the next one resumes it", fields={ "why": jstr(why) })
     self.end_process(a, agent)
+    ignore(self.requeue_unread_steered(a))
     self.notify_store(a)
   }
   if outcome.value("hung") is Some(True) && a.agent is Some(_) {
@@ -3060,13 +3230,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     for i in from..<a.steered.length() {
       lost.push(a.steered[i])
     }
+    let lost_notices = a.steered_notices.map(n => n.text)
     a.steered = []
     a.steered_for = []
     a.unread = []
     a.unread_preparing = 0
+    a.steered_unread = []
+    a.steered_unread_preparing = 0
+    a.steered_notices = []
     a.steer_silent_steered = 0
     if lost.length() > 0 {
       ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(lost)]))
+    }
+    if lost_notices.length() > 0 {
+      a.notices = lost_notices + a.notices
     }
     self.mirror(a)
     self.notify_store(a)
@@ -3088,6 +3265,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     let handle = match agent { Some(g) => jnum(g.handle.to_double()); None => Json::null() }
     ignore(self.rpc(a.key, "node.codexBefore", [handle, jnum(update.id.to_double())]))
     self.end_process(a, agent)
+    ignore(self.requeue_unread_steered(a))
     self.set_running(a, true)
     // (not holding the queue during the install: Node updates it, and tells its end as `codexUpdated`)
     ignore(self.rpc(a.key, "node.updateCodex", [jnum(update.id.to_double())]))
@@ -3113,11 +3291,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     self.end_process(a, agent)
     self.notify_store(a)
     if !stop_requested && !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+      ignore(self.requeue_unread_steered(a))
       a.nudges = 0
       self.log(a, "warn", "Antigravity trajectory missing; reopening in a new runtime session", fields={ "error": jstr(message) })
       self.start_turn(a, "auth_retry", a.turn_text, by=t.by)
-      if a.turn is Some(nt) && t.codex_retried {
-        nt.codex_retried = true
+      if a.turn is Some(nt) {
+        if t.codex_retried {
+          nt.codex_retried = true
+        }
+        if self.has_pending(a) {
+          self.pump(a)
+        }
+        if a.notices.length() > 0 {
+          self.give_notices(a)
+        }
       }
       return
     }
@@ -3146,6 +3333,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.notify_store(a)
       self.log(a, "info", "authentication failed; profile unusable and no healthy fallback, waiting for user", fields={ "runtime": jstr(a.runtime) })
     } else {
+      ignore(self.requeue_unread_steered(a))
       a.nudges = 0
       self.log(a, "info", "authentication failed; reopening and continuing", fields={ "runtime": jstr(a.runtime), "tried": auth_tried_json(a) })
       let text = self.words(a, "GO_ON_AFTER_AUTH")
@@ -3155,8 +3343,16 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
         return
       }
       self.start_turn(a, "auth_retry", text, by=t.by)
-      if a.turn is Some(nt) && t.codex_retried {
-        nt.codex_retried = true
+      if a.turn is Some(nt) {
+        if t.codex_retried {
+          nt.codex_retried = true
+        }
+        if self.has_pending(a) {
+          self.pump(a)
+        }
+        if a.notices.length() > 0 {
+          self.give_notices(a)
+        }
       }
       return
     }
@@ -3184,6 +3380,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       let agent = a.agent
       self.set_agent(a, None)
       self.end_process(a, agent)
+      ignore(self.requeue_unread_steered(a))
       self.log(a, "info", "allowance ran out; going on on another profile", fields={ "from": m[0], "to": m[1] })
       a.refill = None
       if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
@@ -3196,12 +3393,16 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       if self.has_pending(a) {
         return self.pump(a)
       }
+      if a.notices.length() > 0 {
+        return self.give_notices(a)
+      }
       return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
     }
     if moved is Object(o) && str_of(o.get("paused")) == Some("session_cap") {
       let agent = a.agent
       self.set_agent(a, None)
       self.end_process(a, agent)
+      ignore(self.requeue_unread_steered(a))
       a.refill = None
       a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false, passive: false, fresh: false })
       self.pause_for_session_cap(

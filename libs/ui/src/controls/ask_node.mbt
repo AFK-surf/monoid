@@ -65,23 +65,32 @@ pub fn ask_node(
       |> ignore
       corner_card_node(d, fn() { dialog_r }, inset=fn() { dialog_pad })
       let words_in = fn() { look().words }
-      // (its title's row: dialog_head's, 1 under its padding's top, as tall as a close button's room at least)
+      // (its title's row: unified 17/22pt modal title aligned on its first line with the 36pt concentric close key)
       d.box(fn(h) {
-        h
-        // (its title on the panel's words' line, as every dialog's: panel_words)
-        .padding(Is((panel_words, dialog_head_over, dialog_head_end + dialog_pad, 0.0)))
-        .min_height(Is(Some(dialog_close)))
-        .lines_up(Is(Some(Middle)))
-        .row(Is(true))
+        style_node(h, fn() { dialog_head.then(@ui.style(pl=room(panel_words), pr=room(dialog_pad))) })
         // (all it holds as far in as its look says, past its own ground, edge and shadow: its title's row, what it
         // holds, its foot, each the same, Look's `words` as a surface's are)
-        .alpha(By(words_in))
-        |> ignore
+        h.alpha(By(words_in)) |> ignore
         h.box(fn(t) {
-          t
-          .words(Is(title), look=toast_words_look(Heading, Font, 600, true))
-          .ink(By(fn() { theme().color(Fg) }))
+          style_node(t, fn() {
+            let inset = @ui.capsule_in(dialog_r, dialog_corner_key_side)
+            dialog_title_line.then(@ui.style(mt=room(inset - dialog_pad + head_line_drop(t, Xl2, leading=L7, row=dialog_corner_key_side))))
+          }, in_row=true)
+          t.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          t.box(fn(w) {
+            w
+            .words(Is(title), look=toast_words_look(Xl2, L7, 600, true))
+            .ink(By(fn() { theme().color(Fg) }))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+          })
           |> ignore
+        })
+        |> ignore
+        h.box(fn(at) {
+          style_node(at, fn() { dialog_close_at(drop=head_line_drop(at, Xl2, leading=L7, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
+          dialog_close_key_node(at, cancel) |> ignore
         })
         |> ignore
       })

@@ -3052,6 +3052,34 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
   assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
 
+  // 4. Wave 17D-3: Live Admin/1 `links.preview` + `feedback.report`, plus honest 501 for ops deferred to Wave 17E
+  const brwOpen = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
+  assert.equal(brwOpen.status, 501, `POST /screens/browser must return honest 501, got ${brwOpen.status}`);
+
+  const siFill = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
+  assert.equal(siFill.status, 501, `signins.fill must return honest 501, got ${siFill.status}`);
+  const siDeny = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/deny", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(siDeny.status, 501, `signins.deny must return honest 501 until Wave 17E, got ${siDeny.status}`);
+
+  const lpSsrf = await adminCall(conn, "GET", "/link-preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F");
+  assert.equal(lpSsrf.status, 200, `links.preview SSRF must return 200 kind:none, got ${lpSsrf.status}`);
+  assert.equal(JSON.parse(lpSsrf.body.toString()).kind, "none");
+  const lpBad = await adminCall(conn, "GET", "/link-preview?url=file%3A%2F%2F%2Fetc%2Fpasswd");
+  assert.equal(lpBad.status, 400, `links.preview file:// must return 400, got ${lpBad.status}`);
+
+  const fbMiss = await adminCall(conn, "POST", "/threads/99999/report", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ n: 1 })));
+  assert.equal(fbMiss.status, 404, `feedback.report unknown thread must return 404 (not 501), got ${fbMiss.status}`);
+  const fbWrap = await adminCall(conn, "POST", "/threads/18446744073709551617/report", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ n: 1 })));
+  assert.equal(fbWrap.status, 400, `feedback.report 64-bit wraparound thread id must return 400, got ${fbWrap.status}`);
+
+  const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
+  assert.equal(projRen.status, 501, `POST /projects/rename must return honest 501 until Wave 17E, got ${projRen.status}`);
+
+  const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
+  assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
+  const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
+
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());

@@ -171,7 +171,9 @@ fn rect_contains(
 
 ///|
 fn glass_nested_pairs(t : @ui.Tester) -> Int {
-  let ls = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  // Exclude 36/44pt circular Liquid Glass corner keys (`dialog_close_key_node` / `sheet_close_key_node`), checking
+  // only container-sized glass surfaces (> 60pt) for unintended double-surface nesting.
+  let ls = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.2 > 60.0 })
   let mut count = 0
   for i in 0..<ls.length() {
     for j in 0..<ls.length() {

@@ -845,6 +845,25 @@ pub fn ActorsGen::give_notices_k(
                                                   effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                   effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                                   effect::Exit::Succeeded(timed_str) => {
+                                                    let take = if n > a.notices.length() { a.notices.length() } else { n }
+                                                    let batch_start = a.steered_seq + 1
+                                                    for i in 0..<take {
+                                                      a.steered_seq = a.steered_seq + 1
+                                                      a.steered_notices.push(SteeredNotice::{ seq: a.steered_seq, text: a.notices[i] })
+                                                    }
+                                                    let batch_end = a.steered_seq
+                                                    let unsteer_notices = fn() -> Unit {
+                                                      if batch_end >= batch_start {
+                                                        let next_sn : Array[SteeredNotice] = []
+                                                        for i in 0..<a.steered_notices.length() {
+                                                          let item = a.steered_notices[i]
+                                                          if item.seq < batch_start || item.seq > batch_end {
+                                                            next_sn.push(item)
+                                                          }
+                                                        }
+                                                        a.steered_notices = next_sn
+                                                      }
+                                                    }
                                                     self.agent_do_k(
                                                       a,
                                                       agent,
@@ -852,8 +871,14 @@ pub fn ActorsGen::give_notices_k(
                                                       [sessions_core::jstr(timed_str)],
                                                       fn(ex_st : effect::Exit[base_codec::Json]) -> Unit {
                                                         match ex_st {
-                                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => {
+                                                            unsteer_notices()
+                                                            k(effect::Exit::Interrupted)
+                                                          }
+                                                          effect::Exit::Failed(e) => {
+                                                            unsteer_notices()
+                                                            k(effect::Exit::Failed(e))
+                                                          }
                                                           effect::Exit::Succeeded(sv) => {
                                                             if sessions_core::truthy(sv) {
                                                               let _ = drain_notices(a, n)
@@ -870,6 +895,7 @@ pub fn ActorsGen::give_notices_k(
                                                                 }
                                                               })
                                                             } else {
+                                                              unsteer_notices()
                                                               k(effect::Exit::Succeeded(()))
                                                             }
                                                           }
@@ -1364,14 +1390,22 @@ fn ActorsGen::pump_steer_k(
   }
   let before = a.unread.length()
   let mut added = 0
+  let batch_start = a.steered_seq + 1
   for i in 0..<d.pending.length() {
     let m = d.pending[i]
     if !is_opt_json_true(sessions_core::jget(m, "apart")) {
       a.unread.push(m)
       added = added + 1
     }
+    a.steered_seq = a.steered_seq + 1
+    a.steered_unread.push(SteeredUnread::{
+      seq: a.steered_seq,
+      handed: sessions_core::field_of(m, "handed"),
+    })
   }
+  let batch_end = a.steered_seq
   a.unread_preparing = added
+  a.steered_unread_preparing = d.pending.length()
   if added > 0 {
     self.mirror(a)
   }
@@ -1393,10 +1427,21 @@ fn ActorsGen::pump_steer_k(
       return
     }
     a.unread_preparing = 0
+    a.steered_unread_preparing = 0
     if a.unread.length() >= before + added {
       for _ in 0..<added {
         let _ = a.unread.pop()
       }
+    }
+    if batch_end >= batch_start {
+      let next_su : Array[SteeredUnread] = []
+      for i in 0..<a.steered_unread.length() {
+        let item = a.steered_unread[i]
+        if item.seq < batch_start || item.seq > batch_end {
+          next_su.push(item)
+        }
+      }
+      a.steered_unread = next_su
     }
     if added > 0 {
       self.mirror(a)
@@ -1511,6 +1556,7 @@ fn ActorsGen::pump_steer_k(
                             return
                           }
                           a.unread_preparing = 0
+                          a.steered_unread_preparing = 0
                           self.timed_k(a, handed, fn(ex_tm : effect::Exit[String]) -> Unit {
                             match ex_tm {
                               effect::Exit::Interrupted => {
@@ -2818,6 +2864,9 @@ fn ActorsGen::start_turn_send_prompt_k(
     a.steered_for = []
     a.unread = []
     a.unread_preparing = 0
+    a.steered_unread = []
+    a.steered_unread_preparing = 0
+    a.steered_notices = []
     self.begin_turn_k(a, kind, by, passive, fresh, fn(ex_bt : effect::Exit[Unit]) -> Unit {
       match ex_bt {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -2997,6 +3046,36 @@ fn ActorsGen::start_turn_send_prompt_k(
                               })
                             }
                             if sessions_core::error_message(e) == "a turn is already running" {
+                              let batch_start = a.steered_seq + 1
+                              for i in 0..<delivered.length() {
+                                a.steered_seq = a.steered_seq + 1
+                                a.steered_unread.push(SteeredUnread::{ seq: a.steered_seq, handed: delivered[i] })
+                              }
+                              for i in 0..<drained_notices.length() {
+                                a.steered_seq = a.steered_seq + 1
+                                a.steered_notices.push(SteeredNotice::{ seq: a.steered_seq, text: drained_notices[i] })
+                              }
+                              let batch_end = a.steered_seq
+                              let unsteer_fallback = fn() -> Unit {
+                                if batch_end >= batch_start {
+                                  let next_su : Array[SteeredUnread] = []
+                                  for i in 0..<a.steered_unread.length() {
+                                    let item = a.steered_unread[i]
+                                    if item.seq < batch_start || item.seq > batch_end {
+                                      next_su.push(item)
+                                    }
+                                  }
+                                  a.steered_unread = next_su
+                                  let next_sn : Array[SteeredNotice] = []
+                                  for i in 0..<a.steered_notices.length() {
+                                    let item = a.steered_notices[i]
+                                    if item.seq < batch_start || item.seq > batch_end {
+                                      next_sn.push(item)
+                                    }
+                                  }
+                                  a.steered_notices = next_sn
+                                }
+                              }
                               sessions_core::try_k(
                                 fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
                                   self.agent_do_k(a, agent, "steer", [sessions_core::jstr(prompt)], tk)
@@ -3004,22 +3083,31 @@ fn ActorsGen::start_turn_send_prompt_k(
                                 fn(ex_st : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
                                   match ex_st {
                                     effect::Exit::Interrupted => {
+                                      unsteer_fallback()
                                       settle_delivery()
                                       k(effect::Exit::Interrupted)
                                     }
                                     effect::Exit::Failed(e2) => {
+                                      unsteer_fallback()
                                       settle_delivery()
                                       k(effect::Exit::Failed(e2))
                                     }
                                     effect::Exit::Succeeded(Ok(sv)) => {
                                       if sessions_core::truthy(sv) {
+                                        for i in 0..<delivered.length() {
+                                          a.steered.push(delivered[i])
+                                        }
                                         settle_delivery()
                                         self.told_k(a, told_choices, k)
                                       } else {
+                                        unsteer_fallback()
                                         reopen_and_prompt()
                                       }
                                     }
-                                    effect::Exit::Succeeded(Err(_)) => reopen_and_prompt()
+                                    effect::Exit::Succeeded(Err(_)) => {
+                                      unsteer_fallback()
+                                      reopen_and_prompt()
+                                    }
                                   }
                                 },
                               )
@@ -3093,12 +3181,49 @@ fn ActorsGen::start_turn_send_prompt_k(
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Succeeded(false) => proceed_prompt()
       effect::Exit::Succeeded(true) => {
+        let take = if notices_taken > a.notices.length() { a.notices.length() } else { notices_taken }
+        let batch_start = a.steered_seq + 1
+        for i in 0..<delivered.length() {
+          a.steered_seq = a.steered_seq + 1
+          a.steered_unread.push(SteeredUnread::{ seq: a.steered_seq, handed: delivered[i] })
+        }
+        for i in 0..<take {
+          a.steered_seq = a.steered_seq + 1
+          a.steered_notices.push(SteeredNotice::{ seq: a.steered_seq, text: a.notices[i] })
+        }
+        let batch_end = a.steered_seq
+        let unsteer_start = fn() -> Unit {
+          if batch_end >= batch_start {
+            let next_su : Array[SteeredUnread] = []
+            for i in 0..<a.steered_unread.length() {
+              let item = a.steered_unread[i]
+              if item.seq < batch_start || item.seq > batch_end {
+                next_su.push(item)
+              }
+            }
+            a.steered_unread = next_su
+            let next_sn : Array[SteeredNotice] = []
+            for i in 0..<a.steered_notices.length() {
+              let item = a.steered_notices[i]
+              if item.seq < batch_start || item.seq > batch_end {
+                next_sn.push(item)
+              }
+            }
+            a.steered_notices = next_sn
+          }
+        }
         self.agent_do_k(a, agent, "steer", [sessions_core::jstr(prompt)], fn(
           ex_st : effect::Exit[base_codec::Json],
         ) -> Unit {
           match ex_st {
-            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => {
+              unsteer_start()
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => {
+              unsteer_start()
+              k(effect::Exit::Failed(e))
+            }
             effect::Exit::Succeeded(sv) => {
               if sessions_core::truthy(sv) {
                 let after_md = fn(ex_md : effect::Exit[Unit]) -> Unit {
@@ -3106,6 +3231,9 @@ fn ActorsGen::start_turn_send_prompt_k(
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                     effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                     effect::Exit::Succeeded(_) => {
+                      for i in 0..<delivered.length() {
+                        a.steered.push(delivered[i])
+                      }
                       let _ = drain_notices(a, notices_taken)
                       self.told_k(a, told_choices, k)
                     }
@@ -3128,6 +3256,7 @@ fn ActorsGen::start_turn_send_prompt_k(
                   after_md(effect::Exit::Succeeded(()))
                 }
               } else {
+                unsteer_start()
                 proceed_prompt()
               }
             }
@@ -4662,6 +4791,7 @@ fn ActorsGen::on_turn_ended_body_k(
   if !refused {
     a.auth_tried = []
   }
+  let had_steered = a.steered.length() > 0
   let after_trailing_auth = fn(kind : String) -> Unit {
     let after_status_infer = fn(kept_wait : Option[Double]) -> Unit {
       self.on_turn_ended_record_k(
@@ -4684,7 +4814,7 @@ fn ActorsGen::on_turn_ended_body_k(
       match turn {
         Some(t) => {
           let check_keep_ask = fn() -> Unit {
-            if opt_str_is(kind_of(t.declared), "waiting") && a.steered.length() == 0 {
+            if opt_str_is(kind_of(t.declared), "waiting") && !had_steered {
               match t.asked_before {
                 Some(before) => {
                   let seconds = match t.declared {
@@ -4763,37 +4893,162 @@ fn ActorsGen::on_turn_ended_body_k(
     after_status_infer(None)
   }
   if init_kind == "failed" && reason == "auth" && !stop_requested && turn_declared {
-    let finish_ta = fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
+    let had_agent = is_some(a.agent)
+    let after_close = fn(ex_ep : effect::Exit[Unit]) -> Unit {
+      match ex_ep {
         effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
         effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
         effect::Exit::Succeeded(_) => {
-          self.log(
-            a,
-            "info",
-            "trailing auth failure after the turn declared its state; closing the stale process and keeping the state",
-            [("runtime", sessions_core::jstr(a.runtime))],
-          )
-          after_trailing_auth("completed")
+          self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+            match ex_rq {
+              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+              effect::Exit::Succeeded((undelivered, restored_notices)) => {
+                let done_ta = fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                  match ex_ns {
+                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(_) => {
+                      let fields : Array[(String, base_codec::Json)] = [
+                        ("runtime", sessions_core::jstr(a.runtime)),
+                      ]
+                      if undelivered > 0 {
+                        fields.push(("undelivered", sessions_core::jint(undelivered)))
+                      }
+                      if restored_notices > 0 {
+                        fields.push(("notices", sessions_core::jint(restored_notices)))
+                      }
+                      self.log(
+                        a,
+                        "info",
+                        "trailing auth failure after the turn declared its state; closing the stale process and keeping the state",
+                        fields,
+                      )
+                      after_trailing_auth("completed")
+                    }
+                  }
+                }
+                if had_agent || undelivered > 0 {
+                  self.notify_store_k(a, done_ta)
+                } else {
+                  done_ta(effect::Exit::Succeeded(()))
+                }
+              }
+            }
+          })
         }
       }
     }
-    if is_some(a.agent) {
+    if had_agent {
       let agent = a.agent
       self.set_agent(a, None)
-      self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
-        match ex_ep {
-          effect::Exit::Interrupted => finish_ta(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => finish_ta(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(_) => self.notify_store_k(a, finish_ta)
-        }
-      })
+      self.end_process_k(a, agent, after_close)
     } else {
-      finish_ta(effect::Exit::Succeeded(()))
+      after_close(effect::Exit::Succeeded(()))
     }
   } else {
     after_trailing_auth(init_kind)
   }
+}
+
+/// Returns steered messages and station notices that the runtime has not yet read (`phase: "requesting"`)
+/// back to the store and `a.notices` when a dying process is closed so the next process delivers them.
+fn ActorsGen::requeue_unread_steered_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[(Int, Int)]) -> Unit,
+) -> Unit {
+  let keep = a.steered_unread_preparing
+  let count = a.steered_unread.length() - keep
+  let lost : Array[base_codec::Json] = []
+  if count > 0 {
+    for i in 0..<count {
+      lost.push(a.steered_unread[i].handed)
+    }
+  }
+  let lost_notices : Array[String] = []
+  for i in 0..<a.steered_notices.length() {
+    lost_notices.push(a.steered_notices[i].text)
+  }
+  let had_unread = a.unread.length() > 0 || a.unread_preparing > 0
+  a.steered = []
+  a.steered_for = []
+  a.unread = []
+  a.unread_preparing = 0
+  a.steered_unread = []
+  a.steered_unread_preparing = 0
+  a.steered_notices = []
+  a.steer_silent_steered = 0
+  if lost_notices.length() > 0 {
+    let next_n : Array[String] = []
+    for i in 0..<lost_notices.length() {
+      next_n.push(lost_notices[i])
+    }
+    for i in 0..<a.notices.length() {
+      next_n.push(a.notices[i])
+    }
+    a.notices = next_n
+  }
+  let finish_rq = fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        if had_unread || lost.length() > 0 {
+          self.mirror(a)
+        }
+        k(effect::Exit::Succeeded((lost.length(), lost_notices.length())))
+      }
+    }
+  }
+  if lost.length() > 0 {
+    self.store_k(
+      a,
+      "markUndelivered",
+      [sessions_core::jstr(a.key), base_codec::json_arr(lost)],
+      fn(ex_mu : effect::Exit[base_codec::Json]) -> Unit {
+        match ex_mu {
+          effect::Exit::Succeeded(_) => finish_rq(effect::Exit::Succeeded(()))
+          effect::Exit::Failed(e) => finish_rq(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => finish_rq(effect::Exit::Interrupted)
+        }
+      },
+    )
+  } else {
+    finish_rq(effect::Exit::Succeeded(()))
+  }
+}
+
+fn ActorsGen::drain_steered_after_retry_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if !is_some(a.turn) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let after_pump = fn(ex_p : effect::Exit[Unit]) -> Unit {
+    match ex_p {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        if a.notices.length() > 0 {
+          self.give_notices_k(a, k)
+        } else {
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+    }
+  }
+  self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+    match ex_hp {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(true) => self.pump_k(a, -1, after_pump)
+      effect::Exit::Succeeded(false) => after_pump(effect::Exit::Succeeded(()))
+    }
+  })
 }
 
 fn ActorsGen::on_turn_ended_record_k(
@@ -5068,7 +5323,15 @@ fn ActorsGen::on_turn_ended_tools_and_auth_k(
             match ex_ep {
               effect::Exit::Interrupted => after_lost_proc(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => after_lost_proc(effect::Exit::Failed(e))
-              effect::Exit::Succeeded(_) => self.notify_store_k(a, after_lost_proc)
+              effect::Exit::Succeeded(_) => {
+                self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                  match ex_rq {
+                    effect::Exit::Interrupted => after_lost_proc(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => after_lost_proc(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(_) => self.notify_store_k(a, after_lost_proc)
+                  }
+                })
+              }
             }
           })
         }
@@ -5093,11 +5356,28 @@ fn ActorsGen::on_turn_ended_tools_and_auth_k(
                   for i in from..<a.steered.length() {
                     lost.push(a.steered[i])
                   }
+                  let lost_notices : Array[String] = []
+                  for i in 0..<a.steered_notices.length() {
+                    lost_notices.push(a.steered_notices[i].text)
+                  }
                   a.steered = []
                   a.steered_for = []
                   a.unread = []
                   a.unread_preparing = 0
+                  a.steered_unread = []
+                  a.steered_unread_preparing = 0
+                  a.steered_notices = []
                   a.steer_silent_steered = 0
+                  if lost_notices.length() > 0 {
+                    let next_n : Array[String] = []
+                    for i in 0..<lost_notices.length() {
+                      next_n.push(lost_notices[i])
+                    }
+                    for i in 0..<a.notices.length() {
+                      next_n.push(a.notices[i])
+                    }
+                    a.notices = next_n
+                  }
                   let after_undel = fn(ex_mu : effect::Exit[Unit]) -> Unit {
                     match ex_mu {
                       effect::Exit::Interrupted => after_lost_proc(effect::Exit::Interrupted)
@@ -5319,64 +5599,72 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
                                         }
                                       })
                                     } else {
-                                      a.nudges = 0
-                                      self.log(
-                                        a,
-                                        "info",
-                                        "authentication failed; reopening and continuing",
-                                        [
-                                          ("runtime", sessions_core::jstr(a.runtime)),
-                                          ("tried", auth_tried_json(a)),
-                                        ],
-                                      )
-                                      self.words_k(a, "GO_ON_AFTER_AUTH", [], fn(
-                                        ex_w : effect::Exit[String],
-                                      ) -> Unit {
-                                        match ex_w {
+                                      self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                                        match ex_rq {
                                           effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                           effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                          effect::Exit::Succeeded(words) => {
-                                            if self.gen.counters.max_concurrent_turns > 0 &&
-                                            self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
-                                              a.queued_retry = Some(QueuedRetry::{
-                                                kind: "auth_retry",
-                                                text: words,
-                                                by: t.by,
-                                                codex_retried: t.codex_retried,
-                                                passive: false,
-                                                fresh: false,
-                                              })
-                                              self.enqueue_turn_wait(a)
-                                              finish(effect::Exit::Succeeded(()))
-                                              return
-                                            }
-                                            self.start_turn_k(
+                                          effect::Exit::Succeeded(_) => {
+                                            a.nudges = 0
+                                            self.log(
                                               a,
-                                              "auth_retry",
-                                              words,
-                                              t.by,
-                                              None,
-                                              false,
-                                              0,
-                                              false,
-                                              fn(ex_st : effect::Exit[Unit]) -> Unit {
-                                                match ex_st {
-                                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                                  effect::Exit::Succeeded(_) => {
-                                                    match a.turn {
-                                                      Some(nt) => {
-                                                        if t.codex_retried {
-                                                          nt.codex_retried = true
+                                              "info",
+                                              "authentication failed; reopening and continuing",
+                                              [
+                                                ("runtime", sessions_core::jstr(a.runtime)),
+                                                ("tried", auth_tried_json(a)),
+                                              ],
+                                            )
+                                            self.words_k(a, "GO_ON_AFTER_AUTH", [], fn(
+                                              ex_w : effect::Exit[String],
+                                            ) -> Unit {
+                                              match ex_w {
+                                                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                effect::Exit::Succeeded(words) => {
+                                                  if self.gen.counters.max_concurrent_turns > 0 &&
+                                                  self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
+                                                    a.queued_retry = Some(QueuedRetry::{
+                                                      kind: "auth_retry",
+                                                      text: words,
+                                                      by: t.by,
+                                                      codex_retried: t.codex_retried,
+                                                      passive: false,
+                                                      fresh: false,
+                                                    })
+                                                    self.enqueue_turn_wait(a)
+                                                    finish(effect::Exit::Succeeded(()))
+                                                    return
+                                                  }
+                                                  self.start_turn_k(
+                                                    a,
+                                                    "auth_retry",
+                                                    words,
+                                                    t.by,
+                                                    None,
+                                                    false,
+                                                    0,
+                                                    false,
+                                                    fn(ex_st : effect::Exit[Unit]) -> Unit {
+                                                      match ex_st {
+                                                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                        effect::Exit::Succeeded(_) => {
+                                                          match a.turn {
+                                                            Some(nt) => {
+                                                              if t.codex_retried {
+                                                                nt.codex_retried = true
+                                                              }
+                                                            }
+                                                            None => ()
+                                                          }
+                                                          self.drain_steered_after_retry_k(a, finish)
                                                         }
                                                       }
-                                                      None => ()
-                                                    }
-                                                    finish(effect::Exit::Succeeded(()))
-                                                  }
+                                                    },
+                                                  )
                                                 }
-                                              },
-                                            )
+                                              }
+                                            })
                                           }
                                         }
                                       })
@@ -5442,40 +5730,48 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
                                       effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                                       effect::Exit::Succeeded(true) => after_trajectory()
                                       effect::Exit::Succeeded(false) => {
-                                        a.nudges = 0
-                                        self.log(
-                                          a,
-                                          "warn",
-                                          "Antigravity trajectory missing; reopening in a new runtime session",
-                                          [("error", sessions_core::jstr(message))],
-                                        )
-                                        self.start_turn_k(
-                                          a,
-                                          "auth_retry",
-                                          a.turn_text,
-                                          t.by,
-                                          None,
-                                          false,
-                                          0,
-                                          false,
-                                          fn(ex_st : effect::Exit[Unit]) -> Unit {
-                                            match ex_st {
-                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                              effect::Exit::Succeeded(_) => {
-                                                match a.turn {
-                                                  Some(nt) => {
-                                                    if t.codex_retried {
-                                                      nt.codex_retried = true
+                                        self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                                          match ex_rq {
+                                            effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                            effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                            effect::Exit::Succeeded(_) => {
+                                              a.nudges = 0
+                                              self.log(
+                                                a,
+                                                "warn",
+                                                "Antigravity trajectory missing; reopening in a new runtime session",
+                                                [("error", sessions_core::jstr(message))],
+                                              )
+                                              self.start_turn_k(
+                                                a,
+                                                "auth_retry",
+                                                a.turn_text,
+                                                t.by,
+                                                None,
+                                                false,
+                                                0,
+                                                false,
+                                                fn(ex_st : effect::Exit[Unit]) -> Unit {
+                                                  match ex_st {
+                                                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(_) => {
+                                                      match a.turn {
+                                                        Some(nt) => {
+                                                          if t.codex_retried {
+                                                            nt.codex_retried = true
+                                                          }
+                                                        }
+                                                        None => ()
+                                                      }
+                                                      self.drain_steered_after_retry_k(a, finish)
                                                     }
                                                   }
-                                                  None => ()
-                                                }
-                                                finish(effect::Exit::Succeeded(()))
-                                              }
+                                                },
+                                              )
                                             }
-                                          },
-                                        )
+                                          }
+                                        })
                                       }
                                     }
                                   })
@@ -5582,23 +5878,31 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
                                                   effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                                   effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                                                   effect::Exit::Succeeded(_) => {
-                                                    self.set_running_k(a, true, fn(ex_sr : effect::Exit[Unit]) -> Unit {
-                                                      match ex_sr {
+                                                    self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                                                      match ex_rq {
                                                         effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                                         effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                                                         effect::Exit::Succeeded(_) => {
-                                                          self.rpc_k(
-                                                            a.key,
-                                                            "node.updateCodex",
-                                                            [sessions_core::jint(update.id)],
-                                                            fn(ex_uc : effect::Exit[base_codec::Json]) -> Unit {
-                                                              match ex_uc {
-                                                                effect::Exit::Succeeded(_) => finish(effect::Exit::Succeeded(()))
-                                                                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                                                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                          self.set_running_k(a, true, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                                                            match ex_sr {
+                                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                              effect::Exit::Succeeded(_) => {
+                                                                self.rpc_k(
+                                                                  a.key,
+                                                                  "node.updateCodex",
+                                                                  [sessions_core::jint(update.id)],
+                                                                  fn(ex_uc : effect::Exit[base_codec::Json]) -> Unit {
+                                                                    match ex_uc {
+                                                                      effect::Exit::Succeeded(_) => finish(effect::Exit::Succeeded(()))
+                                                                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                                    }
+                                                                  },
+                                                                )
                                                               }
-                                                            },
-                                                          )
+                                                            }
+                                                          })
                                                         }
                                                       }
                                                     })
@@ -5736,74 +6040,86 @@ fn ActorsGen::on_turn_ended_notices_k(
                             effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                             effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                             effect::Exit::Succeeded(_) => {
-                              let from_v = if m.length() > 0 { m[0] } else { base_codec::json_null() }
-                              let to_v = if m.length() > 1 { m[1] } else { base_codec::json_null() }
-                              self.log(a, "info", "allowance ran out; going on on another profile", [
-                                ("from", from_v),
-                                ("to", to_v),
-                              ])
-                              a.refill = None
-                              if self.gen.counters.max_concurrent_turns > 0 &&
-                              self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
-                                self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
-                                  match ex_hp {
-                                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                    effect::Exit::Succeeded(has_p) => {
-                                      if !has_p {
-                                        self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
-                                          ex_w : effect::Exit[String],
-                                        ) -> Unit {
-                                          match ex_w {
-                                            effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                            effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                            effect::Exit::Succeeded(words) => {
-                                              a.queued_retry = Some(QueuedRetry::{
-                                                kind: "resume",
-                                                text: words,
-                                                by: turn_for_nobody(),
-                                                codex_retried: false,
-                                                passive: false,
-                                                fresh: false,
+                              self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                                match ex_rq {
+                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(_) => {
+                                    let from_v = if m.length() > 0 { m[0] } else { base_codec::json_null() }
+                                    let to_v = if m.length() > 1 { m[1] } else { base_codec::json_null() }
+                                    self.log(a, "info", "allowance ran out; going on on another profile", [
+                                      ("from", from_v),
+                                      ("to", to_v),
+                                    ])
+                                    a.refill = None
+                                    if self.gen.counters.max_concurrent_turns > 0 &&
+                                    self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
+                                      self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                                        match ex_hp {
+                                          effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                          effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                          effect::Exit::Succeeded(has_p) => {
+                                            if !has_p {
+                                              self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
+                                                ex_w : effect::Exit[String],
+                                              ) -> Unit {
+                                                match ex_w {
+                                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                  effect::Exit::Succeeded(words) => {
+                                                    a.queued_retry = Some(QueuedRetry::{
+                                                      kind: "resume",
+                                                      text: words,
+                                                      by: turn_for_nobody(),
+                                                      codex_retried: false,
+                                                      passive: false,
+                                                      fresh: false,
+                                                    })
+                                                    self.enqueue_turn_wait(a)
+                                                    finish(effect::Exit::Succeeded(()))
+                                                  }
+                                                }
                                               })
+                                            } else {
                                               self.enqueue_turn_wait(a)
                                               finish(effect::Exit::Succeeded(()))
                                             }
                                           }
-                                        })
-                                      } else {
-                                        self.enqueue_turn_wait(a)
-                                        finish(effect::Exit::Succeeded(()))
-                                      }
+                                        }
+                                      })
+                                      return
                                     }
-                                  }
-                                })
-                                return
-                              }
-                              self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
-                                match ex_hp {
-                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                  effect::Exit::Succeeded(true) => self.pump_k(a, -1, finish)
-                                  effect::Exit::Succeeded(false) => {
-                                    self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
-                                      ex_w : effect::Exit[String],
-                                    ) -> Unit {
-                                      match ex_w {
+                                    self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                                      match ex_hp {
                                         effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                         effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                        effect::Exit::Succeeded(words) => {
-                                          self.start_turn_k(
-                                            a,
-                                            "resume",
-                                            words,
-                                            turn_for_nobody(),
-                                            None,
-                                            false,
-                                            0,
-                                            false,
-                                            finish,
-                                          )
+                                        effect::Exit::Succeeded(true) => self.pump_k(a, -1, finish)
+                                        effect::Exit::Succeeded(false) => {
+                                          if a.notices.length() > 0 {
+                                            self.give_notices_k(a, finish)
+                                            return
+                                          }
+                                          self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
+                                            ex_w : effect::Exit[String],
+                                          ) -> Unit {
+                                            match ex_w {
+                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(words) => {
+                                                self.start_turn_k(
+                                                  a,
+                                                  "resume",
+                                                  words,
+                                                  turn_for_nobody(),
+                                                  None,
+                                                  false,
+                                                  0,
+                                                  false,
+                                                  finish,
+                                                )
+                                              }
+                                            }
+                                          })
                                         }
                                       }
                                     })
@@ -5824,40 +6140,48 @@ fn ActorsGen::on_turn_ended_notices_k(
                               effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                               effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                               effect::Exit::Succeeded(_) => {
-                                a.refill = None
-                                self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(ex_w : effect::Exit[String]) -> Unit {
-                                  match ex_w {
+                                self.requeue_unread_steered_k(a, fn(ex_rq : effect::Exit[(Int, Int)]) -> Unit {
+                                  match ex_rq {
                                     effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                     effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                    effect::Exit::Succeeded(words) => {
-                                      a.queued_retry = Some(QueuedRetry::{
-                                        kind: "resume",
-                                        text: words,
-                                        by: turn_for_nobody(),
-                                        codex_retried: false,
-                                        passive: false,
-                                        fresh: false,
+                                    effect::Exit::Succeeded(_) => {
+                                      a.refill = None
+                                      self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(ex_w : effect::Exit[String]) -> Unit {
+                                        match ex_w {
+                                          effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                          effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                          effect::Exit::Succeeded(words) => {
+                                            a.queued_retry = Some(QueuedRetry::{
+                                              kind: "resume",
+                                              text: words,
+                                              by: turn_for_nobody(),
+                                              codex_retried: false,
+                                              passive: false,
+                                              fresh: false,
+                                            })
+                                            self.pause_for_session_cap_k(
+                                              a,
+                                              str_or(
+                                                sessions_core::str_of(sessions_core::jget(moved, "profile")),
+                                                "",
+                                              ),
+                                              num_or(
+                                                sessions_core::num_of(sessions_core::jget(moved, "active")),
+                                                0.0,
+                                              ).to_int(),
+                                              num_or(
+                                                sessions_core::num_of(sessions_core::jget(moved, "cap")),
+                                                0.0,
+                                              ).to_int(),
+                                              is_opt_json_true(sessions_core::jget(moved, "protection")),
+                                              "resume",
+                                              turn_for_nobody(),
+                                              None,
+                                              finish,
+                                            )
+                                          }
+                                        }
                                       })
-                                      self.pause_for_session_cap_k(
-                                        a,
-                                        str_or(
-                                          sessions_core::str_of(sessions_core::jget(moved, "profile")),
-                                          "",
-                                        ),
-                                        num_or(
-                                          sessions_core::num_of(sessions_core::jget(moved, "active")),
-                                          0.0,
-                                        ).to_int(),
-                                        num_or(
-                                          sessions_core::num_of(sessions_core::jget(moved, "cap")),
-                                          0.0,
-                                        ).to_int(),
-                                        is_opt_json_true(sessions_core::jget(moved, "protection")),
-                                        "resume",
-                                        turn_for_nobody(),
-                                        None,
-                                        finish,
-                                      )
                                     }
                                   }
                                 })

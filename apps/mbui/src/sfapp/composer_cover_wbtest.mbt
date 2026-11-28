@@ -14,6 +14,7 @@ fn composer_cover_tester_src(
   pointing? : @ui.Pointing = Mouse,
   platform? : Int = 0,
   over_tall? : Double = 0.0,
+  w? : Double = 600.0,
   h? : Double = 500.0,
 ) -> (@ui.Tester, Source) {
   new_run()
@@ -32,13 +33,13 @@ fn composer_cover_tester_src(
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
       root.box(fn(page) {
-        page.width(Is(Some(600.0))).height(Is(Some(h))) |> ignore
+        page.width(Is(Some(w))).height(Is(Some(h))) |> ignore
         @ui.words_picked(page)
         page.scrolls_window(
           @view.Scroll::new(),
           fn() { keys },
           fn(row, i) {
-            row.height(Is(Some(40.0))).width(Is(Some(600.0))) |> ignore
+            row.height(Is(Some(40.0))).width(Is(Some(w))) |> ignore
             row
             .box(fn(w) {
               w
@@ -73,7 +74,7 @@ fn composer_cover_tester_src(
       })
       |> ignore
     },
-    w=600.0,
+    w~,
     h~,
     platform~,
     pointing~,
@@ -89,9 +90,10 @@ fn composer_cover_tester(
   pointing? : @ui.Pointing = Mouse,
   platform? : Int = 0,
   over_tall? : Double = 0.0,
+  w? : Double = 600.0,
   h? : Double = 500.0,
 ) -> @ui.Tester {
-  composer_cover_tester_src(pointing~, platform~, over_tall~, h~).0
+  composer_cover_tester_src(pointing~, platform~, over_tall~, w~, h~).0
 }
 
 ///|
@@ -368,6 +370,13 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
     assert_eq(cur[0][6], 1.0, msg="\{phase}: expected saturation 1.0")
   }
   check_single("closed")
+  let (_, rest_gy, _, rest_gh) = composer_cover_glass_box(t)
+  let rest_prog = bottom_prog()
+  assert_eq(rest_prog[0][53], 52.0, msg="closed: expected 52pt resting bottom seam fade, got \{rest_prog[0][53]}")
+  assert_true(
+    rest_prog[0][1] >= rest_gy + 1.0 - 0.5 && (rest_prog[0][1] - (rest_gy + rest_gh + 4.0 - 52.0)).abs() < 2.0,
+    msg="closed: expected resting fade top near composer_top + shut_h + 4 - 52 (gy=\{rest_gy}, gh=\{rest_gh}, fade_y=\{rest_prog[0][1]})",
+  )
   t.set_ime_inset(300.0)
   t.frame()
   check_single("ime-up-0ms")
@@ -375,8 +384,8 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
   check_single("ime-up-mid")
   let mid_up = bottom_prog()
   assert_true(
-    mid_up[0][53] > 18.0 && mid_up[0][53] < 64.0,
-    msg="ime-up-mid: expected interpolated fade height in (18, 64), got \{mid_up[0][53]}",
+    mid_up[0][53] > 52.0 && mid_up[0][53] < 64.0,
+    msg="ime-up-mid: expected interpolated fade height in (52, 64), got \{mid_up[0][53]}",
   )
   t.run_for(@ui.move_most_ms)
   check_single("ime-up-end")
@@ -396,12 +405,23 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
   check_single("ime-down-mid")
   let mid_dn = bottom_prog()
   assert_true(
-    mid_dn[0][53] > 18.0 && mid_dn[0][53] < 64.0,
-    msg="ime-down-mid: expected interpolated fade height in (18, 64), got \{mid_dn[0][53]}",
+    mid_dn[0][53] > 52.0 && mid_dn[0][53] < 64.0,
+    msg="ime-down-mid: expected interpolated fade height in (52, 64), got \{mid_dn[0][53]}",
   )
   t.run_for(@ui.move_most_ms)
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="gone as the keyboard goes")
   check_single("ime-down-end")
+  // Wide touch layout (w=900, Finger): touch keeps narrow_round (side=36, shut_h=52); verify resting seam fade stays below composer top and spans 52pt into bottom seam
+  let tw = composer_cover_tester(pointing=Finger, platform=2, w=900.0)
+  assert_eq(composer_cover_backdrop(tw).length(), 0, msg="wide touch resting seam fade must stay below composer top")
+  let (_, wgy, _, wgh) = composer_cover_glass_box(tw)
+  let wprog = tw.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[1] > 100.0 && a[22] == -1.0 })
+  assert_eq(wprog.length(), 1, msg="wide touch resting: expected strictly 1 bottom progressive blur")
+  assert_eq(wprog[0][53], 52.0, msg="wide touch resting: expected 52pt fade height")
+  assert_true(
+    wprog[0][1] >= wgy + 1.0 - 0.5 && (wprog[0][1] - (wgy + wgh + 4.0 - 52.0)).abs() < 2.0,
+    msg="wide touch resting: expected fade top near composer_top + shut_h + 4 - 52 (gy=\{wgy}, gh=\{wgh}, fade_y=\{wprog[0][1]})",
+  )
 }
 
 ///|

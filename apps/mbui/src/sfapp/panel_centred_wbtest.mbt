@@ -35,14 +35,15 @@ test "panel centred, 大屏 keyboard and mouse: plain, with what it says, a foot
   }
   debug_inspect(out, content=(
     #|[
-    #|  "plain: dialog Some((面板, (380, 313, 520, 174))) title [(404, 336, 44, 30)] says [] words [(404, 391, 472, 22)] ok Some((406, 429, 468, 32)) close Some((844, 333, 36, 36)) focus None row0 []",
-    #|  "says: dialog Some((面板, (380, 300, 520, 200))) title [(404, 323, 44, 30)] says [(404, 366, 472, 20)] words [(404, 404, 472, 22)] ok Some((406, 442, 468, 32)) close Some((844, 320, 36, 36)) focus None row0 []",
-    #|  "foot: dialog Some((面板, (380, 311, 520, 178))) title [(404, 334, 44, 30)] says [] words [(404, 389, 472, 22)] ok Some((824, 435, 54, 32)) close Some((844, 331, 36, 36)) focus None row0 []",
-    #|  "wide: dialog Some((面板, (320, 313, 640, 174))) title [(344, 336, 44, 30)] says [] words [(344, 391, 592, 22)] ok Some((346, 429, 588, 32)) close Some((904, 333, 36, 36)) focus None row0 []",
+    #|  "plain: dialog Some((面板, (380, 313, 520, 174))) title [(404, 340, 34, 22)] says [] words [(404, 391, 472, 22)] ok Some((406, 429, 468, 32)) close Some((844, 333, 36, 36)) focus None row0 []",
+    #|  "says: dialog Some((面板, (380, 300, 520, 200))) title [(404, 327, 34, 22)] says [(404, 366, 472, 20)] words [(404, 404, 472, 22)] ok Some((406, 442, 468, 32)) close Some((844, 320, 36, 36)) focus None row0 []",
+    #|  "foot: dialog Some((面板, (380, 311, 520, 178))) title [(404, 338, 34, 22)] says [] words [(404, 389, 472, 22)] ok Some((824, 435, 54, 32)) close Some((844, 331, 36, 36)) focus None row0 []",
+    #|  "wide: dialog Some((面板, (320, 313, 640, 174))) title [(344, 340, 34, 22)] says [] words [(344, 391, 592, 22)] ok Some((346, 429, 588, 32)) close Some((904, 333, 36, 36)) focus None row0 []",
     #|  "untitled: dialog Some((关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 324, 520, 152))) title [] says [] words [(404, 380, 472, 22)] ok Some((406, 418, 468, 32)) close Some((844, 344, 36, 36)) focus None row0 []",
-    #|  "tall 800: dialog Some((面板, (380, 170, 520, 460))) title [(404, 193, 44, 30)] says [] words [] ok Some((824, 576, 54, 32)) close Some((844, 190, 36, 36)) focus None row0 [(404, 248, 472, 22)]",
-    #|  "tall 500: dialog Some((面板, (380, 95, 520, 310))) title [(404, 118, 44, 30)] says [] words [] ok Some((824, 351, 54, 32)) close Some((844, 115, 36, 36)) focus None row0 [(404, 173, 472, 22)]",
+    #|  "tall 800: dialog Some((面板, (380, 170, 520, 460))) title [(404, 197, 34, 22)] says [] words [] ok Some((824, 576, 54, 32)) close Some((844, 190, 36, 36)) focus None row0 [(404, 248, 472, 22)]",
+    #|  "tall 500: dialog Some((面板, (380, 95, 520, 310))) title [(404, 122, 34, 22)] says [] words [] ok Some((824, 351, 54, 32)) close Some((844, 115, 36, 36)) focus None row0 [(404, 173, 472, 22)]",
     #|]
+
 
 
   ))

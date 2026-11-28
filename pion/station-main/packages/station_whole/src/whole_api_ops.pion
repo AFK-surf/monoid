@@ -47,6 +47,8 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_session_compact : Option[(String) -> Result[Unit, station_api::ApiError]]
   pub mut on_project_rename_merge : Option[(String, String, String, String, Option[String]) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_vault_decision_notify : Option[(String, String) -> Unit]
+  pub mut on_links_preview : Option[(String) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut on_feedback_report : Option[(station_api::ApiRequest, Int, Int) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut read_only_handover_cell : Array[Bool]
 }
 
@@ -69,6 +71,8 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_session_compact: None,
     on_project_rename_merge: None,
     on_vault_decision_notify: None,
+    on_links_preview: None,
+    on_feedback_report: None,
     read_only_handover_cell: [true],
   }
 }

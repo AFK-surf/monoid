@@ -142,19 +142,24 @@ let panel_row_face : @ui.Style = @ui.css("align=AStart justify=JCenter")
 // Pages (styles/pages.css.ts)
 
 ///|
-/// Round a sheet's grabber: sits near the top edge (y = 6..11pt, matching iOS 27) while keeping the full 25pt
-/// `sheet_grab_h` band (2 + 4 + 5 + 4 + 10 = 25pt).
+/// Bottom padding of `sheet_grab_outer` keeping the 4pt grabber at `y = 6..10pt` inside the full 25pt `sheet_grab_h`
+/// band (`2 + 4 + 4 + 4 + 11 = 25pt`).
+let sheet_grab_foot : Double = 11.0
+
+///|
+/// Round a sheet's grabber: sits near the top edge (y = 6..10pt, matching real iOS 27 `_UIGrabber`) inside the 25pt
+/// `sheet_grab_h` band (2 + 4 + 4 + 4 + 11 = 25pt).
 // kept across runs: a value (no field of it changes)
-let sheet_grab_outer : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S2_5")
+let sheet_grab_outer : @ui.Style = @ui.css("w=Full pt=S0_5").then(@ui.style(pb=room(sheet_grab_foot)))
 
 ///|
 // kept across runs: a value (no field of it changes)
 let sheet_grab_inner : @ui.Style = @ui.css("w=Full py=S1 align=ACenter")
 
 ///|
-/// How tall a sheet's grabber stands at its top, all round it (sheet_node's grabber: 8 and 4 over its 5, 4 and 4 under): where
-/// what the sheet holds begins.
-pub let sheet_grab_h : Double = 8.0 + 4.0 + 5.0 + 4.0 + 4.0
+/// How tall a sheet's grabber stands at its top, all round it (sheet_node's grabber: 2 + 4 over its 4, 4 + 11 under):
+/// where what the sheet holds begins.
+pub let sheet_grab_h : Double = 2.0 + 4.0 + 4.0 + 4.0 + sheet_grab_foot
 
 ///|
 /// How long the pointer rests on a control before its tip shows (the web's Tooltip.Provider delayDuration).
@@ -515,17 +520,14 @@ let dialog_head : @ui.Style = @ui.style(
 /// `size` in node `v`'s tree (followed across the theme and the size of words): a title of one line and what stands
 /// beside it as they stood centred in the row, a title of several lines with them still on its first (the user,
 /// 2026-11-27: 「这种不应该对标题居中」).
-fn head_line_drop(v : @view.View, size : @ui.TextSize, h? : Double, row? : Double = 0.0) -> Double {
-  let line = node_sp(v, @ui.tree_theme().text_size(size).1)
+fn head_line_drop(v : @view.View, size : @ui.TextSize, leading? : @ui.Leading = Font, h? : Double, row? : Double = 0.0) -> Double {
+  let base_line = match @ui.tree_theme().leading(leading) {
+    Some(l) => l
+    None => @ui.tree_theme().text_size(size).1
+  }
+  let line = node_sp(v, base_line)
   dmax(0.0, (dmax(row, line) - h.unwrap_or(line)) / 2.0)
 }
-
-///|
-/// How far its title's row stands under its padding's top, and in from its padding's end.
-let dialog_head_over : Double = 1.0
-
-///|
-let dialog_head_end : Double = 2.0
 
 ///|
 /// An untitled dialog's close button (dialog): in its top right corner as far in as makes it concentric with it
@@ -575,8 +577,9 @@ fn dialog_back_at(drop? : Double = 0.0) -> @ui.Style {
 }
 
 ///|
+/// Unified modal/sheet title matching real iOS/iPadOS 27 inline sheet & alert titles (`Xl2` = 17pt Semibold, `L7` = 22pt line).
 // kept across runs: a value (no field of it changes)
-let dialog_title : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold, color=Fg)
+let dialog_title : @ui.TextStyle = @ui.text_style(size=Xl2, leading=L7, weight=Semibold, color=Fg)
 
 ///|
 // kept across runs: a value (no field of it changes)

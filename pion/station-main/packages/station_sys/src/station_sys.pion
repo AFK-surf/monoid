@@ -196,7 +196,11 @@ extern "C" fn sts_resolve_host_for_tunnel_async(
   host : Ptr,
   reject_loopback_or_unspec : Int,
 ) -> Int
+extern "C" fn sts_resolve_host_all_async(event_id : Int64, host : Ptr) -> Int
 extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
+extern "C" fn sts_utimes_now(path : Ptr) -> Int
+extern "C" fn sts_utimes_dir_children_now(dir_path : Ptr) -> Int
+extern "C" fn sts_cleanup_stale_tar_extracts_dir(tmp_dir : Ptr, now_ms : Int64, min_age_ms : Int64) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -1664,6 +1668,37 @@ pub fn resolve_host_for_tunnel_async(
   )
   let _ = host.length()
   ok != 0
+}
+
+/// Spawn a detached worker thread to resolve ALL A/AAAA addresses for `host` via OS `getaddrinfo`.
+/// Emits `SysEvent::DnsResolved(rc, ips_newline_joined)` (`rc == 1` ok, `-1` error).
+pub fn resolve_host_all_async(event_id : Int64, host : String) -> Bool {
+  let ok = sts_resolve_host_all_async(event_id, host.as_cstr())
+  let _ = host.length()
+  ok != 0
+}
+
+/// Update a file or directory's atime/mtime to current wall time (`utimes(path, NULL)` / `SetFileTime`).
+pub fn utimes_now(path : String) -> Bool {
+  let rc = sts_utimes_now(path.as_cstr())
+  let _ = path.length()
+  rc == 1
+}
+
+/// Open `dir_path` with O_DIRECTORY|O_NOFOLLOW and refresh mtime of each non-symlink
+/// child and the directory itself via dirfd-relative `utimensat`/`futimens`.
+pub fn utimes_dir_children_now(dir_path : String) -> Bool {
+  let rc = sts_utimes_dir_children_now(dir_path.as_cstr())
+  let _ = dir_path.length()
+  rc == 1
+}
+
+/// Open `tmp_dir` with O_DIRECTORY|O_NOFOLLOW and unlink regular non-symlink
+/// `tar-extract-*.bin` files older than `min_age_ms` via `unlinkat(dirfd, ...)`.
+pub fn cleanup_stale_tar_extracts_dir(tmp_dir : String, now_ms : Int64, min_age_ms : Int64) -> Int {
+  let rc = sts_cleanup_stale_tar_extracts_dir(tmp_dir.as_cstr(), now_ms, min_age_ms)
+  let _ = tmp_dir.length()
+  rc
 }
 
 /// Replace the current process in-place:

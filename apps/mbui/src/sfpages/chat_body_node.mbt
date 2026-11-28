@@ -849,7 +849,7 @@ fn chat_body_node(
   let by_key_made : Ref[ChatBodyList?] = Ref(None)
   // (0 none given yet; counted up as each other list is given)
   let keyed_gen = @signals.computed(
-    fn(was) {
+    fn(was : Int?) {
       let n = was.unwrap_or(0)
       match (msgs_given.val, msgs()) {
         (Some(g), Some(m)) if !physical_equal(g, m) => {

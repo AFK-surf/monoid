@@ -2262,8 +2262,8 @@
       // the foot and right less), 0.5 wide
       bool prog_glass = (v_pad.z < -0.5);
       vec3 g3 = backdrop(p);
-      float u_soft = smoothstep(0.0, 0.82, fade_r);
-      float soft_w = pow(u_soft, 1.35);
+      float u_soft = smoothstep(0.0, 1.0, fade_r);
+      float soft_w = pow(u_soft, 1.75);
       float ps = prog_glass ? soft_w : 1.0;
       float sat = prog_glass ? mix(1.0, v_p.z, ps) : v_p.z;
       g3 = max(mix(vec3(luma(g3)), g3, sat), 0.0);
@@ -2441,7 +2441,7 @@
       float sig1 = pow(sp, 1.0 / kf);
       // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from
       // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost
-      float u_b = smoothstep(0.08, 0.92, r);
+      float u_b = smoothstep(0.06, 1.0, r);
       float rs = u_b * u_b;
       float target_px = sp * rs;
       if (target_px <= sig1 || kf <= 1.05) {

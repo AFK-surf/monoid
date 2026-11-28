@@ -236,7 +236,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "待处理 (66, 173, 36, 18)",
     #|    "星 (20.5, 683, 13, 20)",
     #|    "昨天 (66, 381, 212, 18)",
-    #|    "对话框 (404, 314, 66, 30)",
+    #|    "对话框 (404, 318, 51, 22)",
     #|    "新建对话 (90, 17, 152, 20)",
     #|    "星期三 (66, 585, 212, 18)",
     #|    "发消息 (402, 710, 772, 22)",
@@ -285,6 +285,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|  ],
     #|  "Some((844, 311, 36, 36))",
     #|)
+
 
 
 

@@ -5,6 +5,12 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-27: titled small sheets now show a concentric 44pt circular Liquid Glass close (`×`) button in
+// `libs/ui/src/controls/sheet_node.mbt` (`sheet_close_key_node` in `bar_row`), updating `phone settings-stations-existing`
+// (made 816 -> 867 +51/+6.3% within bar, laid 551 -> 610 +59/+10.7%, measured 91 -> 88 -3/-3.3% within bar) and
+// unifying `reader-layout` onto the standard sheet header (made 669 -> 690 +21/+3.1%, laid 534 -> 542 +8/+1.5%,
+// measured 82 -> 65 -17/-20.7%).
+
 // Raised once, 2026-11-27: tall auto-height phone sheets (`>= 75%` of window height) now dock full-width on open
 // (`libs/ui/src/controls/sheet_node.mbt`); the stepped connect wizard (`settings-new-connect-group`) opens directly on
 // its tall step-3 form, measuring once at floating width (`348pt`) before docking to full width (`360pt`, +14 measured,
@@ -264,7 +270,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone reader": (472, 384, 25),
   "phone reader-bars": (526, 427, 37),
   "phone reader-contents": (612, 497, 51),
-  "phone reader-layout": (669, 534, 82),
+  "phone reader-layout": (690, 542, 65),
   "phone reader-md": (596, 467, 40),
   "phone newchat": (855, 542, 72),
   "phone newchat-files": (855, 542, 72),
@@ -409,7 +415,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-profile-move-key": (402, 280, 31),
   "phone settings-stations-add": (824, 578, 87),
   // Raised once, 2026-11-23: settings-stations-existing now renders the full/tasks mode segmented control below the list and rig row icons.
-  "phone settings-stations-existing": (816, 551, 91),
+  "phone settings-stations-existing": (816, 610, 91),
   "phone settings-stations-command": (786, 546, 81),
   "phone settings-first-station": (718, 495, 77),
   "phone settings-adb": (423, 295, 32),
