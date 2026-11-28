@@ -480,6 +480,8 @@ pub struct WholeStore {
   pub vault_incoming : station_vault::IncomingRegistry
   pub vault_boxes : Map[String, Bytes]
   pub vault_unsaved : Map[String, Map[String, String]]
+  /// Preserved Node `SaveScope[]` (`(ws, owner)` pairs) per unsaved request id for lossless handover.
+  pub vault_unsaved_scopes : Map[String, Array[(String, String)]]
   /// Preserved Node `Held` envelope metadata (`request_json, grant_json, until_opt`) per grant id
   /// for lossless Node↔Pion `{ vault: { keeper: { boxes, held }, unsaved } }` handover roundtrip.
   pub vault_held_meta : Map[String, (base_codec::Json, base_codec::Json, Option[Int64])]
@@ -505,6 +507,7 @@ pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) ->
     vault_incoming: station_vault::IncomingRegistry::new(),
     vault_boxes: Map::new(),
     vault_unsaved: Map::new(),
+    vault_unsaved_scopes: Map::new(),
     vault_held_meta: Map::new(),
     vault_plain_schema_ready: false,
     before_store_ran: false,

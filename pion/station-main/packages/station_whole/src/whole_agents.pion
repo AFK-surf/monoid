@@ -816,17 +816,21 @@ pub fn WholeAgents::archive_session(
     Ok(ks) => ks
     Err(e) => return Err("archive_session failed: " + e.message)
   }
-  let mut vault_cleanup_err : Option[String] = None
   for i in 0..<archived_keys.length() {
     let sk = archived_keys[i]
     let _ = self.revoke_session_token(sk)
-    // P1-5: Runtime vault cleanup on session archive (1:1 Node `secrets.ts:402-418`):
+    // P1-5 / R4 P1-4: Runtime vault cleanup on session archive (1:1 Node `secrets.ts:402-418`):
     // revoke in-memory grants, clear cross-workspace listings, expire pending requests,
     // and drop ephemeral boxes / unsaved fields for the archived session.
+    // Because the SQLite archive transaction has already committed, a subsequent vault cleanup
+    // error is logged but MUST NOT flip `archive_session` to `Err` (preventing callers from
+    // treating an already-archived session as failed).
     let _ = whole_store.vault_grants.revoke_session(sk)
     match expire_vault_state_for_archived_session(whole_store, sk, now_ms / 1000L) {
       Ok(_) => ()
-      Err(e) => if vault_cleanup_err is None { vault_cleanup_err = Some(e) }
+      Err(e) => {
+        whole_store.vault_backfill_last_error = Some("[vault] archive cleanup warning for " + sk + ": " + e)
+      }
     }
     match self.hub.actors.get(sk) {
       Some(a) => {
@@ -835,10 +839,7 @@ pub fn WholeAgents::archive_session(
       None => ()
     }
   }
-  match vault_cleanup_err {
-    Some(e) => Err("archive_session vault cleanup failed: " + e)
-    None => Ok(())
-  }
+  Ok(())
 }
 
 /// Delete a session from SQLite first, then revoke its MCP token and remove its actor in memory.

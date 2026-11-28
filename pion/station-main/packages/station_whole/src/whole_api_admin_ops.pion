@@ -2842,16 +2842,15 @@ fn dispatch_vault_requests_and_plain_op(
     let now_sec = now_ms / 1000L
     let vd = port.vault_decisions
     let visible : Array[base_codec::Json] = []
-    for i in 0..<all_pending.length() {
-      let r_json = all_pending[i]
+    let mut expired_batch = 0
+    let is_req_live = fn(r_json : base_codec::Json) -> Result[Bool, station_api::ApiError] {
       let r_id = match json_field_str(r_json, "id") { Some(s) => s, None => "" }
       let r_sess = match json_field_str(r_json, "session") { Some(s) => s, None => "" }
       let r_at : Int64 = match admin_json_num_field(r_json, "at") { Some(d) => d.to_int64(), None => now_sec }
       let r_vault = match json_field_str(r_json, "vault") { Some(s) => s, None => "" }
-      // 1:1 Node `secrets.ts:1128-1140` `#requestLive` / `#recoverable` / `#needsHeld`:
       let sess_ended = match (vd.is_session_ended)(r_sess) {
         Ok(b) => b
-        Err(e) => return Some(Err(e))
+        Err(e) => return Err(e)
       }
       let needs_held = match base_codec::json_get(r_json, "save") {
         Some(base_codec::Json::Obj(fs)) => {
@@ -2866,15 +2865,40 @@ fn dispatch_vault_requests_and_plain_op(
         _ => false
       }
       let recoverable = !needs_held || (vd.get_unsaved_fields)(r_id).is_some()
-      let live = !sess_ended && (r_at + 86400L > now_sec) && recoverable
+      Ok(!sess_ended && (r_at + 86400L > now_sec) && recoverable)
+    }
+    for i in 0..<all_pending.length() {
+      // P2-5: Stop immediately once 200 viewer-visible requests are collected.
+      if visible.length() >= 200 {
+        break
+      }
+      let r_json = all_pending[i]
+      let r_id = match json_field_str(r_json, "id") { Some(s) => s, None => "" }
+      let live = match is_req_live(r_json) {
+        Ok(b) => b
+        Err(e) => return Some(Err(e))
+      }
       if !live {
-        if r_id.length() > 0 {
+        // Bound synchronous expiry work per GET to 64 rows, and re-verify liveness on the
+        // freshly re-read row before expiring so CAS never settles a newly updated version.
+        if r_id.length() > 0 && expired_batch < 64 {
           let row_opt = match (vd.get_request)(ws, r_id) {
             Ok(r) => r
             Err(e) => return Some(Err(e))
           }
           match row_opt {
             Some(row) if row.status == "pending" => {
+              let still_live = match is_req_live(row.body) {
+                Ok(b) => b
+                Err(e) => return Some(Err(e))
+              }
+              if still_live {
+                if viewer_can_see_vault_req(row.body, ws, req.viewer, whole_store, is_locked) {
+                  visible.push(row.body)
+                }
+                continue
+              }
+              expired_batch = expired_batch + 1
               let expired_body = json_obj_set(row.body, "status", Some(base_codec::json_str("expired")))
               let outcome = base_codec::json_obj([("status", base_codec::json_str("expired"))])
               match (vd.settle_request_tx)(
@@ -2907,9 +2931,7 @@ fn dispatch_vault_requests_and_plain_op(
         continue
       }
       if viewer_can_see_vault_req(r_json, ws, req.viewer, whole_store, is_locked) {
-        if visible.length() < 200 {
-          visible.push(r_json)
-        }
+        visible.push(r_json)
       }
     }
     return Some(Ok(base_codec::json_obj([("requests", base_codec::json_arr(visible))])))

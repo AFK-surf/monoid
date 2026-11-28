@@ -121,6 +121,7 @@ pub fn expire_vault_state_for_archived_session(
       for i in 0..<dropped_ids.length() {
         whole_store.vault_boxes.remove(dropped_ids[i])
         whole_store.vault_unsaved.remove(dropped_ids[i])
+        whole_store.vault_unsaved_scopes.remove(dropped_ids[i])
         whole_store.vault_held_meta.remove(dropped_ids[i])
         let _ = whole_store.vault_grants.revoke(dropped_ids[i])
       }
@@ -179,7 +180,7 @@ pub fn drain_card_outbox_once(
     return Ok(0)
   }
   let mut applied = 0
-  let touched : Array[(Int64, Option[Int64])] = []
+  let touched : Array[(Int64, Option[Int64], base_codec::Json)] = []
   for i in 0..<heads.length() {
     let co = heads[i]
     let outcome_val = match base_codec::json_parse(co.outcome_json) {
@@ -187,6 +188,7 @@ pub fn drain_card_outbox_once(
       _ => base_codec::json_obj([])
     }
     let mut closed_n : Option[Int64] = None
+    let mut appended_entry_opt : Option[base_codec::Json] = None
     let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
       // 1. Strict ownership & card check (1:1 Node `store.ts:4668,4682`)
       let msg_row = match txdb.first(
@@ -219,20 +221,34 @@ pub fn drain_card_outbox_once(
       let mut latest_quotes = row_opt_json_val(mr, "quotes")
       let mut latest_card_raw : String = match mr.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "{}" }
 
-      // 2. Read latest `kind = 'edit'` targeting `msg_n` so prior edits/fields are preserved
-      let edit_row = match txdb.first(
-        "SELECT text, attachments, quotes, card FROM entries WHERE thread = ?1 AND kind = 'edit' AND target = ?2 ORDER BY n DESC LIMIT 1",
+      // 2a. Read latest content edit (`text`/`attachments`/`quotes`) targeting `msg_n`
+      let content_edit_row = match txdb.first(
+        "SELECT text, attachments, quotes FROM entries WHERE thread = ?1 AND kind = 'edit' AND target = ?2 ORDER BY n DESC LIMIT 1",
         [sql_db::int64_to_json(co.thread), sql_db::int64_to_json(msg_n)],
       ) {
         Ok(r) => r
         Err(e) => return Err(e)
       }
-      match edit_row {
+      match content_edit_row {
         Some(er) => {
           match er.get("text") { Some(v) if !(v is base_codec::Json::Null) => latest_text = v, _ => () }
           match er.get("attachments") { Some(v) if !(v is base_codec::Json::Null) => latest_attachments = v, _ => () }
           match er.get("quotes") { Some(v) if !(v is base_codec::Json::Null) => latest_quotes = v, _ => () }
-          match er.get("card") { Some(base_codec::Json::Str(s)) if s.length() > 0 => latest_card_raw = s, _ => () }
+        }
+        None => ()
+      }
+      // 2b. Separately read latest NON-NULL card edit (1:1 Node `store.ts:4696`) so a plain-text
+      //     edit (`card IS NULL`) never wipes out an earlier card edit!
+      let card_edit_row = match txdb.first(
+        "SELECT card FROM entries WHERE thread = ?1 AND kind = 'edit' AND target = ?2 AND card IS NOT NULL ORDER BY n DESC LIMIT 1",
+        [sql_db::int64_to_json(co.thread), sql_db::int64_to_json(msg_n)],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      match card_edit_row {
+        Some(cr) => {
+          match cr.get("card") { Some(base_codec::Json::Str(s)) if s.length() > 0 => latest_card_raw = s, _ => () }
         }
         None => ()
       }
@@ -297,14 +313,35 @@ pub fn drain_card_outbox_once(
           sql_db::int64_to_json(now_ms),
         ],
       ) {
-        Ok(_) => Ok(true)
+        Ok(_) => {
+          appended_entry_opt = Some(
+            base_codec::json_obj([
+              ("thread", sql_db::int64_to_json(co.thread)),
+              ("n", sql_db::int64_to_json(next_n)),
+              ("kind", base_codec::json_str("edit")),
+              ("target", sql_db::int64_to_json(msg_n)),
+              ("ts", base_codec::json_null()),
+              ("authorKind", base_codec::json_str(author_kind)),
+              ("author", base_codec::json_str(author)),
+              ("text", latest_text),
+              ("attachments", latest_attachments),
+              ("quotes", latest_quotes),
+              ("card", next_card),
+              ("at", sql_db::int64_to_json(now_ms)),
+            ]),
+          )
+          Ok(true)
+        }
         Err(e) => Err(e)
       }
     })
     match tx_res {
       Ok(true) => {
         applied = applied + 1
-        touched.push((co.thread, closed_n))
+        match appended_entry_opt {
+          Some(ej) => touched.push((co.thread, closed_n, ej))
+          None => ()
+        }
       }
       Ok(false) => ()
       Err(e) => return Err(e.message)
@@ -313,7 +350,7 @@ pub fn drain_card_outbox_once(
   match events_opt {
     Some(ev) => {
       for i in 0..<touched.length() {
-        let (tid, closed_opt) = touched[i]
+        let (tid, closed_opt, entry_j) = touched[i]
         let ev_target = station_api::EventTarget::{
           lang: None,
           viewer: None,
@@ -331,7 +368,7 @@ pub fn drain_card_outbox_once(
         }
         let payload_fs : Array[(String, base_codec::Json)] = [
           ("id", sql_db::int64_to_json(tid)),
-          ("entries", base_codec::json_arr([])),
+          ("entries", base_codec::json_arr([entry_j])),
         ]
         match closed_opt {
           Some(cn) => payload_fs.push(("closed", sql_db::int64_to_json(cn)))
@@ -390,37 +427,18 @@ pub fn WholeStore::export_vault_carried_json(self : WholeStore) -> base_codec::J
         None => ()
       }
     }
+    // R4 P1-1: NEVER export a stripped fallback `{id, session}` without `vault_held_meta`
+    // (which carries `ws`, `vault`, `item`, `runOn`, `sig`, `at`, `timeout`): dropping `runOn`
+    // would cause Node to misinterpret a remote-station grant as local execution!
     let (req_j, grant_j, until_opt) = match self.vault_held_meta.get(g.id) {
       Some((rj, gj, u_opt)) => {
-        // Keep preserved `ws`, `vault`, `item`, `runOn`, `sig`, `at`, `timeout`, and update effective `until`
         let eff_until : Option[Int64] = match u_opt {
           Some(_) => Some(g.expires_sec)
           None => if g.idle_sec > 0L { Some(g.expires_sec) } else { None }
         }
         (rj, gj, eff_until)
       }
-      None => {
-        let grant_fs : Array[(String, base_codec::Json)] = [
-          ("v", base_codec::json_int(1)),
-          ("request", base_codec::json_str(g.id)),
-          ("mode", base_codec::json_str(g.mode.as_str())),
-          ("scope", base_codec::json_str(scope_s)),
-          ("hosts", json_str_array(g.hosts)),
-          ("exp", base_codec::json_int64(g.expires_sec)),
-        ]
-        if g.idle_sec > 0L {
-          grant_fs.push(("timeout", base_codec::json_obj([("kind", base_codec::json_str("idle")), ("seconds", base_codec::json_int64(g.idle_sec))])))
-        }
-        match g.env_var {
-          Some(ev) => grant_fs.push(("env", base_codec::json_str(ev)))
-          None => ()
-        }
-        (
-          base_codec::json_obj([("id", base_codec::json_str(g.id)), ("session", base_codec::json_str(g.session))]),
-          base_codec::json_obj(grant_fs),
-          if g.idle_sec > 0L { Some(g.expires_sec) } else { None },
-        )
-      }
+      None => continue
     }
     let held_fs : Array[(String, base_codec::Json)] = [
       ("request", req_j),
@@ -455,7 +473,17 @@ pub fn WholeStore::export_vault_carried_json(self : WholeStore) -> base_codec::J
             None => ()
           }
         }
-        unsaved_arr.push(base_codec::json_arr([base_codec::json_str(uid), base_codec::json_obj(f_entries)]))
+        match self.vault_unsaved_scopes.get(uid) {
+          Some(scopes) if scopes.length() > 0 => {
+            let scopes_arr : Array[base_codec::Json] = []
+            for si in 0..<scopes.length() {
+              let (sws, sowner) = scopes[si]
+              scopes_arr.push(base_codec::json_obj([("ws", base_codec::json_str(sws)), ("owner", base_codec::json_str(sowner))]))
+            }
+            unsaved_arr.push(base_codec::json_arr([base_codec::json_str(uid), base_codec::json_obj(f_entries), base_codec::json_arr(scopes_arr)]))
+          }
+          _ => unsaved_arr.push(base_codec::json_arr([base_codec::json_str(uid), base_codec::json_obj(f_entries)]))
+        }
       }
       None => ()
     }
@@ -602,6 +630,23 @@ pub fn WholeStore::import_vault_carried_json(self : WholeStore, j : base_codec::
                     }
                   }
                   self.vault_unsaved.set(id, fm)
+                  if entry.length() >= 3 {
+                    match entry[2] {
+                      base_codec::Json::Arr(sxs) => {
+                        let scopes : Array[(String, String)] = []
+                        for si in 0..<sxs.length() {
+                          match (json_field_str(sxs[si], "ws"), json_field_str(sxs[si], "owner")) {
+                            (Some(sws), Some(sowner)) if sws.length() > 0 && sowner.length() > 0 => scopes.push((sws, sowner))
+                            _ => ()
+                          }
+                        }
+                        if scopes.length() > 0 {
+                          self.vault_unsaved_scopes.set(id, scopes)
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
                 }
               }
               _ => ()
@@ -650,10 +695,9 @@ pub fn deliver_vault_decision_own_notice(
   }
   if notice.length() > 0 {
     let actor = agents.hub.ensure_actor(session_key, row.runtime)
-    actor.enqueue(station_sessions::ActorWork::InternalPrompt(notice))
-    if actor.phase is station_sessions::ActorPhase::Idle {
-      actor.pump_next_prompt()
-    }
+    // R4 P1-3: Enqueue onto dedicated `pending_internal_notices` (never `actor.queue`) so
+    // human `ActorWork::Steer` during an active `Running` turn is NEVER head-of-line blocked!
+    actor.enqueue_internal_notice(notice)
   }
   hooks_notify_session(hooks, session_key)
 }
@@ -766,6 +810,11 @@ pub fn run_vault_daemon_e2e_selftest() -> Result[Unit, String] {
     "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, card, at) VALUES (700, 2, 'edit', 1, NULL, 'agent', 's-e2e', 'edited text preserved', '{\"type\":\"options\",\"vault\":{\"request\":\"r-e2e-1\",\"tag\":\"kept\"}}', ?1)",
     [sql_db::int64_to_json(now_ms + 10L)],
   )
+  // R4 P1-2: Plain-text edit (`card = NULL`) after card edit MUST NOT wipe out `tag: "kept"`!
+  let _ = st.db.run(
+    "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, card, at) VALUES (700, 3, 'edit', 1, NULL, 'agent', 's-e2e', 'latest plain text edit', NULL, ?1)",
+    [sql_db::int64_to_json(now_ms + 20L)],
+  )
 
   // 2. Seed encrypted vault, item, ephemeral box, and pending request
   let ed_seed = Bytes::new(32)
@@ -820,8 +869,9 @@ pub fn run_vault_daemon_e2e_selftest() -> Result[Unit, String] {
   let unsaved_fm : Map[String, String] = Map::new()
   unsaved_fm.set("value", "unsaved_tmp_val")
   ws_store.vault_unsaved.set("r-unsaved-1", unsaved_fm)
+  ws_store.vault_unsaved_scopes.set("r-unsaved-1", [(ws, "alice@test.io")])
 
-  // 3. Verify Node-format `{ keeper: { boxes, held }, unsaved }` handover roundtrip
+  // 3. Verify Node-format `{ keeper: { boxes, held }, unsaved }` handover roundtrip (incl. `SaveScope[]`)
   let carried_j = ws_store.export_vault_carried_json()
   if base_codec::json_get(carried_j, "keeper") is None || base_codec::json_get(carried_j, "unsaved") is None {
     let _ = ws_store.close()
@@ -829,14 +879,19 @@ pub fn run_vault_daemon_e2e_selftest() -> Result[Unit, String] {
   }
   ws_store.vault_boxes.remove(req_id)
   ws_store.vault_unsaved.remove("r-unsaved-1")
+  ws_store.vault_unsaved_scopes.remove("r-unsaved-1")
   ws_store.import_vault_carried_json(carried_j, now_sec)
   let box_ok = match ws_store.vault_boxes.get(req_id) {
     Some(b) => crypto::bytes_to_hex(b) == crypto::bytes_to_hex(box_priv)
     None => false
   }
-  if !box_ok || !ws_store.vault_unsaved.contains("r-unsaved-1") {
+  let scopes_ok = match ws_store.vault_unsaved_scopes.get("r-unsaved-1") {
+    Some(xs) => xs.length() == 1 && xs[0].0 == ws && xs[0].1 == "alice@test.io"
+    None => false
+  }
+  if !box_ok || !ws_store.vault_unsaved.contains("r-unsaved-1") || !scopes_ok {
     let _ = ws_store.close()
-    return Err("handover keeper.boxes/unsaved roundtrip failed")
+    return Err("handover keeper.boxes/unsaved/scopes roundtrip failed")
   }
 
   let req_body = base_codec::json_obj([
@@ -850,6 +905,7 @@ pub fn run_vault_daemon_e2e_selftest() -> Result[Unit, String] {
     ("reason", base_codec::json_str("Run E2E deploy")),
     ("owner", base_codec::json_str("alice@test.io")),
     ("box", base_codec::json_str(box_pub)),
+    ("runOn", base_codec::json_obj([("station", base_codec::json_str("st-tokyo")), ("name", base_codec::json_str("tokyo"))])),
     ("status", base_codec::json_str("pending")),
     ("at", base_codec::json_int64(now_sec)),
   ])
@@ -961,18 +1017,24 @@ pub fn run_vault_daemon_e2e_selftest() -> Result[Unit, String] {
     return Err("deliver_vault_decision_own_notice must NOT fabricate an actor for missing session")
   }
 
-  // 6. Assert `drain_card_outbox_once` appended a NEW `kind='edit', target=1` row (n=3) preserving
-  //    prior edit text + tag, did NOT overwrite n=1 in-place, and inserted into `closed_cards`!
-  match st.db.first("SELECT text, card FROM entries WHERE thread = 700 AND n = 3 AND kind = 'edit' AND target = 1", []) {
+  // 6. Assert `drain_card_outbox_once` appended a NEW `kind='edit', target=1` row (n=4) preserving
+  //    BOTH latest plain-text edit (n=3) AND earlier non-null card edit `tag: "kept"` (n=2),
+  //    inserted into `closed_cards`, AND exported `runOn`/`sig`/`ws`/`vault`/`item` in handover!
+  let after_grant_carried = base_codec::json_stringify(ws_store.export_vault_carried_json())
+  if !after_grant_carried.contains("\"runOn\"") || !after_grant_carried.contains("\"st-tokyo\"") || !after_grant_carried.contains("\"sig\"") {
+    let _ = ws_store.close()
+    return Err("e2e post-grant handover missing runOn/sig: " + after_grant_carried)
+  }
+  match st.db.first("SELECT text, card FROM entries WHERE thread = 700 AND n = 4 AND kind = 'edit' AND target = 1", []) {
     Ok(Some(row)) => {
       let txt = match row.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
       let c_raw = match row.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      if txt != "edited text preserved" || !c_raw.contains("\"tag\":\"kept\"") || !c_raw.contains("\"status\":\"granted\"") {
+      if txt != "latest plain text edit" || !c_raw.contains("\"tag\":\"kept\"") || !c_raw.contains("\"status\":\"granted\"") {
         let _ = ws_store.close()
         return Err("e2e appended edit row missing preserved text/card/outcome: " + txt + " / " + c_raw)
       }
     }
-    _ => { let _ = ws_store.close(); return Err("e2e card_outbox did not append kind='edit' target=1 row") }
+    _ => { let _ = ws_store.close(); return Err("e2e card_outbox did not append kind='edit' target=1 row (n=4)") }
   }
   match st.db.first("SELECT 1 AS ok FROM closed_cards WHERE thread = 700 AND n = 1 AND viewer = 's-e2e'", []) {
     Ok(Some(_)) => ()

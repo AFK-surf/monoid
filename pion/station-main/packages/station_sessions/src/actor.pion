@@ -199,6 +199,9 @@ pub struct SessionActor {
   pub mut posted_after_terminal : Bool
   pub mut declared : TurnDeclared
   pub mut queue : Array[ActorWork]
+  /// Typed internal notices queued for the next turn (separate from `queue` so they never
+  /// head-of-line block human `ActorWork::Steer` during an active `Running` turn).
+  pub mut pending_internal_notices : Array[String]
   pub mut next_barrier_id : Int
   pub mut completed_barriers : Array[Int]
   pub mut running_history : Array[Bool]
@@ -236,6 +239,7 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     posted_after_terminal: false,
     declared: TurnDeclared::None,
     queue: [],
+    pending_internal_notices: [],
     next_barrier_id: 1,
     completed_barriers: [],
     running_history: [],
@@ -359,9 +363,22 @@ pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRo
   }
 }
 
+/// Enqueue a typed internal notice (e.g. vault approval decision):
+/// - If Idle with an empty queue, starts an internal turn immediately (`is_internal = true`).
+/// - Otherwise buffers in `pending_internal_notices` (separate from `queue`), so human
+///   `ActorWork::Steer` items in `queue` are NEVER head-of-line blocked during a `Running` turn.
+pub fn SessionActor::enqueue_internal_notice(self : SessionActor, text : String) -> Unit {
+  if (self.phase is ActorPhase::Idle) && self.queue.length() == 0 {
+    self.start_prompt_now(text, is_internal=true)
+  } else {
+    self.pending_internal_notices.push(text)
+  }
+}
+
 /// Pops and starts the first queued Prompt/Deliver/Steer in strict FIFO order (draining any
-/// leading barriers first). A residual `Steer` left at queue head after a turn ends becomes
-/// the next turn's prompt so the actor never deadlocks in Idle.
+/// leading barriers first), then falls back to `pending_internal_notices` when `queue` has no
+/// pending prompt. A residual `Steer` left at queue head after a turn ends becomes the next
+/// turn's prompt so the actor never deadlocks in Idle.
 pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
   while self.queue.length() > 0 {
     match self.queue[0] {
@@ -391,6 +408,15 @@ pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
       }
       _ => return
     }
+  }
+  if self.pending_internal_notices.length() > 0 {
+    let notice = self.pending_internal_notices[0]
+    let rest : Array[String] = []
+    for i in 1..<self.pending_internal_notices.length() {
+      rest.push(self.pending_internal_notices[i])
+    }
+    self.pending_internal_notices = rest
+    self.start_prompt_now(notice, is_internal=true)
   }
 }
 

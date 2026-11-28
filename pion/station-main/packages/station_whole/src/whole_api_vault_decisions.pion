@@ -1525,16 +1525,15 @@ fn vd_format_decision_notice(
     if status == "granted" {
       let use_str = match grant_rec_opt {
         Some(g) => {
-          let env_arg = match env_opt { Some(e) if e.length() > 0 => "", _ => ", env: \"NAME\"" }
           let how = match g.mode {
             station_vault::DeliveryMode::Proxy => "through the proxy to " + vd_join_strs(g.hosts, ", ")
             station_vault::DeliveryMode::Ssh => "by ssh-agent"
-            station_vault::DeliveryMode::File => "as a file, its path in the variable"
+            station_vault::DeliveryMode::File => "as a file"
             _ => "in the environment"
           }
-          "This chat may use it now: secret_run {grant: \"" + id + "\", command: \"…\"" + env_arg + "} (" + how + "); other chats ask with secret_use."
+          "Grant " + id + " (" + how + ") is registered and held for this chat on this station."
         }
-        None => "When you need it, ask with secret_use {item: \"" + name + "\"}, then secret_run."
+        None => "It is kept in the vault."
       }
       "Kept: 「" + name + "」 is in " + whose + "'s vault now (item " + item_id + "). " + use_str
     } else if status == "denied" {
@@ -1608,27 +1607,14 @@ fn vd_format_decision_notice(
     } else {
       match grant_rec_opt {
         Some(g) => {
-          let env_name = match g.env_var { Some(e) if e.length() > 0 => e, _ => "the variable you name in env" }
-          let env_arg = match g.env_var { Some(e) if e.length() > 0 => "", _ => ", env: \"NAME\"" }
-          let how = match g.mode {
-            station_vault::DeliveryMode::Proxy => "The command gets HTTPS_PROXY set to the station's proxy and " + env_name + " (and STILLFAIL_SECRET) set to its placeholder: the proxy swaps in the value on HTTPS to " + vd_join_strs(g.hosts, ", ") + " only."
-            station_vault::DeliveryMode::Ssh => "The command gets SSH_AUTH_SOCK for an agent holding the key (ssh, git over ssh use it)."
-            station_vault::DeliveryMode::File => "The file is written out for each command alone (removed when it ends) and its path is in " + env_name + " and STILLFAIL_SECRET; its output comes back with the file's content hidden."
-            station_vault::DeliveryMode::Browser => "Granted: the sign-in 「" + label + "」 (grant " + id + ") goes into this chat's browser (the `browser` tool): its cookies of " + vd_join_strs(g.hosts, ", ") + ", until " + g.expires_sec.to_string() + ". Open the site there; nothing is run with secret_run, and you never get the cookies themselves."
-            _ => "The command gets the value in " + env_name + " and STILLFAIL_SECRET; its output comes back with the value hidden."
+          let lasts = match g.grant_scope {
+            station_vault::GrantScope::Once => "for one command"
+            station_vault::GrantScope::Chat => "until this chat is archived (" + g.expires_sec.to_string() + " at the latest)"
+            station_vault::GrantScope::Hour => "until " + g.expires_sec.to_string()
           }
-          if g.mode is station_vault::DeliveryMode::Browser {
-            how
-          } else {
-            let lasts = match g.grant_scope {
-              station_vault::GrantScope::Once => "for one command"
-              station_vault::GrantScope::Chat => "until this chat is archived (" + g.expires_sec.to_string() + " at the latest)"
-              station_vault::GrantScope::Hour => "until " + g.expires_sec.to_string()
-            }
-            "Granted: 「" + label + "」, grant " + id + ", " + lasts + ". Run with secret_run {grant: \"" + id + "\", command: \"…\"" + env_arg + "}. " + how + " You never get the value itself."
-          }
+          "Granted: 「" + label + "」, grant " + id + ", " + lasts + " (mode " + g.mode.as_str() + "). Approved and held on this station for this chat; you never get the value itself."
         }
-        None => "Granted: 「" + label + "」, grant " + id + ". Run with secret_run {grant: \"" + id + "\", command: \"…\"}. You never get the value itself."
+        None => "Granted: 「" + label + "」, grant " + id + ". Approved and held on this station for this chat; you never get the value itself."
       }
     }
   }
@@ -1734,6 +1720,9 @@ fn vd_prepare_encrypted_grant(
     None => ()
   }
   let listing_modes = match vd_str_arr(listing_json, "modes") { Some(ms) => ms, None => [] }
+  if r_mode == "browser" {
+    return Err(station_api::ApiError::new(501, "browser sign-in delivery is not yet wired on Pion station (Wave 17E)"))
+  }
   if !vd_has_str(listing_modes, r_mode) {
     return Err(vault_err_json(409, "vault_refused", "the item is not given by " + r_mode))
   }
@@ -2045,6 +2034,7 @@ pub fn dispatch_vault_decisions_op(
             (vd.drop_box_priv)(req_id)
             // Pre-validated before SQLite commit (`vd_prepare_encrypted_grant`), so memory publication cannot fail.
             let _ = whole_store.register_vault_grant(grant_rec, now_sec)
+            whole_store.vault_held_meta.set(req_id, (next_body, body, None))
             vd_emit_request_event(events, next_body, now_ms)
             vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted", grant_rec_opt=Some(grant_rec)))
             return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
@@ -2125,6 +2115,7 @@ pub fn dispatch_vault_decisions_op(
           (vd.drop_box_priv)(req_id)
           // Pre-validated before SQLite commit (`vd_prepare_encrypted_grant`), so memory publication cannot fail.
           let _ = whole_store.register_vault_grant(grant_rec, now_sec)
+          whole_store.vault_held_meta.set(req_id, (next_body, body, None))
           vd_emit_request_event(events, next_body, now_ms)
           vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted", grant_rec_opt=Some(grant_rec)))
           return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
@@ -2293,6 +2284,7 @@ pub fn dispatch_vault_decisions_op(
       }
       // Optional grant bundled with save (kept all the same if grant doesn't hold, 1:1 secrets.ts:2228)
       let mut bundled_grant : Option[station_vault::GrantRecord] = None
+      let mut bundled_grant_json : Option[base_codec::Json] = None
       match base_codec::json_get(body, "grant") {
         Some(g_json) if !(g_json is base_codec::Json::Null) => {
           match item_listing_opt {
@@ -2312,7 +2304,10 @@ pub fn dispatch_vault_decisions_op(
                 verify_fn,
                 now_sec,
               ) {
-                Ok((grec, _, _)) => bundled_grant = Some(grec)
+                Ok((grec, _, _)) => {
+                  bundled_grant = Some(grec)
+                  bundled_grant_json = Some(g_json)
+                }
                 Err(_) => ()
               }
             }
@@ -2347,6 +2342,10 @@ pub fn dispatch_vault_decisions_op(
           match bundled_grant {
             Some(grec) => {
               let _ = whole_store.register_vault_grant(grec, now_sec)
+              match bundled_grant_json {
+                Some(gj) => whole_store.vault_held_meta.set(req_id, (next_body, gj, None))
+                None => ()
+              }
             }
             None => ()
           }
@@ -2744,6 +2743,9 @@ pub fn dispatch_vault_decisions_op(
     if r_mode == "browse" {
       return Some(Err(vault_err_json(409, "vault_refused", "browse requests cannot be granted")))
     }
+    if r_mode == "browser" {
+      return Some(Err(station_api::ApiError::new(501, "browser sign-in delivery is not yet wired on Pion station (Wave 17E)")))
+    }
     if !vd_has_str(listing_modes, r_mode) {
       return Some(Err(vault_err_json(409, "vault_refused", "the item is not given by " + r_mode)))
     }
@@ -2847,6 +2849,7 @@ pub fn dispatch_vault_decisions_op(
     ) {
       Ok(true) => {
         let _ = whole_store.register_vault_grant(grant_rec, now_sec)
+        whole_store.vault_held_meta.set(req_id, (next_body, base_codec::json_obj(grant_meta_fs), None))
         vd_emit_request_event(events, next_body, now_ms)
         vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted", grant_rec_opt=Some(grant_rec)))
         return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
@@ -3024,33 +3027,38 @@ pub fn dispatch_vault_decisions_op(
       ("grant", base_codec::json_obj(grant_meta_fs)),
       ("uses", base_codec::json_int(0)),
     ])
-    // P1-3: Prepare and validate the immediate GrantRecord BEFORE SQLite commit; only write
-    // `vault_grants` row when the immediate grant is valid (never write an unregistrable grant row).
-    let prepped_grant : Option[station_vault::GrantRecord] = match (
-      station_vault::DeliveryMode::parse(first_mode),
-      station_vault::GrantScope::parse(auto_scope),
-    ) {
-      (Some(dmode), Some(gscope)) => {
-        let sec = station_vault::VaultSecret::{ kind: kind, name: name, fields: fields_map }
-        let grec = station_vault::GrantRecord::{
-          id: req_id,
-          session: row.session,
-          mode: dmode,
-          grant_scope: gscope,
-          hosts: grant_hosts,
-          env_var: env_opt,
-          secret: sec,
-          expires_sec: exp_sec,
-          idle_sec: if auto_scope == "hour" { 3600L } else { 0L },
-          uses: 0,
-          revoked: false,
+    // P1-3 & R4 P1-4: Prepare and validate the immediate GrantRecord BEFORE SQLite commit;
+    // never register an uninjected `browser` grant (deferred to Wave 17E), and only write
+    // `vault_grants` row when the immediate grant is valid.
+    let prepped_grant : Option[station_vault::GrantRecord] = if first_mode == "browser" {
+      None
+    } else {
+      match (
+        station_vault::DeliveryMode::parse(first_mode),
+        station_vault::GrantScope::parse(auto_scope),
+      ) {
+        (Some(dmode), Some(gscope)) => {
+          let sec = station_vault::VaultSecret::{ kind: kind, name: name, fields: fields_map }
+          let grec = station_vault::GrantRecord::{
+            id: req_id,
+            session: row.session,
+            mode: dmode,
+            grant_scope: gscope,
+            hosts: grant_hosts,
+            env_var: env_opt,
+            secret: sec,
+            expires_sec: exp_sec,
+            idle_sec: if auto_scope == "hour" { 3600L } else { 0L },
+            uses: 0,
+            revoked: false,
+          }
+          match station_vault::GrantStore::validate_grant(grec, now_sec) {
+            Ok(_) => Some(grec)
+            Err(_) => None
+          }
         }
-        match station_vault::GrantStore::validate_grant(grec, now_sec) {
-          Ok(_) => Some(grec)
-          Err(_) => None
-        }
+        _ => None
       }
-      _ => None
     }
     let grant_body_opt : Option[base_codec::Json] = match prepped_grant {
       Some(_) => Some(persisted_grant_body)
@@ -3079,6 +3087,7 @@ pub fn dispatch_vault_decisions_op(
         match prepped_grant {
           Some(grec) => {
             let _ = whole_store.register_vault_grant(grec, now_sec)
+            whole_store.vault_held_meta.set(req_id, (next_body, base_codec::json_obj(grant_meta_fs), None))
           }
           None => ()
         }

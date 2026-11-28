@@ -1130,3 +1130,87 @@ test "w17d1 R2: GrantStore host parity, session ownership/archive checks, handov
     _ => panic("missing settled old request")
   }
 }
+
+test "w17d1 R4: Running Vault notice never HoL-blocks human Steer, browser mode returns honest 501, unsaved SaveScope[] preserved" {
+  // 1. P1-3: Running -> Vault notice arrives -> Human Steer arrives at queue[0] -> Turn ends -> Vault notice starts next turn!
+  let actor = station_sessions::SessionActor::new("s-hol", "codex")
+  let _ = actor.submit_input("initial human task")
+  if !(actor.phase is station_sessions::ActorPhase::Running) {
+    panic("expected actor Running")
+  }
+  actor.enqueue_internal_notice("Granted: 「API Key」, grant r_1.")
+  if actor.queue.length() != 0 || actor.pending_internal_notices.length() != 1 {
+    panic("internal notice must queue in pending_internal_notices, NEVER blocking actor.queue")
+  }
+  let route = actor.submit_input("urgent human steer")
+  if !(route is station_sessions::InputRoute::Steer) {
+    panic("expected human steer while Running")
+  }
+  match actor.queue[0] {
+    station_sessions::ActorWork::Steer(s) => if s != "urgent human steer" { panic("steer text mismatch") }
+    _ => panic("human Steer must be at queue[0] with zero HoL blocking!")
+  }
+  // Runner pops human Steer during active turn
+  let _ = actor.pop_next()
+  // Active turn ends -> pump_next_prompt starts the queued Vault internal notice as next turn (`is_internal = true`)!
+  actor.phase = station_sessions::ActorPhase::Idle
+  actor.pump_next_prompt()
+  if actor.started_prompts.length() != 2 ||
+  !actor.started_prompts_internal[1] ||
+  !actor.started_prompts[1].contains("Granted: 「API Key」") {
+    panic("after turn ends, queued Vault internal notice must start next turn with is_internal=true")
+  }
+
+  // 2. P1-4: `mode == "browser"` plain grant returns honest 501 without committing
+  let ws = "ws-main"
+  let now_sec = 1700000000L
+  let (_, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  hooks.lock_of = None
+  let alice = make_test_viewer("alice@example.com", "u-alice", ws, true, "owner")
+  let b_item = base_codec::json_obj([
+    ("ws", base_codec::json_str(ws)),
+    ("id", base_codec::json_str("i-br")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("version", base_codec::json_int(0)),
+    ("kind", base_codec::json_str("browser")),
+    ("name", base_codec::json_str("GitHub Sign-In")),
+    ("fields", base_codec::json_obj([("cookies", base_codec::json_str("[]"))])),
+    ("notes", base_codec::json_str("")),
+    ("listing", base_codec::json_obj([
+      ("name", base_codec::json_str("GitHub Sign-In")),
+      ("kind", base_codec::json_str("browser")),
+      ("modes", base_codec::json_arr([base_codec::json_str("browser")])),
+      ("hosts", base_codec::json_arr([base_codec::json_str("github.com")])),
+    ])),
+    ("at", base_codec::json_int64(now_sec)),
+  ])
+  let _ = (port.vault_plain.put_item)(ws, "i-br", "alice@example.com", 0, b_item)
+  let b_rid = "r-browser-501"
+  let b_req = base_codec::json_obj([
+    ("id", base_codec::json_str(b_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str("i-br")),
+    ("session", base_codec::json_str("s-br")),
+    ("mode", base_codec::json_str("browser")),
+    ("hosts", base_codec::json_arr([base_codec::json_str("github.com")])),
+    ("reason", base_codec::json_str("sign in")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("status", base_codec::json_str("pending")),
+    ("at", base_codec::json_int64(now_sec)),
+  ])
+  vd_seed_req(port, ws, b_rid, "s-br", b_req)
+  match (api.admin.host.call)(
+    "vault.plain.grants.post",
+    make_test_api_req_as("POST", "/vault/plain/grants", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(b_rid)), ("scope", base_codec::json_str("hour"))]),
+  ) {
+    Err(e) => if e.status != 501 { panic("browser mode grant must return honest 501, got " + e.status.to_string()) }
+    Ok(_) => panic("browser mode grant must not succeed before browser injection is wired")
+  }
+  match (port.vault_decisions.get_request)(ws, b_rid) {
+    Ok(Some(r)) => if r.status != "pending" { panic("501 browser grant must NOT commit SQLite settlement") }
+    _ => panic("missing pending browser request")
+  }
+}
