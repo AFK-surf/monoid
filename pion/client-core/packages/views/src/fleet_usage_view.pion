@@ -673,6 +673,9 @@ fn job_is_service_fuv(job : base_codec::Json) -> Bool {
 }
 
 /// Project `chatJobs` topic (`jobs.ts chatJobs`): services and background jobs of a single chat.
+/// When `authoritative_jobs == true` (populated from `GET /jobs?chats=0`, including empty `[]`),
+/// matches strictly against `open_jobs` by `session` (with `thread`/`chat` fallback) and NEVER
+/// falls back to stale `agents[].jobs` embedded in cached chat documents.
 pub fn project_chat_jobs(
   db : sql::Sql,
   station : String,
@@ -680,24 +683,37 @@ pub fn project_chat_jobs(
   open_jobs : Array[base_codec::Json],
   now_ms : Int64,
   summary : Bool = false,
+  session : Option[String] = None,
+  authoritative_jobs : Bool = false,
 ) -> sql::SqlResult[base_codec::Json] {
   let collected : Array[base_codec::Json] = []
   let seen_ids : Map[String, Bool] = Map::new()
+  let mut target_session = match session {
+    Some(s) => s
+    None => ""
+  }
 
-  // 1. Read jobs from the cached chat document (`agents[].jobs`).
+  // 1. Look up chat metadata to resolve `session` (and ONLY read cached `agents[].jobs` when
+  //    no authoritative station `/jobs?chats=0` snapshot has been loaded yet!).
   match store::get_chat_by_thread(db, station, thread) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(Some(rec)) => {
       let doc = parse_json_or_null(rec.json)
-      let agents = j_arr(doc, "agents")
-      for i in 0..<agents.length() {
-        let jobs = j_arr(agents[i], "jobs")
-        for j in 0..<jobs.length() {
-          let job = jobs[j]
-          let jid = j_str(job, "id")
-          if jid.length() > 0 && seen_ids.get(jid).is_none() {
-            seen_ids.set(jid, true)
-            collected.push(job)
+      if target_session.length() == 0 {
+        let doc_sess = j_str(doc, "session")
+        target_session = if doc_sess.length() > 0 { doc_sess } else { rec.id }
+      }
+      if !authoritative_jobs {
+        let agents = j_arr(doc, "agents")
+        for i in 0..<agents.length() {
+          let jobs = j_arr(agents[i], "jobs")
+          for j in 0..<jobs.length() {
+            let job = jobs[j]
+            let jid = j_str(job, "id")
+            if jid.length() > 0 && seen_ids.get(jid).is_none() {
+              seen_ids.set(jid, true)
+              collected.push(job)
+            }
           }
         }
       }
@@ -705,17 +721,21 @@ pub fn project_chat_jobs(
     sql::SqlResult::Ok(None) => ()
   }
 
-  // 2. Include matching live open jobs from `ClientCore::events.open_jobs()`.
+  // 2. Include matching live/authoritative station jobs (matching `session` first, matching real
+  //    `station/mb/src/readops/openjobs.mbt:534` `/jobs?chats=0`, plus `thread`/`chat` fallback).
   let th_s = thread.to_string()
   for i in 0..<open_jobs.length() {
     let job = open_jobs[i]
     let jid = j_str(job, "id")
+    let jsess = j_str(job, "session")
     let jchat = j_str(job, "chat")
     let jth = j_opt_int(job, "thread")
-    let matches = match jth {
+    let sess_match = target_session.length() > 0 && jsess.length() > 0 && jsess == target_session
+    let th_match = match jth {
       Some(t) => t == thread
       None => jchat == th_s || jchat == "thread:" + th_s
     }
+    let matches = sess_match || th_match
     if matches && jid.length() > 0 && seen_ids.get(jid).is_none() {
       seen_ids.set(jid, true)
       collected.push(job)

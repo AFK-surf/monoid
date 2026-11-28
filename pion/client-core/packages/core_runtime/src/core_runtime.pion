@@ -551,7 +551,7 @@ fn runtime_attach_mesh_station(
     target_st,
     tr,
     workspace=target_ws,
-    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.admitted_cred_epoch() }),
+    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.live_admitted_cred_epoch() }),
   )
 }
 
@@ -1685,7 +1685,7 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
         if prefix.length() > 0 && !r.address.starts_with(prefix) {
           continue
         }
-        if !sess.core.can_read_station(r.address) {
+        if !sess.core.can_read_station_key(r.address, "chats:" + r.address) {
           continue
         }
         let doc = match base_codec::json_parse(r.json) {
@@ -1705,7 +1705,7 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     for i in 0..<cloud_sts.length() {
       let cs = cloud_sts[i]
       let addr = sync::canonical_station(ws_scope, cs.id)
-      if !sess.core.can_read_station(addr) {
+      if addr.length() == 0 || !sess.core.can_read_station_key(addr, "chats:" + addr) {
         continue
       }
       seen.set(addr, true)
@@ -2297,6 +2297,13 @@ pub extern "C" fn pion_core_runtime_start(
   })
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
+  })
+  core.set_extra_subs_provider(fn() -> Array[protocol::Topic] {
+    let out : Array[protocol::Topic] = []
+    for i in 0..<sess.runtime_subs.length() {
+      out.push(sess.runtime_subs[i].topic)
+    }
+    out
   })
   core.set_on_auth_key_confirmed(fn(_ws : String, key : String) -> Unit {
     if key.starts_with("workspace:") {
@@ -2972,6 +2979,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
               }
               Some(wid) => {
                 let ws_seq = sess.core.membership.next_cloud_seq()
+                let ws_cred_ep = sess.core.membership.cred_epoch_of(wid)
                 sync::fetch_workspace_structured_k(
                   sess.sh,
                   cs.origin(),
@@ -3004,7 +3012,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                         emit_wire(out_j, payload=out_b)
                       }
                       effect::Exit::Succeeded(Ok(ws)) => {
-                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms()) {
+                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=ws_cred_ep) {
                           Err(msg) => {
                             let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
                             let (out_j, out_b) = protocol::encode_core_event(ev)
@@ -3531,6 +3539,12 @@ fn evaluate_runtime_topic(
       _ => 0
     }
     let briefs = station_briefs_live(sess, ws_scope)
+    if ws_scope.length() > 0 && sess.core.membership.has_pending_auth_confirm(ws_scope) {
+      sess.core.ensure_confirmed_workspace_stations_refresh(ws_scope, key_prefix="chats:")
+      if briefs.length() == 0 {
+        return Some(protocol::CoreEvent::Waiting(id))
+      }
+    }
     match views::project_chats(
       sess.db,
       ws_scope,
@@ -3573,8 +3587,16 @@ fn evaluate_runtime_topic(
       Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
     }
     let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, consistent_st, consistent_th, consistent_sess)
-    // Authorize BOTH input AND final moved destination!
+    // Authorize BOTH input AND final moved destination + PendingAuthConfirm gate!
     if !sess.core.can_read_station(st) || !sess.core.can_read_station(resolved_st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let chat_confirm_key = match resolved_th {
+      Some(th) => "chat:" + resolved_st + "/" + th.to_string()
+      None => "chats:" + resolved_st
+    }
+    if !sess.core.can_read_station_key(resolved_st, chat_confirm_key) {
+      sess.core.ensure_confirmed_station_refresh(resolved_st, chat_confirm_key, thread=resolved_th)
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let compact = match topic.param("compact") {
@@ -3624,6 +3646,9 @@ fn evaluate_runtime_topic(
     if sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() || (ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope)) {
       return Some(protocol::CoreEvent::Value(id, base_codec::json_arr([]), None))
     }
+    if ws_scope.length() > 0 && !sess.core.can_read_confirmed_key(ws_scope, "stations:" + ws_scope) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
     let overview_by_addr : Map[String, base_codec::Json] = Map::new()
     let overview_addrs : Array[String] = []
@@ -3634,7 +3659,8 @@ fn evaluate_runtime_topic(
           if prefix.length() > 0 && !r.address.starts_with(prefix) {
             continue
           }
-          if !sess.core.can_read_station(r.address) {
+          let st_ws = sess.core.membership.station_workspace(r.address, fallback_ws=sess.core.workspace)
+          if !sess.core.can_read_station(r.address) || (st_ws.length() > 0 && !sess.core.can_read_confirmed_key(st_ws, "stations:" + st_ws)) {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {

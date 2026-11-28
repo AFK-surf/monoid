@@ -69,6 +69,7 @@ pub struct ClientCore {
   extra_sync : Map[String, SyncScheduler]
   extra_locks : Map[String, WorkspaceLockSlot]
   station_admitted_epochs : Map[String, Int64]
+  inflight_confirm_refresh : Map[String, Bool]
   marks_wanted : Map[String, MarksWanted]
   mut live : Bool
   pub router : protocol::Slice1Router
@@ -81,6 +82,7 @@ pub struct ClientCore {
   lock_sec_digest_by_ws : Map[String, String]
   mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
   mut on_auth_key_confirmed : Option[(String, String) -> Unit]
+  mut extra_subs_provider : Option[() -> Array[protocol::Topic]]
   mut on_credential_refresh : Option[(String) -> Unit]
   mut on_workspace_refresh : Option[(String) -> Unit]
   mut on_workspace_dropped : Option[(String, Array[String]) -> Unit]
@@ -198,6 +200,7 @@ pub fn ClientCore::new(
     extra_sync: Map::new(),
     extra_locks: Map::new(),
     station_admitted_epochs: Map::new(),
+    inflight_confirm_refresh: Map::new(),
     marks_wanted: Map::new(),
     live: false,
     router: router,
@@ -210,6 +213,7 @@ pub fn ClientCore::new(
     lock_sec_digest_by_ws: Map::new(),
     on_runtime_boundary: None,
     on_auth_key_confirmed: None,
+    extra_subs_provider: None,
     on_credential_refresh: None,
     on_workspace_refresh: None,
     on_workspace_dropped: None,
@@ -346,11 +350,17 @@ fn ClientCore::wire_station_hooks(
     },
     fn() -> Unit {
       local_outbox.set_online(true)
-      let _ = rt.fork_quiet_named("initial-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-        sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
-          k(effect::Exit::Succeeded(()))
-        })
-      })
+      if self.is_station_admitted_for_pending(station) {
+        if self.membership.has_pending_auth_confirm(target_ws) {
+          self.ensure_confirmed_station_refresh(station, "chats:" + station)
+        } else {
+          let _ = rt.fork_quiet_named("initial-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+            sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
+              k(effect::Exit::Succeeded(()))
+            })
+          })
+        }
+      }
       sync.schedule_lock_refresh(rt)
       local_outbox.flush_station_offline(rt, station)
     },
@@ -433,18 +443,17 @@ fn ClientCore::wire_station_hooks(
   sync.set_required_cred_epoch_getter(fn() -> Option[Int64] {
     self.membership.required_cred_epoch_of(target_ws)
   })
+  sync.set_account_epoch_getter(fn() -> Int64 {
+    self.account_epoch
+  })
   sync.set_on_resource_confirmed(fn(res_key : String, read_gen : Int64, admitted_ep : Int64) -> Unit {
     let _ = self.confirm_station_auth_key(target_ws, res_key, read_gen, admitted_ep)
   })
-  match self.station_admitted_epochs.get(station) {
-    Some(ep) => { let _ = sync.record_admitted_cred_epoch(ep) }
-    None => ()
-  }
+  events.set_account_epoch_getter(fn() -> Int64 {
+    self.account_epoch
+  })
   events.set_admitted_gate(fn() -> Bool {
-    match self.membership.required_cred_epoch_of(target_ws) {
-      None => true
-      Some(req_ep) => self.station_admitted_cred_epoch(station) >= req_ep
-    }
+    self.is_station_admitted_for_pending(station)
   })
 }
 
@@ -795,19 +804,28 @@ fn ClientCore::resolve_station_workspace(
   self.membership.station_workspace(station, fallback_ws=self.workspace)
 }
 
+fn ClientCore::clear_inflight_confirm_for_station(self : ClientCore, station : String) -> Unit {
+  let ks = self.inflight_confirm_refresh.keys()
+  let marker = "|" + station + "|"
+  for i in 0..<ks.length() {
+    if ks[i].contains(marker) {
+      self.inflight_confirm_refresh.remove(ks[i])
+    }
+  }
+}
+
 fn ClientCore::bind_admitted_epoch_getter(
   self : ClientCore,
   station : String,
   sy : SyncScheduler,
   getter_opt : Option[() -> Int64],
 ) -> Unit {
+  self.station_admitted_epochs.remove(station)
+  self.clear_inflight_confirm_for_station(station)
+  sy.reset_admitted_cred_epoch()
   match getter_opt {
     Some(g) => {
       sy.set_admitted_cred_epoch_getter(g)
-      let ep = sy.admitted_cred_epoch()
-      if ep > self.station_admitted_cred_epoch(station) {
-        self.station_admitted_epochs.set(station, ep)
-      }
     }
     None => ()
   }
@@ -881,7 +899,7 @@ pub fn ClientCore::attach_station_transport(
   }
 }
 
-/// Attach a production `MeshStationTransport`, wiring its monotonic `admitted_cred_epoch`
+/// Attach a production `MeshStationTransport`, wiring its live serving-link `live_admitted_cred_epoch`
 /// getter and post-admission downgrade refresh callback end-to-end.
 pub fn ClientCore::attach_mesh_station_transport(
   self : ClientCore,
@@ -896,51 +914,207 @@ pub fn ClientCore::attach_mesh_station_transport(
     station,
     ctrl.transport(),
     workspace=workspace,
-    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.admitted_cred_epoch() }),
+    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.live_admitted_cred_epoch() }),
   )
-  let ep = ctrl.admitted_cred_epoch()
+  let ep = ctrl.live_admitted_cred_epoch()
   if ep > 0L {
     self.on_station_admitted_cred_epoch(station, ep)
   }
 }
 
-/// Monotonic real station-admitted credential epoch for `station` (NEVER resets to 1 on reconnect).
+/// Register an optional provider for host-managed subscriptions (e.g. `core_runtime`'s `runtime_subs`)
+/// so post-downgrade refreshes scan ALL active subscriptions (including `(station, session)` & moved chats).
+pub fn ClientCore::set_extra_subs_provider(
+  self : ClientCore,
+  provider : () -> Array[protocol::Topic],
+) -> Unit {
+  self.extra_subs_provider = Some(provider)
+}
+
+/// Real station-admitted credential epoch of the CURRENT serving link for `station`.
+/// Reads the active `SyncScheduler`'s live transport getter directly without inheriting stale
+/// historical maxima from detached transports or prior accounts.
 pub fn ClientCore::station_admitted_cred_epoch(self : ClientCore, station : String) -> Int64 {
-  let mut best = match self.station_admitted_epochs.get(station) {
-    Some(v) => v
-    None => 0L
-  }
   match self.station_sync(station) {
-    Some(sy) => {
-      let sv = sy.admitted_cred_epoch()
-      if sv > best {
-        best = sv
-        self.station_admitted_epochs.set(station, best)
-      }
+    Some(sy) => sy.admitted_cred_epoch()
+    None => match self.station_admitted_epochs.get(station) {
+      Some(v) => v
+      None => 0L
     }
-    None => ()
   }
-  best
+}
+
+pub fn ClientCore::is_station_admitted_for_pending(self : ClientCore, station : String) -> Bool {
+  let ws = self.membership.station_workspace(station, fallback_ws=self.workspace)
+  match self.membership.required_cred_epoch_of(ws) {
+    None => true
+    Some(req_ep) => self.station_admitted_cred_epoch(station) >= req_ep
+  }
+}
+
+/// Pause all active SSE streams belonging to workspace `ws` whose current link is not yet
+/// admitted at `required_cred_epoch` (zero reconnect timers / zero polling while awaiting admission).
+pub fn ClientCore::pause_workspace_streams_if_unadmitted(self : ClientCore, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  if self.events.workspace == ws && !self.is_station_admitted_for_pending(self.station) {
+    self.events.pause_for_admission()
+  }
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    let st = ks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => if ev.workspace == ws && !self.is_station_admitted_for_pending(st) {
+        ev.pause_for_admission()
+      }
+      None => ()
+    }
+  }
+}
+
+/// Resume any admission-paused SSE streams in workspace `ws` once live & permitted.
+pub fn ClientCore::resume_workspace_streams(self : ClientCore, ws : String) -> Unit {
+  if !self.live || ws.length() == 0 {
+    return
+  }
+  if self.events.workspace == ws && self.is_station_admitted_for_pending(self.station) {
+    self.events.resume_after_admission(self.rt)
+  }
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    let st = ks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => if ev.workspace == ws && self.is_station_admitted_for_pending(st) {
+        ev.resume_after_admission(self.rt)
+      }
+      None => ()
+    }
+  }
+}
+
+/// Event-driven, in-flight deduplicated on-demand refresh for an unconfirmed station resource key
+/// (`chats:<st>`, `chat:<st>/<th>`, `chatJobs:<st>/<th>`, `jobs:<st>`) once `admitted >= required`.
+/// Zero polling timers: fires only on admission/reconnect or when an active view/RPC hits an unconfirmed key.
+pub fn ClientCore::ensure_confirmed_station_refresh(
+  self : ClientCore,
+  station : String,
+  resource_key : String,
+  thread : Option[Int] = None,
+) -> Unit {
+  let sy = match self.station_sync(station) {
+    Some(s) => s
+    None => return
+  }
+  let ws = sy.workspace
+  let req_ep = match self.membership.required_cred_epoch_of(ws) {
+    Some(e) => e
+    None => return
+  }
+  if self.station_admitted_cred_epoch(station) < req_ep {
+    return
+  }
+  if self.can_read_station_key(station, resource_key) {
+    return
+  }
+  let dedup_key = self.account_epoch.to_string() + "|" + station + "|" + sy.transport_epoch().to_string() + "|" + resource_key
+  if self.inflight_confirm_refresh.get(dedup_key).is_some() {
+    return
+  }
+  self.inflight_confirm_refresh.set(dedup_key, true)
+  let clear_flag = fn() -> Unit {
+    self.inflight_confirm_refresh.remove(dedup_key)
+  }
+  if resource_key == "chats:" + station {
+    let _ = self.rt.fork_quiet_named("confirm-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+        clear_flag()
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  } else if resource_key == "jobs:" + station {
+    let _ = self.rt.fork_quiet_named("confirm-jobs:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sy.fetch_jobs_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+        clear_flag()
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  } else if resource_key.starts_with("chatJobs:") {
+    match thread {
+      Some(th) => {
+        let _ = self.rt.fork_quiet_named("confirm-chatJobs:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          sy.fetch_chat_jobs_k(th, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+            clear_flag()
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      None => clear_flag()
+    }
+  } else if resource_key.starts_with("chat:") {
+    match thread {
+      Some(th) => {
+        let _ = self.rt.fork_quiet_named("confirm-thread:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          sy.fetch_thread_k(th, effect::priority_shown(), false, fn(_ : effect::Exit[Int]) -> Unit {
+            clear_flag()
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      None => clear_flag()
+    }
+  } else {
+    clear_flag()
+  }
+}
+
+/// Trigger deduped post-downgrade confirmation refreshes for all attached admitted stations in `ws`.
+pub fn ClientCore::ensure_confirmed_workspace_stations_refresh(
+  self : ClientCore,
+  ws : String,
+  key_prefix : String = "chats:",
+) -> Unit {
+  if ws.length() == 0 || !self.membership.has_pending_auth_confirm(ws) {
+    return
+  }
+  if self.sync.workspace == ws {
+    self.ensure_confirmed_station_refresh(self.station, key_prefix + self.station)
+  }
+  let ks = self.extra_sync.keys()
+  for i in 0..<ks.length() {
+    let st = ks[i]
+    match self.extra_sync.get(st) {
+      Some(sy) => if sy.workspace == ws {
+        self.ensure_confirmed_station_refresh(st, key_prefix + st)
+      }
+      None => ()
+    }
+  }
 }
 
 /// Record a real station-side admission event (`Link::admitted_k` initial/reconnect or `Link::exchange_k`).
-/// Advances `admitted_cred_epoch` monotonically, cancels pre-admission in-flight station reads, and
-/// if the workspace is in `PendingAuthConfirm` with `admitted >= required_cred_epoch`, immediately
-/// triggers post-downgrade station refresh (including independent `chatJobs` refresh, zero polling).
+/// Updates the current serving link's admitted epoch, cancels pre-admission in-flight station reads,
+/// and whenever `admitted >= required_cred_epoch` (including same-epoch reconnects!), resumes paused
+/// SSE and triggers post-downgrade station refresh (zero polling).
 pub fn ClientCore::on_station_admitted_cred_epoch(
   self : ClientCore,
   station : String,
   admitted_epoch : Int64,
 ) -> Unit {
   let prev = self.station_admitted_cred_epoch(station)
-  let advanced = admitted_epoch > prev
-  if advanced {
+  let mut advanced = admitted_epoch > prev
+  if admitted_epoch > 0L {
     self.station_admitted_epochs.set(station, admitted_epoch)
     match self.station_sync(station) {
       Some(sy) => {
-        let _ = sy.record_admitted_cred_epoch(admitted_epoch)
-        // Abort any in-flight reads initiated under the older credential epoch (keeps `admitted_cred_epoch`!).
-        sy.bump_epoch()
+        if sy.record_admitted_cred_epoch(admitted_epoch) {
+          advanced = true
+        }
+        if advanced {
+          // Abort any in-flight reads initiated under the older credential epoch!
+          sy.bump_epoch()
+          self.clear_inflight_confirm_for_station(station)
+        }
       }
       None => ()
     }
@@ -956,12 +1130,30 @@ pub fn ClientCore::on_station_admitted_cred_epoch(
   }
 }
 
+fn ClientCore::all_active_topics(self : ClientCore) -> Array[protocol::Topic] {
+  let out : Array[protocol::Topic] = []
+  let subs = self.router.active_subs_snapshot()
+  for i in 0..<subs.length() {
+    out.push(subs[i].1)
+  }
+  match self.extra_subs_provider {
+    Some(provider) => {
+      let extra = provider()
+      for i in 0..<extra.length() {
+        out.push(extra[i])
+      }
+    }
+    None => ()
+  }
+  out
+}
+
 /// Proactively refresh station data after real post-downgrade admission (`admitted_cred_epoch >= required_cred_epoch`):
-/// - Rebuilds SSE stream under the new `authGen` / admitted epoch if live;
-/// - Refreshes `GET /chats` (`chats:<st>`);
-/// - Refreshes each active `chat` subscription's `GET /threads/<id>/entries` (`chat:<st>/<th>`);
-/// - Independently refreshes `GET /jobs?chats=0` for each active `chatJobs` subscription (`chatJobs:<st>/<th>`)
-///   and station `longJobs` (`jobs:<st>`) — NEVER piggybacking `chatJobs` on `/chats` or `/entries`!
+/// - Resumes admission-paused SSE stream when live (without duplicating initial `/chats`);
+/// - Refreshes `GET /chats` (`chats:<st>`) via deduped confirmation refresh;
+/// - Scans BOTH `ClientCore` router and native `core_runtime` subscriptions, resolving `(station, session)`
+///   and moved chats to their destination `(dest_station, dest_thread)` for `chat:<st>/<th>`,
+///   independent `chatJobs:<st>/<th>` (`GET /jobs?chats=0`), and `jobs:<st>` (`longJobs`).
 pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : String) -> Unit {
   let sy = match self.station_sync(station) {
     Some(s) => s
@@ -972,74 +1164,97 @@ pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : 
     Some(req_ep) => if self.station_admitted_cred_epoch(station) < req_ep { return }
     None => ()
   }
+  self.ensure_confirmed_station_refresh(station, "chats:" + station)
   if self.live {
     match self.station_events(station) {
-      Some(ev) => {
-        ev.stop()
-        ev.start(self.rt)
-      }
+      Some(ev) => ev.resume_after_admission(self.rt)
       None => ()
     }
   }
-  let _ = self.rt.fork_quiet_named("downgrade-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-      k(effect::Exit::Succeeded(()))
-    })
-  })
   let chat_threads : Array[Int] = []
   let chat_jobs_threads : Array[Int] = []
   let mut want_station_jobs = false
-  let subs = self.router.active_subs_snapshot()
-  for i in 0..<subs.length() {
-    let (_, topic) = subs[i]
-    if topic.name == "chat" {
-      let st = match topic.param("station") {
+  let topics = self.all_active_topics()
+  for i in 0..<topics.length() {
+    let topic = topics[i]
+    if topic.name == "chat" || topic.name == "chatJobs" {
+      let raw_st = match topic.param("station") {
         Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
         _ => self.station
       }
-      if st == station {
-        match topic.param("thread") {
-          Some(base_codec::Json::Num(n, _)) => push_unique_int_cc(chat_threads, n.to_int())
-          _ => ()
+      let th_opt : Option[Int] = match topic.param("thread") {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+      let sess_opt : Option[String] = match topic.param("session") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => match topic.param("key") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+          _ => None
         }
       }
-    } else if topic.name == "chatJobs" {
-      let st = match topic.param("station") {
-        Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
-        _ => self.station
-      }
-      if st == station {
-        match topic.param("thread") {
-          Some(base_codec::Json::Num(n, _)) => push_unique_int_cc(chat_jobs_threads, n.to_int())
-          _ => ()
+      match self.resolve_consistent_chat_target(raw_st, th_opt, sess_opt) {
+        Ok((dest_st, dest_th_opt, dest_sess_opt)) => {
+          if dest_st == station {
+            let eff_th_opt = match dest_th_opt {
+              Some(t) => Some(t)
+              None => match dest_sess_opt {
+                Some(sk) => self.lookup_thread_for_session(dest_st, sk)
+                None => None
+              }
+            }
+            match eff_th_opt {
+              Some(th) => {
+                if topic.name == "chat" {
+                  push_unique_int_cc(chat_threads, th)
+                } else {
+                  push_unique_int_cc(chat_jobs_threads, th)
+                }
+              }
+              None => ()
+            }
+          }
         }
+        Err(_) => ()
       }
     } else if topic.name == "longJobs" {
-      want_station_jobs = true
+      let sc = match topic.param("scope") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => self.workspace
+      }
+      if sc.length() == 0 || sc == ws {
+        want_station_jobs = true
+      }
     }
   }
   for i in 0..<chat_threads.length() {
     let th = chat_threads[i]
-    let _ = self.rt.fork_quiet_named("downgrade-thread:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sy.fetch_thread_k(th, effect::priority_shown(), false, fn(_ : effect::Exit[Int]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    self.ensure_confirmed_station_refresh(station, "chat:" + station + "/" + th.to_string(), thread=Some(th))
   }
   for i in 0..<chat_jobs_threads.length() {
     let th = chat_jobs_threads[i]
-    let _ = self.rt.fork_quiet_named("downgrade-chatJobs:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sy.fetch_chat_jobs_k(th, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    self.ensure_confirmed_station_refresh(station, "chatJobs:" + station + "/" + th.to_string(), thread=Some(th))
   }
   if want_station_jobs {
-    let _ = self.rt.fork_quiet_named("downgrade-jobs:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sy.fetch_jobs_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    self.ensure_confirmed_station_refresh(station, "jobs:" + station)
+  }
+}
+
+/// Refresh all attached admitted stations of workspace `ws` (used e.g. when exiting Safe Mode while
+/// an unconfirmed Cloud downgrade remains active).
+fn ClientCore::refresh_workspace_stations_if_admitted(self : ClientCore, ws : String) -> Unit {
+  if self.sync.workspace == ws && self.is_station_admitted_for_pending(self.station) {
+    self.refresh_station_after_downgrade(self.station)
+  }
+  let ks = self.extra_sync.keys()
+  for i in 0..<ks.length() {
+    let st = ks[i]
+    match self.extra_sync.get(st) {
+      Some(sy) => if sy.workspace == ws && self.is_station_admitted_for_pending(st) {
+        self.refresh_station_after_downgrade(st)
+      }
+      None => ()
+    }
   }
 }
 
@@ -1065,12 +1280,15 @@ pub fn ClientCore::station_events(self : ClientCore, station : String) -> Option
 /// and revert it to offline transport (removing extra stations from `extra_events`/`extra_sync`).
 pub fn ClientCore::detach_station_transport(self : ClientCore, station : String) -> Unit {
   self.local_outbox.unregister_station_transport(station)
+  self.station_admitted_epochs.remove(station)
+  self.clear_inflight_confirm_for_station(station)
   if station == self.station {
     self.events.stop()
     self.events.reset_state()
     let off = core_offline_transport()
     self.events.set_transport(off)
     self.sync.set_transport(off)
+    self.sync.reset_admitted_cred_epoch()
   } else {
     match self.extra_events.get(station) {
       Some(ev) => {
@@ -1083,6 +1301,7 @@ pub fn ClientCore::detach_station_transport(self : ClientCore, station : String)
     match self.extra_sync.get(station) {
       Some(sy) => {
         sy.bump_epoch()
+        sy.reset_admitted_cred_epoch()
         self.extra_sync.remove(station)
       }
       None => ()
@@ -1736,6 +1955,9 @@ pub fn ClientCore::set_db_account_sub(
 /// `chat_row_dest_ws`, `doing`, `md_store`, etc.) and advance `account_epoch`.
 pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit {
   self.account_epoch += 1L
+  self.station_admitted_epochs.clear()
+  self.inflight_confirm_refresh.clear()
+  self.sync.reset_admitted_cred_epoch()
   self.outbox.clear()
   self.pending_wire_events.clear()
   self.rows_memo = views::RowsMemo::new()
@@ -2079,7 +2301,10 @@ pub fn ClientCore::can_read_station_key(
 }
 
 fn ClientCore::pending_confirm_err() -> protocol::CoreError {
-  protocol::CoreError::{ code: "auth_confirm_pending", message: "awaiting post-downgrade confirmation" }
+  protocol::CoreError::{
+    code: "auth_confirm_pending",
+    message: "Workspace permissions changed and are being re-confirmed. Wait for confirmation to finish, or refresh the workspace and retry.",
+  }
 }
 
 fn ClientCore::refresh_subs_for_confirmed_key(
@@ -2172,139 +2397,6 @@ pub fn ClientCore::confirm_cloud_auth_key(
     true
   } else {
     false
-  }
-}
-
-/// Explicit Safe Mode transition boundary for workspace `ws`:
-/// - Entering Safe Mode (`enabled == true`): advances `cred_epoch`, installs `PendingAuthConfirm`
-///   BEFORE calling `auth.bump_workspace_and_vault(ws)`, then triggers credential & workspace refresh.
-/// - Exiting Safe Mode (`enabled == false`): clears `PendingAuthConfirm` BEFORE bumping `auth`.
-pub fn ClientCore::set_workspace_safe_mode(
-  self : ClientCore,
-  ws : String,
-  enabled : Bool,
-) -> Unit {
-  if ws.length() == 0 {
-    return
-  }
-  if enabled {
-    let req_ep = self.membership.bump_cred_epoch(ws)
-    let next_ag = (self.auth.workspace_auth_gen(ws) + 1).to_int64()
-    let bseq = self.membership.ws_commit_seq_of(ws)
-    let _ = self.membership.install_pending_auth_confirm(ws, next_ag, req_ep, boundary_seq=bseq)
-    let _ = self.auth.bump_workspace_and_vault(ws)
-    match self.on_credential_refresh {
-      Some(cb) => cb(ws)
-      None => ()
-    }
-    match self.on_workspace_refresh {
-      Some(cb) => cb(ws)
-      None => ()
-    }
-  } else {
-    self.membership.clear_pending_auth_confirm(ws)
-    let _ = self.auth.bump_workspace_and_vault(ws)
-  }
-}
-
-/// Apply an in-place Cloud partial event patch (lock head `cloud.ts:2336`, station online/offline
-/// `cloud.ts:2353`, or workspace rev delta `cloud.ts:2394`) to SQLite `workspace` row.
-/// Strictly returns `false` (suppressing the partial patch and requiring a full `/v1/workspaces/<ws>`
-/// reread) whenever `PendingAuthConfirm` is active for `ws_id`!
-pub fn ClientCore::apply_cloud_workspace_event_patch(
-  self : ClientCore,
-  ws_id : String,
-  ev : CloudEvent,
-) -> Bool {
-  if ws_id.length() == 0 || !self.can_read_workspace(ws_id) {
-    return false
-  }
-  if self.membership.has_pending_auth_confirm(ws_id) {
-    return false
-  }
-  let existing_j = match store::get_workspace(self.db, ws_id) {
-    sql::SqlResult::Ok(Some(row)) => match base_codec::json_parse(row.json) {
-      base_codec::JsonParseResult::Ok(j) => match j {
-        base_codec::Json::Obj(_) => j
-        _ => return false
-      }
-      base_codec::JsonParseResult::Err(_) => return false
-    }
-    _ => return false
-  }
-  let updated_opt : Option[base_codec::Json] = match ev {
-    CloudEvent::WorkspaceChanged(eid, ej) => {
-      if eid != ws_id {
-        None
-      } else {
-        match base_codec::json_get(ej, "lock") {
-          Some(lj) => if j_has(lj, "head") {
-            let head_j = match base_codec::json_get(lj, "head") {
-              Some(base_codec::Json::Obj(hfs)) => base_codec::json_obj(hfs)
-              _ => base_codec::json_null()
-            }
-            let base1 = j_without_keys(existing_j, ["locked"])
-            let base2 = j_set_field(base1, "lock", head_j)
-            let final_j = if j_bool(lj, "locked") {
-              j_set_field(base2, "locked", base_codec::json_bool(true))
-            } else {
-              base2
-            }
-            Some(final_j)
-          } else {
-            None
-          }
-          None => None
-        }
-      }
-    }
-    CloudEvent::Other("station", ej) => {
-      let sid = j_str(ej, "id")
-      let online_opt = j_opt_bool(ej, "online")
-      match (sid.length() > 0, online_opt) {
-        (true, Some(online)) => match base_codec::json_get(existing_j, "stations") {
-          Some(base_codec::Json::Arr(sts)) => {
-            let next_sts : Array[base_codec::Json] = []
-            let mut found = false
-            for i in 0..<sts.length() {
-              if j_str(sts[i], "id") == sid {
-                found = true
-                next_sts.push(j_set_field(sts[i], "online", base_codec::json_bool(online)))
-              } else {
-                next_sts.push(sts[i])
-              }
-            }
-            if found {
-              Some(j_set_field(existing_j, "stations", base_codec::json_arr(next_sts)))
-            } else {
-              None
-            }
-          }
-          _ => None
-        }
-        _ => None
-      }
-    }
-    _ => None
-  }
-  match updated_opt {
-    None => false
-    Some(next_j) => {
-      let burst = sql::Burst::new(self.db)
-      match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-        match b.run(sql_workspace_put(), params=[
-          base_codec::json_str(ws_id),
-          base_codec::json_str(base_codec::json_stringify(next_j)),
-          base_codec::json_int64(self.rt.now()),
-        ]) {
-          sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-        }
-      }) {
-        sql::SqlResult::Ok(_) => true
-        sql::SqlResult::Err(_) => false
-      }
-    }
   }
 }
 
@@ -2675,6 +2767,15 @@ fn ClientCore::purge_workspace_memory(self : ClientCore, ws : String, stations :
   // even across a same-turn revoke + rejoin.
   let _ = self.membership.bump_workspace_purge_gen(ws)
   self.membership.clear_pending_auth_confirm(ws)
+  for i in 0..<stations.length() {
+    let st = stations[i]
+    self.station_admitted_epochs.remove(st)
+    self.clear_inflight_confirm_for_station(st)
+    match self.station_sync(st) {
+      Some(sy) => sy.reset_admitted_cred_epoch()
+      None => ()
+    }
+  }
   self.outbox.retain_where_meta(fn(_ev : CoreEvent, meta : outbox::OutboxMeta) -> Bool {
     if meta.ws == ws {
       return false
@@ -3132,6 +3233,8 @@ pub fn ClientCore::commit_cloud_me(
   //   3. `auth.bump_workspace(ws)` (so every boundary subscriber immediately sees the active gate!)
   //   4. Trigger `on_credential_refresh(ws)` + `on_workspace_refresh(ws)` after leaving commit guard.
   // - Upgrade (`member -> admin/owner`, `admin -> owner`): clear `PendingAuthConfirm` BEFORE `auth.bump_workspace(ws)`.
+  let paused_ws : Array[String] = []
+  let resumed_ws : Array[String] = []
   for i in 0..<me.workspaces.length() {
     let wref = me.workspaces[i]
     if !self.membership.should_apply_me_workspace(wref.id, req_seq) {
@@ -3146,8 +3249,8 @@ pub fn ClientCore::commit_cloud_me(
             let req_ep = self.membership.bump_cred_epoch(wref.id)
             if is_role_downgrade(prev_role, wref.role) {
               let next_ag = (self.auth.workspace_auth_gen(wref.id) + 1).to_int64()
-              let cur_seq = self.membership.ws_commit_seq_of(wref.id)
-              let bseq = if req_seq > cur_seq { req_seq } else if req_seq <= 0L { cur_seq + 1L } else { cur_seq }
+              let alloc_seq = self.membership.next_cloud_seq()
+              let bseq = if req_seq > alloc_seq { req_seq } else { alloc_seq }
               let _ = self.membership.install_pending_auth_confirm(
                 wref.id,
                 next_ag,
@@ -3155,8 +3258,10 @@ pub fn ClientCore::commit_cloud_me(
                 boundary_seq=bseq,
               )
               push_unique_str_cc(ws_refresh_ws, wref.id)
+              push_unique_str_cc(paused_ws, wref.id)
             } else if is_role_upgrade(prev_role, wref.role) {
               self.membership.clear_pending_auth_confirm(wref.id)
+              push_unique_str_cc(resumed_ws, wref.id)
             }
             let _ = self.auth.bump_workspace(wref.id)
             push_unique_str_cc(cred_refresh_ws, wref.id)
@@ -3186,6 +3291,13 @@ pub fn ClientCore::commit_cloud_me(
   }
 
   self.membership.leave_commit_guard()
+
+  for i in 0..<paused_ws.length() {
+    self.pause_workspace_streams_if_unadmitted(paused_ws[i])
+  }
+  for i in 0..<resumed_ws.length() {
+    self.resume_workspace_streams(resumed_ws[i])
+  }
 
   // Post-critical-section async host mirror & runtime callbacks.
   if meta_changed {
@@ -3249,6 +3361,9 @@ pub fn ClientCore::commit_cloud_workspace(
         return Ok(false)
       }
       if req_seq > 0L && p.boundary_seq > 0L && req_seq <= p.boundary_seq {
+        return Ok(false)
+      }
+      if captured_cred_epoch <= 0L && (req_seq <= 0L || (p.boundary_seq > 0L && req_seq <= p.boundary_seq)) {
         return Ok(false)
       }
     }
@@ -3404,10 +3519,14 @@ pub fn ClientCore::commit_cloud_workspace(
   let enter_safe_cloud = prev_ws_row_exists && !has_local_lock && !prev_cloud_locked && next_cloud_locked
   let exit_safe_cloud = prev_ws_row_exists && !has_local_lock && prev_cloud_locked && !next_cloud_locked
   let mut confirm_cloud_after = false
+  let mut pause_streams_after = false
+  let mut resume_streams_after = false
+  let mut re_fetch_ws_after = false
   if downgraded || enter_safe_cloud {
     let req_ep = self.membership.bump_cred_epoch(ws.id)
     let next_ag = (self.auth.workspace_auth_gen(ws.id) + 1).to_int64()
-    let bseq = self.membership.ws_commit_seq_of(ws.id)
+    let alloc_seq = self.membership.next_cloud_seq()
+    let bseq = if req_seq > alloc_seq { req_seq } else { alloc_seq }
     // Aligned with `cloud.ts:1432-1436`: this full `/v1/workspaces/<ws>` response IS the
     // authoritative post-downgrade workspace view, so pre-confirm `workspace:<ws>` & `stations:<ws>`
     // while keeping ALL station keys gated until `admitted_cred_epoch >= required_cred_epoch`!
@@ -3420,12 +3539,21 @@ pub fn ClientCore::commit_cloud_workspace(
     )
     let _ = self.auth.bump_workspace(ws.id)
     role_changed = true
-  } else if upgraded || exit_safe_cloud {
+    pause_streams_after = true
+  } else if upgraded {
     self.membership.clear_pending_auth_confirm(ws.id)
-    if upgraded {
-      let _ = self.membership.bump_cred_epoch(ws.id)
-    }
+    let _ = self.membership.bump_cred_epoch(ws.id)
     let _ = self.auth.bump_workspace(ws.id)
+    resume_streams_after = true
+  } else if exit_safe_cloud {
+    let next_ag = (self.auth.workspace_auth_gen(ws.id) + 1).to_int64()
+    let keep_pending = self.membership.exit_safe_mode_pending_auth(ws.id, next_ag)
+    let _ = self.auth.bump_workspace(ws.id)
+    if keep_pending {
+      re_fetch_ws_after = true
+    } else {
+      resume_streams_after = true
+    }
   } else if role_changed {
     let _ = self.membership.bump_cred_epoch(ws.id)
     let _ = self.auth.bump_workspace(ws.id)
@@ -3433,6 +3561,19 @@ pub fn ClientCore::commit_cloud_workspace(
     confirm_cloud_after = true
   }
   self.membership.leave_commit_guard()
+  if pause_streams_after {
+    self.pause_workspace_streams_if_unadmitted(ws.id)
+  }
+  if resume_streams_after {
+    self.resume_workspace_streams(ws.id)
+  }
+  if re_fetch_ws_after {
+    match self.on_workspace_refresh {
+      Some(cb) => cb(ws.id)
+      None => ()
+    }
+    self.refresh_workspace_stations_if_admitted(ws.id)
+  }
   if confirm_cloud_after {
     let cur_ag = self.auth.workspace_auth_gen(ws.id).to_int64()
     let _ = self.confirm_cloud_auth_key(
@@ -3981,35 +4122,76 @@ fn ClientCore::confirmed_station_briefs(
   let raw_briefs = self.station_briefs_for_scope(ws_scope)
   let out : Array[views::StationBrief] = []
   for i in 0..<raw_briefs.length() {
-    if self.can_read_station_key(raw_briefs[i].id, key_prefix + raw_briefs[i].id) {
+    let addr = if raw_briefs[i].address.length() > 0 { raw_briefs[i].address } else { raw_briefs[i].id }
+    if self.can_read_station_key(addr, key_prefix + addr) {
       out.push(raw_briefs[i])
     }
   }
   out
 }
 
-fn ClientCore::open_jobs_json_list_for_scope(self : ClientCore, ws_scope : String) -> Array[base_codec::Json] {
-  if ws_scope.length() > 0 && !self.can_read_workspace(ws_scope) {
-    return []
+/// Return `(jobs_json_array, is_authoritative)` for a single station (primary or extra).
+/// When an authoritative `GET /jobs?chats=0` snapshot has been loaded on `station` (even `[]`),
+/// returns its verbatim job objects (preserving `session`) with `is_authoritative = true`.
+fn ClientCore::jobs_for_station(
+  self : ClientCore,
+  station : String,
+) -> (Array[base_codec::Json], Bool) {
+  let ev = match self.station_events(station) {
+    Some(e) => e
+    None => return ([], false)
   }
-  if !self.can_read_station_key(self.station, "jobs:" + self.station) {
-    return []
+  if ev.has_authoritative_jobs() {
+    return (ev.authoritative_jobs_snapshot(), true)
   }
-  let open_list = self.events.open_jobs()
+  let open_list = ev.open_jobs()
   let out : Array[base_codec::Json] = []
   for i in 0..<open_list.length() {
     let j = open_list[i]
     let fields : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(j.id)),
-      ("station", base_codec::json_str(self.station)),
+      ("station", base_codec::json_str(station)),
       ("state", base_codec::json_str(if j.open { "running" } else { "exited" })),
       ("startedAt", base_codec::json_int64(0.to_int64())),
     ]
+    match j.session {
+      Some(s) => if s.length() > 0 { fields.push(("session", base_codec::json_str(s))) }
+      None => ()
+    }
     match j.chat {
       Some(c) => fields.push(("chat", base_codec::json_str(c)))
       None => ()
     }
     out.push(base_codec::json_obj(fields))
+  }
+  (out, false)
+}
+
+fn ClientCore::open_jobs_json_list_for_scope(self : ClientCore, ws_scope : String) -> Array[base_codec::Json] {
+  if ws_scope.length() > 0 && !self.can_read_workspace(ws_scope) {
+    return []
+  }
+  let out : Array[base_codec::Json] = []
+  let collect_station = fn(st : String, st_ws : String) -> Unit {
+    if ws_scope.length() > 0 && st_ws != ws_scope {
+      return
+    }
+    if !self.can_read_station_key(st, "jobs:" + st) {
+      return
+    }
+    let (items, _) = self.jobs_for_station(st)
+    for i in 0..<items.length() {
+      out.push(items[i])
+    }
+  }
+  collect_station(self.station, self.events.workspace)
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    let st = eks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => collect_station(st, ev.workspace)
+      None => ()
+    }
   }
   out
 }
@@ -4044,8 +4226,11 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => 0
     }
     let briefs = self.confirmed_station_briefs(ws_scope)
-    if ws_scope.length() > 0 && self.membership.has_pending_auth_confirm(ws_scope) && briefs.length() == 0 {
-      return Some(protocol::CoreEvent::Waiting(id))
+    if ws_scope.length() > 0 && self.membership.has_pending_auth_confirm(ws_scope) {
+      self.ensure_confirmed_workspace_stations_refresh(ws_scope, key_prefix="chats:")
+      if briefs.length() == 0 {
+        return Some(protocol::CoreEvent::Waiting(id))
+      }
     }
     let dirty_opt : Option[Array[(String, String)]] = if self.pending_dirty_rows.length() > 0 {
       let copy : Array[(String, String)] = []
@@ -4107,6 +4292,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       None => "chats:" + final_st
     }
     if !self.can_read_station_key(final_st, chat_confirm_key) {
+      self.ensure_confirmed_station_refresh(final_st, chat_confirm_key, thread=final_th)
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let compact = match topic.param("compact") {
@@ -4608,31 +4794,73 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
       _ => self.station
     }
-    let th = match topic.param("thread") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int()
-      _ => return Some(protocol::CoreEvent::Waiting(id))
+    let th_opt : Option[Int] = match topic.param("thread") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+      _ => None
     }
     let sess_opt : Option[String] = match topic.param("session") {
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-      _ => None
+      _ => match topic.param("key") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
     }
-    let (final_st, final_th_opt, _) = match self.resolve_consistent_chat_target(st, Some(th), sess_opt) {
+    if th_opt.is_none() && sess_opt.is_none() {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let (final_st, final_th_opt, final_sess_opt) = match self.resolve_consistent_chat_target(st, th_opt, sess_opt) {
       Ok(t) => t
       Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
     }
-    let eff_th = match final_th_opt { Some(t) => t; None => th }
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
       return Some(protocol::CoreEvent::Waiting(id))
     }
-    // Independent `chatJobs:<st>/<th>` confirmation gate: NEVER satisfied by `chats:<st>` or `chat:<st>/<th>`!
-    if !self.can_read_station_key(final_st, "chatJobs:" + final_st + "/" + eff_th.to_string()) {
+    let eff_th = match final_th_opt {
+      Some(t) => t
+      None => match final_sess_opt {
+        Some(sk) => match self.lookup_thread_for_session(final_st, sk) {
+          Some(t) => t
+          None => {
+            self.ensure_confirmed_station_refresh(final_st, "chats:" + final_st)
+            return Some(protocol::CoreEvent::Waiting(id))
+          }
+        }
+        None => return Some(protocol::CoreEvent::Waiting(id))
+      }
+    }
+    // `chatJobs` reads chat metadata AND station jobs: during `PendingAuthConfirm` require BOTH
+    // `chats:<st>` AND independent `chatJobs:<st>/<th>` confirmation (triggering on-demand deduped refresh)!
+    let chats_ok = self.can_read_station_key(final_st, "chats:" + final_st)
+    let jobs_key = "chatJobs:" + final_st + "/" + eff_th.to_string()
+    let jobs_ok = self.can_read_station_key(final_st, jobs_key)
+    if !chats_ok || !jobs_ok {
+      if !chats_ok {
+        self.ensure_confirmed_station_refresh(final_st, "chats:" + final_st)
+      }
+      if !jobs_ok {
+        self.ensure_confirmed_station_refresh(final_st, jobs_key, thread=Some(eff_th))
+      }
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let summary = match topic.param("summary") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    match views::project_chat_jobs(self.db, final_st, eff_th, self.open_jobs_json_list_for_scope(self.membership.station_workspace(final_st, fallback_ws=self.workspace)), self.rt.now(), summary=summary) {
+    let resolved_sess = match final_sess_opt {
+      Some(s) => if s.length() > 0 { Some(s) } else { self.lookup_session_for_thread(final_st, eff_th) }
+      None => self.lookup_session_for_thread(final_st, eff_th)
+    }
+    let (st_jobs, is_auth_jobs) = self.jobs_for_station(final_st)
+    match views::project_chat_jobs(
+      self.db,
+      final_st,
+      eff_th,
+      st_jobs,
+      self.rt.now(),
+      summary=summary,
+      session=resolved_sess,
+      authoritative_jobs=is_auth_jobs,
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -4643,8 +4871,11 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => self.workspace
     }
     let briefs = self.confirmed_station_briefs(ws_scope, key_prefix="jobs:")
-    if ws_scope.length() > 0 && self.membership.has_pending_auth_confirm(ws_scope) && briefs.length() == 0 {
-      return Some(protocol::CoreEvent::Waiting(id))
+    if ws_scope.length() > 0 && self.membership.has_pending_auth_confirm(ws_scope) {
+      self.ensure_confirmed_workspace_stations_refresh(ws_scope, key_prefix="jobs:")
+      if briefs.length() == 0 {
+        return Some(protocol::CoreEvent::Waiting(id))
+      }
     }
     match views::project_long_jobs(self.db, ws_scope, briefs, self.open_jobs_json_list_for_scope(ws_scope), self.rt.now()) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -4843,6 +5074,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       return Some(protocol::CoreEvent::Value(id, base_codec::json_null(), None))
     }
     if !self.can_read_station_key(final_st, "chats:" + final_st) {
+      self.ensure_confirmed_station_refresh(final_st, "chats:" + final_st)
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let briefs = self.station_briefs_for_scope(dest_ws)
@@ -5835,12 +6067,14 @@ fn ClientCore::apply_lock_chain_for_workspace(
         let enter_safe = (!prev_safe && next_safe) || (prev_trusted && !next_trusted)
         let exit_safe = (prev_safe && !next_safe) || (!prev_trusted && next_trusted)
         let next_ag = (self.auth.workspace_auth_gen(target_ws) + 1).to_int64()
+        let mut keep_pending_on_exit = false
         if enter_safe {
           let req_ep = self.membership.bump_cred_epoch(target_ws)
-          let bseq = self.membership.ws_commit_seq_of(target_ws)
+          let bseq = self.membership.next_cloud_seq()
           let _ = self.membership.install_pending_auth_confirm(target_ws, next_ag, req_ep, boundary_seq=bseq)
         } else if exit_safe {
-          self.membership.clear_pending_auth_confirm(target_ws)
+          // 1:1 `core.ts:1587-1592`: preserve any unconfirmed Cloud downgrade across lock-only Safe Mode exit!
+          keep_pending_on_exit = self.membership.exit_safe_mode_pending_auth(target_ws, next_ag)
         } else {
           // Non-downgrade lock change while `PendingAuthConfirm` is active: re-anchor `gen`
           // BEFORE bumping `authGen` so all confirmed keys are preserved across the boundary!
@@ -5852,6 +6086,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
           let _ = self.auth.bump_workspace(target_ws)
         }
         if enter_safe {
+          self.pause_workspace_streams_if_unadmitted(target_ws)
           match self.on_credential_refresh {
             Some(cb) => cb(target_ws)
             None => ()
@@ -5859,6 +6094,16 @@ fn ClientCore::apply_lock_chain_for_workspace(
           match self.on_workspace_refresh {
             Some(cb) => cb(target_ws)
             None => ()
+          }
+        } else if exit_safe {
+          if keep_pending_on_exit {
+            match self.on_workspace_refresh {
+              Some(cb) => cb(target_ws)
+              None => ()
+            }
+            self.refresh_workspace_stations_if_admitted(target_ws)
+          } else {
+            self.resume_workspace_streams(target_ws)
           }
         }
       }
@@ -6245,6 +6490,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           None => "chats:" + final_st
         }
         if !self.can_read_station_key(final_st, open_key) {
+          self.ensure_confirmed_station_refresh(final_st, open_key, thread=final_th)
           return Some(protocol::CoreEvent::Err(id, ClientCore::pending_confirm_err()))
         }
       }
@@ -6256,6 +6502,8 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
               match arr[i] {
                 base_codec::Json::Str(s) => if self.can_read_station_key(s, "chats:" + s) {
                   allowed_sts.push(base_codec::json_str(s))
+                } else {
+                  self.ensure_confirmed_station_refresh(s, "chats:" + s)
                 }
                 _ => ()
               }
@@ -6264,6 +6512,8 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           _ => {
             if self.can_read_station_key(self.station, "chats:" + self.station) {
               allowed_sts.push(base_codec::json_str(self.station))
+            } else {
+              self.ensure_confirmed_station_refresh(self.station, "chats:" + self.station)
             }
           }
         }
@@ -6832,7 +7082,11 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("sessions", base_codec::json_arr(items))]), None))
       }
       if call_name == "jobs.open" {
-        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() || !self.can_read_station_key(self.station, "jobs:" + self.station) {
+        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr([]))]), None))
+        }
+        if !self.can_read_station_key(self.station, "jobs:" + self.station) {
+          self.ensure_confirmed_station_refresh(self.station, "jobs:" + self.station)
           return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr([]))]), None))
         }
         let open_list = self.events.open_jobs()

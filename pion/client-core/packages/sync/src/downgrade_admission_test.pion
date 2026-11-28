@@ -1,17 +1,26 @@
-// Slice 2B-2 unit & integration tests:
-// 1. Downgrade & Safe-Mode `PendingAuthConfirm` hard install-order invariant (bump_cred_epoch ->
-//    install_pending_auth_confirm BEFORE auth.bump_workspace) + fail-closed read suppression.
+// Slice 2B-2 unit & integration tests (R1 + R2 full coverage):
+// 1. Downgrade & real Ed25519 Safe-Mode `PendingAuthConfirm` hard install-order invariant
+//    (bump_cred_epoch -> install_pending_auth_confirm BEFORE auth.bump_workspace) + fail-closed reads.
 // 2. Mid-pending non-downgrade lock `authGen` bump re-anchoring (preserving confirmed_keys),
-//    subsequent downgrade reset, and upgrade / exit Safe Mode / rejoin / drop clearing.
-// 3. Cloud partial patch suppression while pending + post-boundary full `/v1/workspaces/<ws>` confirmation.
-// 4. Real `MeshStationTransport` monotonic `admitted_cred_epoch` across initial `Link::admitted_k`,
-//    in-place `Link::exchange_k`, and reconnect `Link::admitted_k`, plus old-link rejection & auto refresh.
-// 5. Strict `GET /threads/<id>/entries` `{last, entries}` validator (valid empty/non-empty vs malformed/cross-thread).
-// 6. Independent `chatJobs` post-downgrade refresh & confirmation (never piggybacked on `/chats` or `/entries`).
+//    Safe Mode exit preserving an unconfirmed Cloud downgrade (1:1 core.ts:1587-1592),
+//    second downgrade reset, and upgrade / drop clearing.
+// 3. Real `CloudSync::start_events_ws` partial patch suppression forcing full `/v1/workspaces/<ws>` reread +
+//    in-flight pre-Safe-Mode `/v1/workspaces/<ws>` (`req_seq <= boundary_seq` from `next_cloud_seq()`) rejection.
+// 4. Real `MeshStationTransport` monotonic `admitted_cred_epoch` vs per-live-link `live_admitted_cred_epoch`
+//    (initial `admitted_k`, in-place `exchange_k`, disconnect + reconnect) + SSE pause during un-admitted
+//    pending (20s virtual clock = 0 reconnects / 0 repeated `/chats`) + auto resume on admission.
+// 5. Strict `GET /threads/<id>/entries` `{last, entries}` validator across BOTH foreground `fetch_thread_k`
+//    and idle `prefetch_idle_k`, including integer overflow (`2147483648`, `99999999999999999999`).
+// 6. Independent `chatJobs` confirmation + event-driven post-admission on-demand refresh + real `/jobs?chats=0`
+//    `session` projection & authoritative empty `[]` replacing stale cached `agents[].jobs`.
+// 7. Cross-account `admitted_cred_epoch` isolation (Account A epoch 3 -> switch to Account B),
+//    canonical `address != id` Cloud roster confirmation, and native `extra_subs_provider` `(station, session)` refresh.
 
 import "base_codec"
 import "crypto"
 import "effect"
+import "form"
+import "lock"
 import "mesh"
 import "protocol"
 import "shell"
@@ -28,23 +37,180 @@ fn da_arr_len(j : base_codec::Json, key : String) -> Int {
   }
 }
 
-fn da_seed_core(rt : effect::Runtime, tr : StationTransport) -> (SimAccountDb, ClientCore) {
-  let (sim, db) = make_sim_db(rt)
-  let core = ClientCore::new(DA_WS1, DA_ST1, rt, db, tr, fn() -> Unit {})
-  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
-  let _ = core.membership.set_account_sub("sub-alice")
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=1L)
-  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "owner", [DA_ST1], sub="sub-alice"), req_seq=2L)
+fn da_seed_bytes(tag : Int) -> Bytes {
+  let out = Bytes::new(32)
+  for i in 0..<32 {
+    out[i] = ((tag + i * 13) & 0xFF) as Byte
+  }
+  out
+}
+
+struct DaLockKit {
+  alice_seed : Bytes
+  bob_dev_id : String
+  bob_key : String
+  genesis : form::Json
+  genesis_hash : String
+}
+
+fn da_make_lock_kit(ws_id : String) -> DaLockKit {
+  let alice_seed = da_seed_bytes(0x41)
+  let bob_seed = da_seed_bytes(0x42)
+  let alice_key = ed25519_key_id(alice_seed)
+  let bob_key = ed25519_key_id(bob_seed)
+  let alice_dev_id = hex_64("a")
+  let bob_dev_id = hex_64("b")
+  let g_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws_id)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("sub-alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("sub-alice")),
+              ("email", form::Json::Str("alice@still.fail")),
+              ("role", form::Json::Str("owner")),
+            ]),
+            form::Json::Obj([
+              ("sub", form::Json::Str("sub-bob")),
+              ("email", form::Json::Str("bob@still.fail")),
+              ("role", form::Json::Str("admin")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(alice_dev_id)),
+              ("sub", form::Json::Str("sub-alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Alice Mac")),
+              ("sign_key", form::Json::Str(alice_key)),
+            ]),
+            form::Json::Obj([
+              ("id", form::Json::Str(bob_dev_id)),
+              ("sub", form::Json::Str("sub-bob")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Bob Linux")),
+              ("sign_key", form::Json::Str(bob_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let genesis = match sign_lock_entry(alice_seed, g_unsigned) {
+    Ok(e) => e
+    Err(e) => panic("sign genesis failed: " + e)
+  }
+  let genesis_hash = match lock::entry_hash(genesis, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("genesis hash failed")
+  }
+  DaLockKit::{
+    alice_seed: alice_seed,
+    bob_dev_id: bob_dev_id,
+    bob_key: bob_key,
+    genesis: genesis,
+    genesis_hash: genesis_hash,
+  }
+}
+
+fn da_sign_entry(
+  kit : DaLockKit,
+  ws_id : String,
+  seq : Int,
+  prev_hash : String,
+  kind : String,
+  body : form::Json,
+) -> (form::Json, String) {
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws_id)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("prev", form::Json::Str(prev_hash)),
+    ("at", form::Json::Num((1790000000 + seq * 10).to_double())),
+    ("kind", form::Json::Str(kind)),
+    ("body", body),
+  ])
+  let signed = match sign_lock_entry(kit.alice_seed, unsigned) {
+    Ok(e) => e
+    Err(e) => panic("sign " + kind + " failed: " + e)
+  }
+  let h = match lock::entry_hash(signed, native_lock_crypto()) {
+    Ok(v) => v
+    Err(_) => panic("hash " + kind + " failed")
+  }
+  (signed, h)
+}
+
+fn da_seed_chat(
+  db : sql::Sql,
+  st : String,
+  cid : String,
+  th : Int,
+  sess : String,
+  raw_json : String,
+) -> Unit {
   let _ = db.run(sql_chat_upsert(), params=[
-    base_codec::json_str(DA_ST1),
-    base_codec::json_str("c-admin-1"),
-    base_codec::json_int(7),
+    base_codec::json_str(st),
+    base_codec::json_str(cid),
+    base_codec::json_int(0),
+    base_codec::json_num(1.0),
+    base_codec::json_int(th),
+    base_codec::json_str(sess),
+    base_codec::json_null(),
     base_codec::json_int64(1700000005000L),
+    base_codec::json_null(),
+    base_codec::json_int(0),
+    base_codec::json_int(0),
     base_codec::json_int(0),
     base_codec::json_null(),
     base_codec::json_int(0),
-    base_codec::json_str("{\"id\":\"c-admin-1\",\"session\":\"c-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Admin Private Chat\",\"lastActive\":1700000005000}"),
+    base_codec::json_int(0),
+    base_codec::json_str(raw_json),
   ])
+}
+
+fn da_seed_core(rt : effect::Runtime, tr : StationTransport) -> (SimAccountDb, ClientCore, DaLockKit) {
+  let (sim, db) = make_sim_db(rt)
+  let kit = da_make_lock_kit(DA_WS1)
+  let core = ClientCore::new(DA_WS1, DA_ST1, rt, db, tr, fn() -> Unit {})
+  core.set_viewer("bob@still.fail", sub="sub-bob", role="admin", device_id=kit.bob_dev_id, device_sign_key=Some(kit.bob_key))
+  let _ = core.membership.set_account_sub("sub-bob")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "admin")]), req_seq=1L)
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "admin", [DA_ST1], sub="sub-bob"), req_seq=2L)
+  // Seed initial trusted lock chain (bob_dev_id is trusted!)
+  match core.apply_lock_chain([kit.genesis], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("seed genesis lock failed: " + e)
+  }
+  // Seed chat with stale pre-downgrade embedded `agents[].jobs`!
+  da_seed_chat(
+    db,
+    DA_ST1,
+    "c-admin-1",
+    7,
+    "sess-admin-1",
+    "{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 +
+    "\",\"thread\":7,\"title\":\"Admin Private Chat\",\"lastActive\":1700000005000," +
+    "\"agents\":[{\"id\":\"a1\",\"jobs\":[{\"id\":\"job-stale-cached\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"stale-admin-job\",\"command\":\"rm -rf\"}]}]}",
+  )
   let _ = db.run(sql_entry_put(), params=[
     base_codec::json_str(DA_ST1),
     base_codec::json_int(7),
@@ -54,18 +220,18 @@ fn da_seed_core(rt : effect::Runtime, tr : StationTransport) -> (SimAccountDb, C
   let _ = db.run(sql_job_upsert(), params=[
     base_codec::json_str(DA_ST1),
     base_codec::json_str("job-admin-1"),
-    base_codec::json_str("c-admin-1"),
+    base_codec::json_str("sess-admin-1"),
     base_codec::json_int(1),
     base_codec::json_int(1),
     base_codec::json_int(7),
-    base_codec::json_str("{\"id\":\"job-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"state\":\"running\",\"cmd\":\"deploy\"}"),
+    base_codec::json_str("{\"id\":\"job-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"state\":\"running\",\"command\":\"deploy\"}"),
   ])
-  (sim, core)
+  (sim, core, kit)
 }
 
-test "2B-2.1: Downgrade & Safe Mode install PendingAuthConfirm BEFORE auth.bump_workspace and fail-closed suppress reads" {
+test "2B-2.1: Downgrade & real Ed25519 Safe Mode install PendingAuthConfirm BEFORE auth.bump_workspace and fail-closed suppress reads" {
   let rt = effect::Runtime::new()
-  let (_, core) = da_seed_core(rt, core_offline_transport())
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
 
   // Pre-downgrade reads succeed
   debug_assert(!mt_is_waiting(mt_sub(core, 1L, "workspace", [("workspace", base_codec::json_str(DA_WS1))])), "workspace readable before downgrade")
@@ -98,8 +264,8 @@ test "2B-2.1: Downgrade & Safe Mode install PendingAuthConfirm BEFORE auth.bump_
     }
   })
 
-  // Downgrade owner -> member via /v1/me
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  // Downgrade admin -> member via /v1/me
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
   debug_assert(observed_boundary_count == 1, "auth.bump_workspace fired once on downgrade")
   debug_assert(pending_installed_before_bump, "HARD INVARIANT: PendingAuthConfirm installed BEFORE auth.bump_workspace")
   debug_assert(req_epoch_matches_cred_epoch, "HARD INVARIANT: cred_epoch bumped before PendingAuthConfirm")
@@ -122,19 +288,42 @@ test "2B-2.1: Downgrade & Safe Mode install PendingAuthConfirm BEFORE auth.bump_
   let sc = mt_expect_ok_json(mt_call(core, 19L, "search.chats", base_codec::json_obj([("station", base_codec::json_str(DA_ST1)), ("query", base_codec::json_str("Admin"))])), "search.chats gated")
   debug_assert(da_arr_len(sc, "items") == 0, "search.chats suppresses pre-downgrade chats")
 
-  // Safe Mode entry also obeys hard install-order invariant
+  // Real Ed25519 lock-driven Safe Mode entry (`device.remove` revoking bob_dev_id) ALSO obeys hard install-order invariant!
   pending_installed_before_bump = false
   req_epoch_matches_cred_epoch = false
   reads_already_gated_in_cb = false
-  core.set_workspace_safe_mode(DA_WS1, true)
-  debug_assert(pending_installed_before_bump && req_epoch_matches_cred_epoch && reads_already_gated_in_cb, "Safe Mode installs PendingAuthConfirm BEFORE auth.bump_workspace_and_vault")
+  let (e1_revoke, _) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device.remove failed: " + e)
+  }
+  debug_assert(pending_installed_before_bump && req_epoch_matches_cred_epoch && reads_already_gated_in_cb, "Real lock Safe Mode installs PendingAuthConfirm BEFORE auth.bump_workspace")
 }
 
-test "2B-2.2: Mid-pending lock authGen bump re-anchors preserving confirmed_keys; second downgrade resets; upgrade/exit/drop clears" {
+test "2B-2.2: Mid-pending lock re-anchoring, Safe Mode exit preserving unconfirmed Cloud downgrade (core.ts:1587-1592), second downgrade reset, and upgrade/drop clear" {
   let rt = effect::Runtime::new()
-  let (_, core) = da_seed_core(rt, core_offline_transport())
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
 
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  // 1. Enter Safe Mode via real lock (`device.remove` bob_dev_id)
+  let (e1_revoke, h1) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device.remove failed: " + e)
+  }
   let p0 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("expected pending") }
   let gen0 = p0.gen
   let ep0 = p0.required_cred_epoch
@@ -144,89 +333,234 @@ test "2B-2.2: Mid-pending lock authGen bump re-anchors preserving confirmed_keys
   debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> readable")
   debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 still unconfirmed")
 
-  // Mid-pending non-downgrade lock authGen bump: re-anchors gen while preserving confirmed_keys!
-  let new_gen = core.auth.bump_workspace(DA_WS1).to_int64()
-  debug_assert(new_gen == gen0 + 1L, "authGen bumped")
+  // 2. Mid-pending non-downgrade lock bump (`member` added): re-anchors gen preserving confirmed_keys!
+  let (e2_station, h2) = da_sign_entry(
+    kit,
+    DA_WS1,
+    2,
+    h1,
+    "member",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-carol")),
+      ("email", form::Json::Str("carol@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply station add failed: " + e)
+  }
   let p1 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("pending still active") }
-  debug_assert(p1.gen == new_gen, "pending.gen re-anchored to new authGen")
-  debug_assert(p1.required_cred_epoch == ep0, "required_cred_epoch unchanged on non-downgrade bump")
-  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "already confirmed key preserved across re-anchor")
-  debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "unconfirmed key stays gated across re-anchor")
+  debug_assert(p1.gen == gen0 + 1L, "pending.gen re-anchored to new authGen")
+  debug_assert(p1.required_cred_epoch == ep0, "required_cred_epoch unchanged on non-downgrade lock change")
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "already confirmed key preserved across lock re-anchor")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "unconfirmed key stays gated across lock re-anchor")
 
-  // Second downgrade (entering Safe Mode) clears confirmed_keys and advances required_cred_epoch!
-  core.set_workspace_safe_mode(DA_WS1, true)
+  // 3. Second downgrade (`admin -> member` via /v1/me) clears confirmed_keys and advances required_cred_epoch!
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
   let p2 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("pending reset") }
   debug_assert(p2.required_cred_epoch > ep0, "second downgrade bumps required_cred_epoch")
   debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "second downgrade clears confirmed_keys")
+  // Confirm chats:<st> (but NOT workspace:<ws>!) before exiting Safe Mode:
+  debug_assert(core.confirm_station_auth_key(DA_WS1, "chats:" + DA_ST1, p2.gen, p2.required_cred_epoch), "confirm chats:<st> only")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace:<ws> still unconfirmed")
 
-  // Exiting Safe Mode clears PendingAuthConfirm immediately
-  core.set_workspace_safe_mode(DA_WS1, false)
-  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "exit Safe Mode clears PendingAuthConfirm")
-  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "reads restored after exit Safe Mode")
+  // 4. [Opus P1-2] Exiting Safe Mode (`device` re-adding bob_dev_id) while Cloud downgrade is UNCONFIRMED
+  //    MUST preserve PendingAuthConfirm, re-anchor gen, clear confirmed_keys, and trigger workspace refresh!
+  let mut ws_refresh_triggered_on_exit = false
+  core.set_on_workspace_refresh(fn(w : String) -> Unit { if w == DA_WS1 { ws_refresh_triggered_on_exit = true } })
+  let (e3_restore, h3) = da_sign_entry(
+    kit,
+    DA_WS1,
+    3,
+    h2,
+    "device",
+    form::Json::Obj([
+      ("id", form::Json::Str(kit.bob_dev_id)),
+      ("sub", form::Json::Str("sub-bob")),
+      ("kind", form::Json::Str("app")),
+      ("label", form::Json::Str("Bob Linux")),
+      ("sign_key", form::Json::Str(kit.bob_key)),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device restore failed: " + e)
+  }
+  let p3 = match core.membership.pending_auth_confirm_of(DA_WS1) {
+    Some(p) => p
+    None => panic("Opus P1-2: exiting Safe Mode MUST NOT clear an unconfirmed Cloud downgrade!")
+  }
+  debug_assert(p3.gen == core.auth.workspace_auth_gen(DA_WS1).to_int64(), "re-anchored to post-exit authGen")
+  debug_assert(ws_refresh_triggered_on_exit, "Safe Mode exit with unconfirmed Cloud downgrade re-fetches workspace")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace stays gated")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "confirmed_keys cleared per core.ts:1589")
 
-  // Upgrade member -> admin clears PendingAuthConfirm immediately
-  core.set_workspace_safe_mode(DA_WS1, true)
-  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "pending re-armed")
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "admin")]), req_seq=4L)
-  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "upgrade member -> admin clears PendingAuthConfirm")
+  // 5. Once workspace:<ws> IS confirmed, exiting Safe Mode clears PendingAuthConfirm cleanly!
+  let (e4_revoke2, h4) = da_sign_entry(
+    kit,
+    DA_WS1,
+    4,
+    h3,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore, e4_revoke2], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("second revoke failed: " + e)
+  }
+  let ws_seq = core.membership.next_cloud_seq()
+  let req_ep4 = match core.membership.required_cred_epoch_of(DA_WS1) { Some(e) => e; None => panic("pending expected") }
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1], sub="sub-bob"), req_seq=ws_seq, captured_cred_epoch=req_ep4)
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace confirmed")
+  let (e5_restore2, _) = da_sign_entry(
+    kit,
+    DA_WS1,
+    5,
+    h4,
+    "device",
+    form::Json::Obj([
+      ("id", form::Json::Str(kit.bob_dev_id)),
+      ("sub", form::Json::Str("sub-bob")),
+      ("kind", form::Json::Str("app")),
+      ("label", form::Json::Str("Bob Linux")),
+      ("sign_key", form::Json::Str(kit.bob_key)),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore, e4_revoke2, e5_restore2], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("second restore failed: " + e)
+  }
+  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "Safe Mode exit clears PendingAuthConfirm when Cloud downgrade already confirmed")
 
-  // Drop workspace clears PendingAuthConfirm immediately
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=5L)
-  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "downgrade admin -> member re-arms pending")
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", []), req_seq=6L)
+  // 6. Upgrade member -> admin and workspace drop both clear PendingAuthConfirm immediately
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "admin")]), req_seq=core.membership.next_cloud_seq())
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "admin -> member re-arms pending")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "upgrade member -> owner clears PendingAuthConfirm")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "owner -> member re-arms pending")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", []), req_seq=core.membership.next_cloud_seq())
   debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "workspace drop clears PendingAuthConfirm")
 }
 
-test "2B-2.3: Cloud partial patches suppressed during PendingAuthConfirm; only post-boundary full /v1/workspaces/<ws> confirms" {
+test "2B-2.3: Real CloudSync WS suppresses partial patches during PendingAuthConfirm & in-flight pre-Safe-Mode workspace detail rejected" {
   let rt = effect::Runtime::new()
-  let (_, core) = da_seed_core(rt, core_offline_transport())
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
 
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
-  let req_ep = match core.membership.required_cred_epoch_of(DA_WS1) { Some(e) => e; None => panic("pending expected") }
+  // [Codex P1-3] Allocate an in-flight `/v1/workspaces/<ws>` req_seq BEFORE entering Safe Mode!
+  let inflight_ws_seq = core.membership.next_cloud_seq()
+  let inflight_cred_ep = core.membership.cred_epoch_of(DA_WS1)
 
-  // Partial Cloud WS patches (lock head & station online) MUST be suppressed while pending!
-  let lock_ev = CloudEvent::WorkspaceChanged(
+  // Enter Safe Mode via real Ed25519 lock (`device.remove`): boundary_seq MUST be allocated from next_cloud_seq() > inflight_ws_seq!
+  let (e1_revoke, _) = da_sign_entry(
+    kit,
     DA_WS1,
-    base_codec::json_obj([
-      ("id", base_codec::json_str(DA_WS1)),
-      ("lock", base_codec::json_obj([("head", base_codec::json_obj([("seq", base_codec::json_int(9))])), ("locked", base_codec::json_bool(true))])),
-    ]),
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
   )
-  let st_ev = CloudEvent::Other(
-    "station",
-    base_codec::json_obj([("workspace", base_codec::json_str(DA_WS1)), ("id", base_codec::json_str(DA_ST1)), ("online", base_codec::json_bool(false))]),
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("enter safe mode failed: " + e)
+  }
+  let p = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(x) => x; None => panic("pending expected") }
+  debug_assert(p.boundary_seq > inflight_ws_seq, "boundary_seq from next_cloud_seq() strictly exceeds pre-boundary in-flight req_seq")
+
+  // In-flight pre-Safe-Mode `/v1/workspaces/<ws>` arrives late (both with cred_epoch and with cred_epoch=0): MUST be rejected!
+  let stale_ws = mt_make_ws(DA_WS1, "Stale Pre-SafeMode", "admin", [DA_ST1], sub="sub-bob")
+  match core.commit_cloud_workspace(stale_ws, req_seq=inflight_ws_seq, captured_cred_epoch=inflight_cred_ep) {
+    Ok(committed) => debug_assert(!committed, "pre-Safe-Mode in-flight workspace detail rejected (cred_epoch + seq)")
+    Err(e) => panic("unexpected err: " + e)
+  }
+  match core.commit_cloud_workspace(stale_ws, req_seq=inflight_ws_seq) {
+    Ok(committed) => debug_assert(!committed, "pre-Safe-Mode in-flight workspace detail rejected even without captured_cred_epoch")
+    Err(e) => panic("unexpected err: " + e)
+  }
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace stays unconfirmed")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "stations stays unconfirmed")
+
+  // Real CloudSync::start_events_ws suppresses partial `station` WS events while PendingAuthConfirm is active
+  // and forces a full `GET /v1/workspaces/<ws>` reread instead!
+  let mock_db = MockCloudDb::new()
+  let mut ws_fetches = 0
+  let mut open_ws_id : Int64 = 0L
+  let mut pending_ws_read : Option[Int64] = None
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "ws.open" {
+        open_ws_id = 50L
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(50))]))
+      } else if op == "ws.next" {
+        pending_ws_read = Some(id)
+      } else if op == "fetch" {
+        let url = j_str(args, "url")
+        if url.contains("/v1/workspaces/" + DA_WS1) {
+          ws_fetches += 1
+          s.answer(
+            id,
+            base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+            bytes=Some(("{\"id\":\"" + DA_WS1 + "\",\"name\":\"Core Post\",\"role\":\"admin\",\"rev\":5,\"members\":[{\"sub\":\"sub-bob\",\"email\":\"bob@still.fail\",\"role\":\"admin\"}],\"stations\":[{\"id\":\"" + DA_ST1 + "\",\"name\":\"Station 1\",\"online\":true}]}").to_bytes()),
+          )
+        } else {
+          s.answer(
+            id,
+            base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+            bytes=Some(("{\"user\":{\"sub\":\"sub-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\"},\"workspaces\":[{\"id\":\"" + DA_WS1 + "\",\"name\":\"Core\",\"role\":\"admin\"}]}").to_bytes()),
+          )
+        }
+      } else {
+        s.answer(id, base_codec::json_obj([]))
+      }
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult { mock_db.handle_sql(op, args) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
   )
-  debug_assert(!core.apply_cloud_workspace_event_patch(DA_WS1, lock_ev), "lock head patch suppressed while pending")
-  debug_assert(!core.apply_cloud_workspace_event_patch(DA_WS1, st_ev), "station online patch suppressed while pending")
-
-  // Pre-boundary /v1/workspaces/<ws> (stale cred_epoch or stale req_seq) MUST be rejected and NOT confirm!
-  let ws_doc = mt_make_ws(DA_WS1, "Core", "member", [DA_ST1], sub="sub-alice")
-  match core.commit_cloud_workspace(ws_doc, req_seq=4L, captured_cred_epoch=req_ep - 1L) {
-    Ok(committed) => debug_assert(!committed, "pre-boundary cred_epoch workspace rejected")
-    Err(e) => panic("unexpected err: " + e)
+  holder.push(sh)
+  let cdb = match sql::Sql::open(sh, "cs-patch-suppress") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
   }
-  match core.commit_cloud_workspace(ws_doc, req_seq=3L, captured_cred_epoch=req_ep) {
-    Ok(committed) => debug_assert(!committed, "pre-boundary req_seq workspace rejected")
-    Err(e) => panic("unexpected err: " + e)
+  let cs = CloudSync::new(sh, cdb, "https://cloud.example", token="tok-1")
+  cs.set_has_pending_auth_confirm_getter(fn(w : String) -> Bool { core.membership.has_pending_auth_confirm(w) })
+  cs.set_cred_epoch_getter(fn(w : String) -> Int64 { core.membership.cred_epoch_of(w) })
+  cs.set_seq_provider(fn() -> Int64 { core.membership.next_cloud_seq() })
+  cs.set_commit_hooks(
+    on_workspace_fetched_with_epoch=Some(fn(w : CloudWorkspace, rseq : Int64, cep : Int64) -> Unit {
+      let _ = core.commit_cloud_workspace(w, req_seq=rseq, captured_cred_epoch=cep)
+    }),
+  )
+  cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {})
+  let _ = rt.run_ready()
+  debug_assert(open_ws_id == 50L, "ws opened")
+  // Deliver partial `station` WS event while PendingAuthConfirm is active -> MUST force full GET /v1/workspaces/<ws>!
+  match pending_ws_read {
+    Some(rid) => {
+      pending_ws_read = None
+      sh.answer(
+        rid,
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("text")),
+          ("text", base_codec::json_str("{\"type\":\"station\",\"workspace\":\"" + DA_WS1 + "\",\"id\":\"" + DA_ST1 + "\",\"online\":false}")),
+        ]),
+      )
+    }
+    None => panic("expected ws.read")
   }
-  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace still unconfirmed")
-  debug_assert(!core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "stations still unconfirmed")
-
-  // Post-boundary full /v1/workspaces/<ws> confirms workspace:<ws> & stations:<ws>, keeping station keys gated!
-  match core.commit_cloud_workspace(ws_doc, req_seq=4L, captured_cred_epoch=req_ep) {
-    Ok(committed) => debug_assert(committed, "post-boundary workspace committed")
-    Err(e) => panic("unexpected err: " + e)
-  }
-  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace confirmed")
-  debug_assert(core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "stations confirmed")
-  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "station chats:<st> remains gated until admitted_cred_epoch")
-
-  // Once cleared via upgrade, Cloud partial patches work again
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=5L)
-  debug_assert(core.apply_cloud_workspace_event_patch(DA_WS1, st_ev), "station online patch applies once pending cleared")
+  let _ = rt.run_ready()
+  debug_assert(ws_fetches >= 1, "CloudSync forced full GET /v1/workspaces/<ws> on station patch during PendingAuthConfirm")
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "post-boundary full /v1/workspaces/<ws> confirmed workspace:<ws>")
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "post-boundary full /v1/workspaces/<ws> confirmed stations:<ws>")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "station keys stay gated until admitted_cred_epoch")
+  cs.stop()
 }
 
-test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, exchange_k, reconnect) + old-link rejection + auto refresh" {
+test "2B-2.4: Real MeshStationTransport admission (initial, exchange_k, reconnect) + SSE pause (0 reconnects/0 polling over 20s) + auto resume" {
   let rt = effect::Runtime::new()
   let mock_db = MockCloudDb::new()
   let mut local_ep_id = ""
@@ -235,6 +569,7 @@ test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, 
   let mut ctrl_reply_queue : Array[String] = []
   let mut ctrl_pending_read : Option[Int64] = None
   let mut reject_next_admit = true
+  let mut req_events_count = 0
   let mut req_chats_count = 0
   let mut req_entries_count = 0
   let mut req_jobs_count = 0
@@ -306,7 +641,7 @@ test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, 
         stream_req_buf.set(sid, full)
         if full.contains("/jobs?chats=0") {
           req_jobs_count += 1
-          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n[{\"id\":\"job-after-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"state\":\"running\"}]")
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n[{\"id\":\"job-after-1\",\"session\":\"sess-admin-1\",\"state\":\"running\"}]")
         } else if full.contains("/threads/7/entries") {
           req_entries_count += 1
           stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000009000,\"body\":\"post-downgrade\"}]}")
@@ -314,7 +649,8 @@ test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, 
           req_chats_count += 1
           stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"chats\":[],\"entries\":[]}")
         } else if full.contains("\"/events") {
-          stream_resp.set(sid, "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\n")
+          req_events_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: ev-live\nevent: chat-shared\ndata: {\"id\":\"c-live\",\"station\":\"" + DA_ST1 + "\",\"thread\":8,\"title\":\"Live\"}\n\n")
         } else {
           stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{}")
         }
@@ -385,30 +721,42 @@ test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, 
   let (ctrl, _) = shell_mesh_transport(sh, cfg)
   core.attach_mesh_station_transport(DA_ST1, ctrl, workspace=DA_WS1)
 
-  // 0. Credential fetch followed by lock_unconfirmed admission MUST NOT advance admitted_cred_epoch!
+  // 0. lock_unconfirmed MUST NOT advance admitted_cred_epoch or live_admitted_cred_epoch!
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = rt.run_ready()
-  debug_assert(ctrl.admitted_cred_epoch() == 0L, "lock_unconfirmed admission must NOT advance admitted_cred_epoch")
+  debug_assert(ctrl.admitted_cred_epoch() == 0L && ctrl.live_admitted_cred_epoch() == 0L, "lock_unconfirmed must NOT advance epoch")
   ctrl.drop_link(reason="retry_after_unconfirmed")
 
-  // 1. Initial real Link::admitted_k success advances admitted_cred_epoch to 1L
+  // 1. Initial Link::admitted_k success sets both admitted_cred_epoch & live_admitted_cred_epoch to 1L
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = rt.run_ready()
-  debug_assert(ctrl.admitted_cred_epoch() == 1L, "initial Link::admitted_k sets admitted_cred_epoch=1")
-  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 1L, "ClientCore observes admitted_cred_epoch=1")
+  debug_assert(ctrl.admitted_cred_epoch() == 1L && ctrl.live_admitted_cred_epoch() == 1L, "initial admitted_k sets epoch=1")
 
-  // Subscribe to chats, chat(7), chatJobs(7) then downgrade owner -> member (required_cred_epoch = 2L)
+  // Start live SSE and subscribe to chats, chat(7), chatJobs(7), then downgrade owner -> member (required=2L)
+  core.start()
+  let _ = rt.run_ready()
   let _ = mt_sub(core, 1L, "chats", [("scope", base_codec::json_str(DA_WS1))])
   let _ = mt_sub(core, 2L, "chat", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])
   let _ = mt_sub(core, 3L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])
   let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
   debug_assert(mt_opt_i64_is(core.membership.required_cred_epoch_of(DA_WS1), 2L), "downgrade requires cred_epoch=2")
 
-  // Old link (admitted=1 < required=2): station fetches MUST fail with admitted_cred_epoch_stale & NEVER confirm!
+  // [Opus P1-3] SSE MUST be paused while un-admitted: advancing virtual clock 20s produces ZERO SSE reconnects and ZERO repeated GET /chats!
+  debug_assert(core.events.is_paused_for_admission(), "SSE paused immediately on un-admitted downgrade")
+  let ev_before_wait = req_events_count
+  let chats_before_wait = req_chats_count
+  for _ in 0..<10 {
+    rt.advance(2000)
+    let _ = rt.run_ready()
+  }
+  debug_assert(req_events_count == ev_before_wait, "0 SSE reconnects over 20s while awaiting admission")
+  debug_assert(req_chats_count == chats_before_wait, "0 repeated GET /chats over 20s while awaiting admission")
+
+  // Old link (admitted=1 < required=2) rejects fetches & drops SSE data while passing `event: lock`!
   let mut snap_err = ""
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
@@ -420,70 +768,58 @@ test "2B-2.4: Real MeshStationTransport monotonic admitted_cred_epoch (initial, 
     })
   })
   let _ = rt.run_ready()
-  debug_assert(snap_err == "admitted_cred_epoch_stale", "old-link snapshot rejected: got " + snap_err)
+  debug_assert(snap_err == "admitted_cred_epoch_stale", "old-link snapshot rejected")
   debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "old link NEVER confirms chats:<st>")
 
-  // Old-link SSE data batch is dropped by admitted_gate, while `event: lock` STILL passes through!
   let mut saw_lock_sse = false
-  core.events.set_lock_apply_hook(fn(_j : base_codec::Json) -> Result[Unit, String] {
-    saw_lock_sse = true
-    Ok(())
-  })
+  core.events.set_lock_apply_hook(fn(_j : base_codec::Json) -> Result[Unit, String] { saw_lock_sse = true; Ok(()) })
   let sse_evs : Array[wire::Event] = [
-    wire::Event::{
-      id: Some("old-1"),
-      name: "chat-shared",
-      data: "{\"id\":\"c-old\",\"station\":\"" + DA_ST1 + "\",\"thread\":99,\"title\":\"Old Link Leak\"}",
-    },
-    wire::Event::{
-      id: Some("old-2"),
-      name: "lock",
-      data: "{\"workspace\":\"" + DA_WS1 + "\",\"head\":\"deadbeef\"}",
-    },
+    wire::Event::{ id: Some("old-1"), name: "chat-shared", data: "{\"id\":\"c-old\",\"station\":\"" + DA_ST1 + "\",\"thread\":99,\"title\":\"Old Link Leak\"}" },
+    wire::Event::{ id: Some("old-2"), name: "lock", data: "{\"workspace\":\"" + DA_WS1 + "\",\"head\":\"deadbeef\"}" },
   ]
   match core.events.process_sse_chunk_with_cap(sse_evs, None) {
-    Ok(ok) => debug_assert(!ok, "old-link SSE chat-shared rejected by admitted_gate")
+    Ok(ok) => debug_assert(!ok, "old-link SSE chat-shared dropped")
     Err(e) => panic("unexpected sse err: " + e)
   }
-  debug_assert(mock_db.chats.get(DA_ST1 + ":c-old").is_none(), "old-link SSE wrote 0 DB rows")
-  debug_assert(saw_lock_sse, "SSE event: lock always passes through even before post-downgrade admission")
+  debug_assert(mock_db.chats.get(DA_ST1 + ":c-old").is_none() && saw_lock_sse, "0 DB writes from old-link SSE data + event: lock passed")
 
-  // 2. In-place Link::exchange_k (`refresh_credential_k`) advances admitted_cred_epoch -> 2L and auto-triggers refreshes!
-  let chats_before = req_chats_count
-  let entries_before = req_entries_count
-  let jobs_before = req_jobs_count
+  // 2. In-place Link::exchange_k advances to 2L -> resumes SSE + triggers EXACTLY 1 deduped GET /chats, GET /entries, GET /jobs!
+  let chats_before_ex = req_chats_count
+  let entries_before_ex = req_entries_count
+  let jobs_before_ex = req_jobs_count
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctrl.refresh_credential_k("cred-ep-2", fn(_ : effect::Exit[MeshAdmission]) -> Unit {
       k(effect::Exit::Succeeded(()))
     }, cred_epoch=Some(2L))
   })
   let _ = rt.run_ready()
-  debug_assert(ctrl.admitted_cred_epoch() == 2L, "in-place Link::exchange_k advances admitted_cred_epoch to 2L")
-  debug_assert(req_chats_count > chats_before, "auto post-downgrade GET /chats fired")
-  debug_assert(req_entries_count > entries_before, "auto post-downgrade GET /threads/7/entries fired")
-  debug_assert(req_jobs_count > jobs_before, "auto post-downgrade independent GET /jobs?chats=0 fired")
-  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> confirmed after exchange_k")
-  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 confirmed after exchange_k")
-  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed after independent jobs fetch")
+  debug_assert(ctrl.admitted_cred_epoch() == 2L && ctrl.live_admitted_cred_epoch() == 2L, "exchange_k sets epoch=2")
+  debug_assert(req_chats_count == chats_before_ex + 1, "post-downgrade GET /chats fired exactly once (deduped with SSE on_connected)")
+  debug_assert(req_entries_count == entries_before_ex + 1, "post-downgrade GET /threads/7/entries fired once")
+  debug_assert(req_jobs_count == jobs_before_ex + 1, "post-downgrade independent GET /jobs?chats=0 fired once")
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed")
 
-  // 3. Disconnect + Reconnect Link::admitted_k MUST NEVER reset admitted_cred_epoch back to 1L!
+  // 3. Disconnect (`live_admitted_cred_epoch` drops to 0L while monotonic `admitted_cred_epoch` stays 2L) + Reconnect advances to 3L!
   ctrl.drop_link(reason="network_flap")
-  debug_assert(ctrl.admitted_cred_epoch() == 2L, "drop_link preserves monotonic admitted_cred_epoch=2")
+  debug_assert(ctrl.live_admitted_cred_epoch() == 0L, "disconnected link has live_admitted_cred_epoch=0")
+  debug_assert(ctrl.admitted_cred_epoch() == 2L, "monotonic admitted_cred_epoch preserved across drop_link")
   let _ = core.membership.bump_cred_epoch(DA_WS1)
-  debug_assert(core.membership.cred_epoch_of(DA_WS1) == 3L, "cred_epoch bumped to 3L")
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = rt.run_ready()
-  debug_assert(ctrl.admitted_cred_epoch() == 3L, "reconnect Link::admitted_k advances admitted_cred_epoch to 3L (never resets to 1)")
+  debug_assert(ctrl.admitted_cred_epoch() == 3L && ctrl.live_admitted_cred_epoch() == 3L, "reconnect Link::admitted_k advances to 3L (never resets to 1)")
 
+  core.stop()
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = rt.run_ready()
 }
 
-test "2B-2.5: Strict GET /threads/<id>/entries {last, entries} validator rejects malformed/cross-thread and accepts valid empty" {
+test "2B-2.5: Strict GET /threads/<id>/entries validator across foreground fetch_thread_k AND idle prefetch_idle_k (including integer overflow)" {
   let rt = effect::Runtime::new()
   let mut next_body = ""
   let tr = StationTransport::{
@@ -492,13 +828,12 @@ test "2B-2.5: Strict GET /threads/<id>/entries {last, entries} validator rejects
     },
     stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
   }
-  let (sim, core) = da_seed_core(rt, tr)
+  let (sim, core, _) = da_seed_core(rt, tr)
 
-  // Downgrade & admit station at epoch 2 so only validator determines pass/fail
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
   core.on_station_admitted_cred_epoch(DA_ST1, 2L)
 
-  // Malformed & cross-thread payloads MUST all fail validator + fail fetch_thread_k with 0 DB writes & no confirm!
+  // Malformed, cross-thread, AND overflow (>2147483647 for thread/n, >9007199254740991 for last) payloads!
   let bad_payloads : Array[String] = [
     "[]",
     "{}",
@@ -508,15 +843,20 @@ test "2B-2.5: Strict GET /threads/<id>/entries {last, entries} validator rejects
     "{\"last\":1.0,\"entries\":[]}",
     "{\"last\":\"1\",\"entries\":[]}",
     "{\"last\":1e2,\"entries\":[]}",
+    "{\"last\":9007199254740992,\"entries\":[]}",
+    "{\"last\":99999999999999999999,\"entries\":[]}",
     "{\"last\":1,\"entries\":{}}",
     "{\"last\":1,\"entries\":[123]}",
     "{\"last\":1,\"entries\":[{\"n\":1}]}",
     "{\"last\":1,\"entries\":[{\"thread\":null,\"n\":1}]}",
     "{\"last\":1,\"entries\":[{\"thread\":8,\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":2147483648,\"n\":1}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7.0,\"n\":1}]}",
     "{\"last\":1,\"entries\":[{\"thread\":\"7\",\"n\":1}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":-1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":2147483648}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":99999999999999999999}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1.5}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1.0}]}",
     "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":\"1\"}]}",
@@ -546,7 +886,28 @@ test "2B-2.5: Strict GET /threads/<id>/entries {last, entries} validator rejects
     debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "malformed payload NEVER confirms chat:<st>/7")
     debug_assert(core.events.dirty_threads.get(7).is_some(), "malformed payload NEVER clears dirty_threads")
   }
-  debug_assert(sim.entry_count(DA_ST1, 7) == entries_before, "0 DB writes across all malformed/cross-thread payloads")
+
+  // [Opus P1-4] Idle `prefetch_idle_k` MUST ALSO reject cross-thread & overflow payloads with 0 DB writes!
+  let idle_bad : Array[String] = [
+    "{\"last\":1,\"entries\":[{\"thread\":8,\"n\":2,\"ts\":100,\"body\":\"cross-thread\"}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":2147483648,\"ts\":100,\"body\":\"overflow\"}]}",
+  ]
+  for i in 0..<idle_bad.length() {
+    next_body = idle_bad[i]
+    let mut idle_err = ""
+    let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      core.sync.prefetch_idle_k(7, fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom(m)) => idle_err = m
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+    let _ = rt.run_ready()
+    debug_assert(idle_err == "malformed_thread_entries", "prefetch_idle_k must reject: " + idle_bad[i])
+  }
+  debug_assert(sim.entry_count(DA_ST1, 7) == entries_before, "0 DB writes across all malformed/cross-thread/overflow foreground & idle payloads")
 
   // Valid empty list `{"last": 0, "entries": []}` MUST pass and confirm `chat:<st>/7`!
   next_body = "{\"last\":0,\"entries\":[]}"
@@ -561,35 +922,36 @@ test "2B-2.5: Strict GET /threads/<id>/entries {last, entries} validator rejects
     })
   })
   let _ = rt.run_ready()
-  debug_assert(empty_ok, "valid empty {last:0, entries:[]} accepted")
-  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "valid empty payload confirms chat:<st>/7")
-  debug_assert(core.events.dirty_threads.get(7).is_none(), "valid empty payload clears dirty_threads")
+  debug_assert(empty_ok && core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7") && core.events.dirty_threads.get(7).is_none(), "valid empty payload accepted & confirmed")
 
-  // Valid non-empty list writes entry and succeeds!
-  next_body = "{\"last\":2,\"entries\":[{\"thread\":7,\"n\":2,\"ts\":1700000010000,\"body\":\"verified\"}]}"
-  let mut nonempty_n = -1
+  // Valid non-empty list via `prefetch_idle_k` commits cleanly!
+  next_body = "{\"last\":2,\"entries\":[{\"thread\":7,\"n\":2,\"ts\":1700000010000,\"body\":\"verified-idle\"}]}"
+  let mut idle_ok_n = -1
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    core.sync.fetch_thread_k(7, effect::priority_shown(), false, fn(ex : effect::Exit[Int]) -> Unit {
+    core.sync.prefetch_idle_k(7, fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
-        effect::Exit::Succeeded(n) => nonempty_n = n
+        effect::Exit::Succeeded(n) => idle_ok_n = n
         _ => ()
       }
       k(effect::Exit::Succeeded(()))
     })
   })
   let _ = rt.run_ready()
-  debug_assert(nonempty_n == 1 && sim.entry_count(DA_ST1, 7) == entries_before + 1, "valid non-empty entries committed")
+  debug_assert(idle_ok_n == 1 && sim.entry_count(DA_ST1, 7) == entries_before + 1, "valid non-empty entries committed via prefetch_idle_k")
 }
 
-test "2B-2.6: Independent chatJobs confirmation NEVER satisfied by GET /chats or GET /threads/<id>/entries" {
+test "2B-2.6: Independent chatJobs confirmation, post-admission on-demand refresh, real session matching, and authoritative empty [] replacing stale agents[].jobs" {
   let rt = effect::Runtime::new()
-  let mut jobs_body = "[{\"id\":\"job-post-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"state\":\"running\",\"cmd\":\"build\"}]"
+  // Real station `/jobs?chats=0` format: keyed by `session` ONLY (no `thread` or `chat` field!)
+  let mut jobs_body = "[{\"id\":\"job-real-sess\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"real-session-job\",\"command\":\"pytest\"}]"
   let mut jobs_reqs = 0
+  let mut chats_reqs = 0
   let tr = StationTransport::{
     request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
       if path == "/chats" {
-        // Deliberately include inline `jobs` in `/chats` to prove `/chats` NEVER piggyback-confirms `chatJobs`!
-        let b = "{\"chats\":[{\"id\":\"c-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Member Chat\",\"lastActive\":1700000011000}],\"entries\":[],\"jobs\":[{\"id\":\"job-inline\",\"thread\":7,\"state\":\"running\"}]}"
+        chats_reqs += 1
+        // Deliberately include inline `jobs` in `/chats` to prove `/chats` NEVER confirms `chatJobs`!
+        let b = "{\"chats\":[{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Member Chat\",\"lastActive\":1700000011000,\"agents\":[{\"id\":\"a1\",\"jobs\":[{\"id\":\"job-stale-cached\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"stale-admin-job\",\"command\":\"rm -rf\"}]}]}],\"entries\":[],\"jobs\":[{\"id\":\"job-inline\",\"session\":\"sess-admin-1\",\"state\":\"running\"}]}"
         k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: b.to_bytes() }))
       } else if path.starts_with("/threads/7/entries") {
         let b = "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000011000,\"body\":\"member entry\"}]}"
@@ -603,61 +965,131 @@ test "2B-2.6: Independent chatJobs confirmation NEVER satisfied by GET /chats or
     },
     stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
   }
-  let (_, core) = da_seed_core(rt, tr)
+  let (_, core, _) = da_seed_core(rt, tr)
 
-  // Downgrade owner -> member and admit link at epoch 2 (without active chatJobs sub yet so auto-refresh won't fetch jobs yet)
-  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  // Downgrade admin -> member and admit link at epoch 2 BEFORE subscribing to `chatJobs`!
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
   core.on_station_admitted_cred_epoch(DA_ST1, 2L)
   let _ = rt.run_ready()
 
-  // Run GET /chats and GET /threads/7/entries explicitly
-  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
-  })
+  // Also explicitly fetch `/threads/7/entries` — `chats:<st>` & `chat:<st>/7` confirmed, `chatJobs:<st>/7` MUST remain unconfirmed!
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     core.sync.fetch_thread_k(7, effect::priority_shown(), false, fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = rt.run_ready()
-
-  // chats:<st> and chat:<st>/7 ARE confirmed, while chatJobs:<st>/7 MUST STILL BE UNCONFIRMED!
   debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "GET /chats confirmed chats:<st>")
   debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "GET /entries confirmed chat:<st>/7")
-  debug_assert(!core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 MUST NOT be confirmed by /chats or /entries")
-  debug_assert(mt_is_waiting(mt_sub(core, 30L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chatJobs topic stays Waiting")
-  debug_assert(jobs_reqs == 0, "no jobs fetch happened yet")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs NEVER confirmed by /chats or /entries")
+  debug_assert(jobs_reqs == 0, "0 jobs fetches before chatJobs subscription")
 
-  // Malformed jobs response MUST NOT confirm chatJobs:<st>/7
-  jobs_body = "{\"not_jobs\":123}"
-  let mut bad_jobs_err = ""
+  // [Opus P0 + Codex P1-4] Subscribing to `chatJobs` AFTER post-downgrade admission (by `session`!)
+  // returns Waiting initially AND immediately triggers event-driven deduped on-demand `GET /jobs?chats=0`!
+  let ev1 = mt_sub(core, 30L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("session", base_codec::json_str("sess-admin-1"))])
+  debug_assert(mt_is_waiting(ev1), "chatJobs starts Waiting before jobs response")
+  let _ = rt.run_ready()
+  debug_assert(jobs_reqs == 1, "on-demand GET /jobs?chats=0 fired automatically (no permanent Waiting!)")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs confirmed after independent jobs fetch")
+
+  // [Codex P1-5] Hard-assert projected job contents: matches real `/jobs?chats=0` by `session` AND excludes stale cached `agents[].jobs`!
+  let v1 = mt_expect_val_json(mt_sub(core, 31L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("session", base_codec::json_str("sess-admin-1"))]), "chatJobs value with real session job")
+  let v1_s = base_codec::json_stringify(v1)
+  debug_assert(v1_s.contains("job-real-sess") && v1_s.contains("real-session-job"), "chatJobs projects real session-matched job: " + v1_s)
+  debug_assert(!v1_s.contains("job-stale-cached"), "authoritative /jobs?chats=0 MUST NOT leak stale cached agents[].jobs: " + v1_s)
+
+  // Now station returns authoritative EMPTY `[]` -> MUST replace all prior jobs and still NOT fall back to stale `agents[].jobs`!
+  jobs_body = "[]"
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  let v2 = mt_expect_val_json(mt_sub(core, 32L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs value after authoritative empty []")
+  debug_assert(da_arr_len(v2, "jobs") == 0, "authoritative empty [] clears jobs completely without falling back to stale agents[].jobs: " + base_codec::json_stringify(v2))
+  let _ = chats_reqs
+}
+
+test "2B-2.7: Cross-account admitted_cred_epoch isolation, canonical address!=id Cloud roster, and native extra_subs_provider session refresh" {
+  let rt = effect::Runtime::new()
+  let mut req_entries_7 = 0
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/chats" {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[],\"entries\":[]}".to_bytes() }))
+      } else if path.starts_with("/threads/7/entries") {
+        req_entries_7 += 1
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000012000,\"body\":\"ok\"}]}".to_bytes() }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+
+  // 1. [Opus P1-1 + Codex P1-2] Account A (sub-bob) reaches admitted_cred_epoch = 3L, then logs out & Account B signs in!
+  core.on_station_admitted_cred_epoch(DA_ST1, 3L)
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 3L, "Account A admitted at epoch 3")
+  let (_, mem_db) = make_sim_db(rt)
+  core.switch_to_unauthenticated_db(mem_db)
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 0L, "logout clears station_admitted_epochs")
+
+  let (_, db_b) = make_sim_db(rt)
+  match core.switch_account_db(db_b, "sub-carol", target_workspace=Some(DA_WS1), target_station=Some(DA_ST1)) {
+    Ok(_) => ()
+    Err(e) => panic("switch_account_db B failed: " + e)
+  }
+  core.set_viewer("carol@still.fail", sub="sub-carol", role="owner")
+  core.attach_station_transport(DA_ST1, tr, workspace=DA_WS1)
+  let _ = core.commit_cloud_me(mt_make_me("sub-carol", "carol@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=1L)
+  // [Codex P1-6] Cloud roster uses short `id: "st-da-1"` whose canonical address is `DA_WS1 + "/st-da-1"` (`address != id`)!
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "owner", ["st-da-1"], sub="sub-carol"), req_seq=2L)
+  da_seed_chat(
+    db_b,
+    DA_ST1,
+    "sess-carol-1",
+    7,
+    "sess-carol-1",
+    "{\"id\":\"sess-carol-1\",\"session\":\"sess-carol-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Carol Chat\",\"lastActive\":1700000012000}",
+  )
+
+  // Account B admits at epoch 1, then downgrades owner -> member (required_cred_epoch = 2L)!
+  core.on_station_admitted_cred_epoch(DA_ST1, 1L)
+  let _ = core.commit_cloud_me(mt_make_me("sub-carol", "carol@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  debug_assert(mt_opt_i64_is(core.membership.required_cred_epoch_of(DA_WS1), 2L), "Account B requires epoch 2")
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 1L, "Account B does NOT inherit Account A's epoch 3!")
+
+  let mut b_err = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
-        effect::Exit::Failed(effect::EffectError::Custom(m)) => bad_jobs_err = m
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => b_err = m
         _ => ()
       }
       k(effect::Exit::Succeeded(()))
     })
   })
   let _ = rt.run_ready()
-  debug_assert(bad_jobs_err == "malformed_jobs_payload", "malformed jobs payload rejected")
-  debug_assert(!core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "malformed jobs response does not confirm chatJobs")
+  debug_assert(b_err == "admitted_cred_epoch_stale", "Account B old link (epoch 1) rejected despite Account A previously hitting epoch 3")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "Account B old link NEVER confirms chats")
 
-  // Valid independent GET /jobs?chats=0 response confirms chatJobs:<st>/7 and unblocks chatJobs topic!
-  jobs_body = "[{\"id\":\"job-post-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"state\":\"running\",\"cmd\":\"build\"}]"
-  let mut good_jobs_n = -1
-  let mut good_jobs_err = ""
-  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(n) => good_jobs_n = n
-        effect::Exit::Failed(effect::EffectError::Custom(m)) => good_jobs_err = m
-        _ => ()
-      }
-      k(effect::Exit::Succeeded(()))
-    })
+  // 2. [Codex P1-1 + P1-4] Register a native `(station, session)` chat subscription via `set_extra_subs_provider`!
+  core.set_extra_subs_provider(fn() -> Array[protocol::Topic] {
+    [
+      protocol::Topic::{
+        name: "chat",
+        params: [
+          ("station", base_codec::json_str(DA_ST1)),
+          ("session", base_codec::json_str("sess-carol-1")),
+        ],
+      },
+    ]
   })
+  // Account B admits at epoch 2 -> auto refreshes `chats:<canonical>` AND resolves `(station, session)` -> `thread=7`!
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
   let _ = rt.run_ready()
-  debug_assert(good_jobs_n == 1 && jobs_reqs == 2, "independent GET /jobs?chats=0 succeeded: n=" + good_jobs_n.to_string() + " reqs=" + jobs_reqs.to_string() + " err=" + good_jobs_err)
-  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed ONLY after independent jobs response")
-  debug_assert(!mt_is_waiting(mt_sub(core, 31L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chatJobs topic now returns Value")
+  debug_assert(req_entries_7 == 1, "extra_subs_provider (station, session) chat refreshed on post-downgrade admission")
+  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 confirmed via session subscription")
+
+  // 3. [Codex P1-6] `confirmed_station_briefs` checks canonical `address` (`DA_WS1/st-da-1`), NOT short `id` (`st-da-1`)!
+  let chats_val = mt_expect_val_json(mt_sub(core, 40L, "chats", [("scope", base_codec::json_str(DA_WS1))]), "chats readable with address!=id Cloud roster")
+  debug_assert(base_codec::json_stringify(chats_val).contains("Carol Chat"), "confirmed_station_briefs retains station when address!=id")
 }

@@ -469,6 +469,7 @@ pub struct MeshStationTransport {
   mut active_transport : Option[StationTransport]
   mut last_admission : Option[MeshAdmission]
   mut admitted_cred_epoch : Int64
+  mut live_link_admitted_epoch : Int64
   mut on_admitted_epoch_cb : Option[(Int64) -> Unit]
   mut closed : Bool
 }
@@ -486,18 +487,29 @@ pub fn MeshStationTransport::new(
     active_transport: None,
     last_admission: None,
     admitted_cred_epoch: 0L,
+    live_link_admitted_epoch: 0L,
     on_admitted_epoch_cb: config.on_admitted_epoch,
     closed: false,
   }
 }
 
-/// Monotonic credential epoch genuinely admitted by the station (`Link::admitted_k` or `Link::exchange_k`).
-/// Starts at `0L` before any station admission succeeds and NEVER resets on reconnect.
+/// Monotonic credential epoch genuinely admitted by the station on this transport instance
+/// (`Link::admitted_k` or `Link::exchange_k`). Starts at `0L` and NEVER resets to 1 on reconnect.
 pub fn MeshStationTransport::admitted_cred_epoch(self : MeshStationTransport) -> Int64 {
   self.admitted_cred_epoch
 }
 
-/// Register/replace the callback fired whenever `admitted_cred_epoch` advances after a real station admission.
+/// Credential epoch genuinely admitted on the CURRENT live `active_link` serving requests/SSE.
+/// Starts at `0L` and resets to `0L` on `drop_link`/`close_k` until the new link completes `admitted_k`.
+pub fn MeshStationTransport::live_admitted_cred_epoch(self : MeshStationTransport) -> Int64 {
+  if self.closed || self.active_link.is_none() {
+    0L
+  } else {
+    self.live_link_admitted_epoch
+  }
+}
+
+/// Register/replace the callback fired whenever a real station admission (`admitted_k`/`exchange_k`) completes.
 pub fn MeshStationTransport::set_on_admitted_epoch(
   self : MeshStationTransport,
   cb : (Int64) -> Unit,
@@ -516,12 +528,18 @@ fn MeshStationTransport::advance_admitted_epoch(
   self : MeshStationTransport,
   presented_epoch : Int64,
 ) -> Unit {
+  if presented_epoch <= 0L {
+    return
+  }
+  if presented_epoch > self.live_link_admitted_epoch {
+    self.live_link_admitted_epoch = presented_epoch
+  }
   if presented_epoch > self.admitted_cred_epoch {
     self.admitted_cred_epoch = presented_epoch
-    match self.on_admitted_epoch_cb {
-      Some(cb) => cb(self.admitted_cred_epoch)
-      None => ()
-    }
+  }
+  match self.on_admitted_epoch_cb {
+    Some(cb) => cb(self.live_link_admitted_epoch)
+    None => ()
   }
 }
 
@@ -815,6 +833,7 @@ pub fn MeshStationTransport::refresh_credential_k(
 
 /// Drop the current peer link without closing the underlying `Mesh` endpoint.
 pub fn MeshStationTransport::drop_link(self : MeshStationTransport, reason : String = "closed") -> Unit {
+  self.live_link_admitted_epoch = 0L
   match self.active_link {
     Some(link) => {
       link.close(reason=reason)

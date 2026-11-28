@@ -3251,6 +3251,9 @@ pub fn MembershipAuthority::advance_cloud_me_seq(self : MembershipAuthority, req
   } else if req_seq <= 0L {
     self.cloud_commit_seq += 1L
   }
+  if self.cloud_commit_seq >= self.next_seq {
+    self.next_seq = self.cloud_commit_seq + 1L
+  }
 }
 
 pub fn MembershipAuthority::advance_workspace_seq(
@@ -3261,6 +3264,9 @@ pub fn MembershipAuthority::advance_workspace_seq(
   let cur = self.ws_commit_seq_of(ws)
   let next = if req_seq > cur { req_seq } else if req_seq <= 0L { cur + 1L } else { cur }
   self.ws_commit_seq.set(ws, next)
+  if next >= self.next_seq {
+    self.next_seq = next + 1L
+  }
 }
 
 pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority) -> Unit {
@@ -3342,9 +3348,34 @@ pub fn MembershipAuthority::reanchor_all_pending_auth_confirm(
   }
 }
 
-/// Clear `PendingAuthConfirm` for `ws` on role upgrade, exiting Safe Mode, rejoin, or purge/drop.
+/// Clear `PendingAuthConfirm` for `ws` on role upgrade, rejoin, or purge/drop.
 pub fn MembershipAuthority::clear_pending_auth_confirm(self : MembershipAuthority, ws : String) -> Unit {
   self.pending_auth_confirm.remove(ws)
+}
+
+/// Handle a lock-only Safe Mode exit aligned 1:1 with `client/core-ts/src/core.ts:1587-1592`:
+/// - If an unconfirmed Cloud downgrade is still pending (`workspace:<ws>` NOT in `confirmed_keys`),
+///   preserve the gate by re-anchoring `gen` to `next_auth_gen` and clearing `confirmed_keys`,
+///   returning `true` so callers re-fetch workspace & stations under the new gen!
+/// - Otherwise clear `PendingAuthConfirm` and return `false`.
+pub fn MembershipAuthority::exit_safe_mode_pending_auth(
+  self : MembershipAuthority,
+  ws : String,
+  next_auth_gen : Int64,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => {
+      if p.confirmed_keys.get("workspace:" + ws).is_none() {
+        p.gen = next_auth_gen
+        p.confirmed_keys.clear()
+        true
+      } else {
+        self.pending_auth_confirm.remove(ws)
+        false
+      }
+    }
+    None => false
+  }
 }
 
 pub fn MembershipAuthority::pending_auth_confirm_of(

@@ -2044,6 +2044,7 @@ test "E2E 5: foreground client.focus preempts running idle sync task and finishe
   station.thread_entries.set(
     99,
     base_codec::json_obj([
+      ("last", base_codec::json_int(1)),
       (
         "entries",
         base_codec::json_arr([

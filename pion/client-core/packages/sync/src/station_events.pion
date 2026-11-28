@@ -718,6 +718,8 @@ pub struct StationEvents {
   session_order : Array[String]
   jobs : Map[String, JobStatus]
   job_order : Array[String]
+  mut authoritative_jobs_loaded : Bool
+  authoritative_jobs_raw : Array[base_codec::Json]
   dirty_threads : Map[Int, Bool]
   mut resync_needed : Int
   mut marks_dirty_count : Int
@@ -732,6 +734,8 @@ pub struct StationEvents {
   mut on_thread_dirty : (Int) -> Unit
   mut auth : Option[AuthGenTracker]
   mut admitted_gate : Option[() -> Bool]
+  mut account_epoch_getter : Option[() -> Int64]
+  mut paused_for_admission : Bool
   mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
@@ -761,6 +765,8 @@ pub fn StationEvents::new(
     session_order: [],
     jobs: Map::new(),
     job_order: [],
+    authoritative_jobs_loaded: false,
+    authoritative_jobs_raw: [],
     dirty_threads: Map::new(),
     resync_needed: 0,
     marks_dirty_count: 0,
@@ -775,6 +781,8 @@ pub fn StationEvents::new(
     on_thread_dirty: fn(_th : Int) -> Unit {},
     auth: None,
     admitted_gate: None,
+    account_epoch_getter: None,
+    paused_for_admission: false,
     stream_epoch: 1L,
     stream_fiber: None,
     active_stream_fiber: None,
@@ -790,10 +798,60 @@ pub fn StationEvents::set_admitted_gate(self : StationEvents, gate : () -> Bool)
   self.admitted_gate = Some(gate)
 }
 
+pub fn StationEvents::set_account_epoch_getter(self : StationEvents, getter : () -> Int64) -> Unit {
+  self.account_epoch_getter = Some(getter)
+}
+
+fn StationEvents::current_account_epoch(self : StationEvents) -> Int64 {
+  match self.account_epoch_getter {
+    Some(g) => g()
+    None => 0L
+  }
+}
+
 fn StationEvents::is_admitted_for_current_auth(self : StationEvents) -> Bool {
   match self.admitted_gate {
     Some(g) => g()
     None => true
+  }
+}
+
+pub fn StationEvents::has_authoritative_jobs(self : StationEvents) -> Bool {
+  self.authoritative_jobs_loaded
+}
+
+pub fn StationEvents::authoritative_jobs_snapshot(self : StationEvents) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<self.authoritative_jobs_raw.length() {
+    out.push(self.authoritative_jobs_raw[i])
+  }
+  out
+}
+
+pub fn StationEvents::is_paused_for_admission(self : StationEvents) -> Bool {
+  self.paused_for_admission
+}
+
+/// Pause the SSE stream while awaiting post-downgrade station admission (zero reconnect timers).
+pub fn StationEvents::pause_for_admission(self : StationEvents) -> Unit {
+  self.paused_for_admission = true
+  self.stream_epoch += 1L
+  self.cancel_active_stream()
+  match self.stream_fiber {
+    Some(f) => {
+      self.stream_fiber = None
+      f.interrupt()
+    }
+    None => ()
+  }
+  self.set_state(ConnectionState::Disconnected("awaiting_admission"))
+}
+
+/// Resume SSE after post-downgrade station admission succeeds (or gate clears).
+pub fn StationEvents::resume_after_admission(self : StationEvents, rt : effect::Runtime) -> Unit {
+  self.paused_for_admission = false
+  if !self.is_running() {
+    self.start(rt)
   }
 }
 
@@ -803,10 +861,13 @@ pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
   self.stream_epoch += 1L
   self.last_event_id = None
   self.attempts = 0
+  self.paused_for_admission = false
   self.sessions.clear()
   self.session_order.clear()
   self.jobs.clear()
   self.job_order.clear()
+  self.authoritative_jobs_loaded = false
+  self.authoritative_jobs_raw.clear()
   self.dirty_threads.clear()
   self.resync_needed = 0
   self.marks_dirty_count = 0
@@ -1823,23 +1884,37 @@ pub fn is_valid_chats_snapshot_payload(snapshot : base_codec::Json) -> Bool {
   }
 }
 
-fn strict_non_neg_json_int(v : base_codec::Json) -> Option[Int64] {
+let MAX_SAFE_JSON_INT : Int64 = 9007199254740991L
+let MAX_I32_JSON_INT : Int64 = 2147483647L
+
+/// Parse a strict non-negative decimal integer bounded by `[0, max_val]` with overflow protection.
+/// Rejects floats (`1.0`, `1.5`), scientific notation (`1e2`), signs, non-digits, NaN/Inf, and overflows.
+fn strict_non_neg_json_int_bounded(v : base_codec::Json, max_val : Int64) -> Option[Int64] {
   match v {
     base_codec::Json::Num(n, repr) => {
-      if n < 0.0 || n != n.floor() {
+      if n < 0.0 || n > max_val.to_double() || n != n.floor() {
         return None
       }
       if repr.length() > 0 {
-        if repr.contains(".") || repr.contains("e") || repr.contains("E") || repr.contains("-") {
-          return None
+        let bs = repr.to_bytes()
+        let mut acc : Int64 = 0L
+        let max_div10 = max_val / 10L
+        let max_mod10 = max_val % 10L
+        for i in 0..<bs.length() {
+          let b = bs[i].to_int() & 0xFF
+          if b < 48 || b > 57 {
+            return None
+          }
+          let d = (b - 48).to_int64()
+          if acc > max_div10 || (acc == max_div10 && d > max_mod10) {
+            return None
+          }
+          acc = acc * 10L + d
         }
-        match base_codec::parse_int64_str(repr) {
-          Some(iv) => if iv >= 0L { Some(iv) } else { None }
-          None => None
-        }
+        Some(acc)
       } else {
         let iv = n.to_int64()
-        if iv >= 0L && iv.to_double() == n { Some(iv) } else { None }
+        if iv >= 0L && iv <= max_val && iv.to_double() == n { Some(iv) } else { None }
       }
     }
     _ => None
@@ -1848,18 +1923,21 @@ fn strict_non_neg_json_int(v : base_codec::Json) -> Option[Int64] {
 
 /// Strictly validate a `GET /threads/<id>/entries` `{last, entries}` payload aligned with
 /// `station/mb/src/readops/entries.mbt:370-392`:
-/// - Top-level MUST be a JSON Object with non-negative integer `last` (rejecting float/string/negative/missing)
+/// - Top-level MUST be a JSON Object with non-negative safe integer `last` (rejecting float/string/negative/overflow/missing)
 ///   and JSON Array `entries`.
-/// - Every item in `entries` MUST be a JSON Object with exact integer `thread == expected_thread`
-///   (rejecting cross-thread mixups and missing/non-integer `thread`) and non-negative integer `n`.
+/// - Every item in `entries` MUST be a JSON Object with exact 32-bit non-negative integer `thread == expected_thread`
+///   (rejecting cross-thread mixups, missing/non-integer/overflow `thread`) and 32-bit non-negative integer `n`.
 /// - Valid empty lists `{ "last": N, "entries": [] }` are accepted.
 pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thread : Int) -> Bool {
+  if expected_thread < 0 {
+    return false
+  }
   match payload {
     base_codec::Json::Obj(_) => ()
     _ => return false
   }
   match base_codec::json_get(payload, "last") {
-    Some(lv) => if strict_non_neg_json_int(lv).is_none() { return false }
+    Some(lv) => if strict_non_neg_json_int_bounded(lv, MAX_SAFE_JSON_INT).is_none() { return false }
     None => return false
   }
   let entries = match base_codec::json_get(payload, "entries") {
@@ -1874,14 +1952,14 @@ pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thre
       _ => return false
     }
     match base_codec::json_get(item, "thread") {
-      Some(tv) => match strict_non_neg_json_int(tv) {
+      Some(tv) => match strict_non_neg_json_int_bounded(tv, MAX_I32_JSON_INT) {
         Some(t_i64) => if t_i64 != expected_i64 { return false }
         None => return false
       }
       None => return false
     }
     match base_codec::json_get(item, "n") {
-      Some(nv) => if strict_non_neg_json_int(nv).is_none() { return false }
+      Some(nv) => if strict_non_neg_json_int_bounded(nv, MAX_I32_JSON_INT).is_none() { return false }
       None => return false
     }
   }
@@ -1927,6 +2005,7 @@ pub fn StationEvents::apply_jobs(
   let seen_ids : Map[String, Bool] = Map::new()
   let job_events : Array[CoreEvent] = []
   let tracked : Array[JobStatus] = []
+  let next_raw_jobs : Array[base_codec::Json] = []
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
     let mut count = 0
@@ -1960,6 +2039,7 @@ pub fn StationEvents::apply_jobs(
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(_) => {
           tracked.push(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
+          next_raw_jobs.push(j_set_field(item, "station", base_codec::json_str(self.station)))
           job_events.push(CoreEvent::JobChanged(self.station, jid, open))
           count += 1
         }
@@ -1991,6 +2071,11 @@ pub fn StationEvents::apply_jobs(
   match res {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(count) => {
+      self.authoritative_jobs_raw.clear()
+      for i in 0..<next_raw_jobs.length() {
+        self.authoritative_jobs_raw.push(next_raw_jobs[i])
+      }
+      self.authoritative_jobs_loaded = true
       for i in 0..<tracked.length() {
         self.track_job(tracked[i])
       }
@@ -3332,6 +3417,15 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     k(effect::Exit::Interrupted)
     return
   }
+  // Pause SSE cleanly with zero reconnect timers while awaiting post-downgrade admission!
+  if !self.is_admitted_for_current_auth() {
+    self.paused_for_admission = true
+    self.stream_fiber = None
+    self.set_state(ConnectionState::Disconnected("awaiting_admission"))
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.paused_for_admission = false
   self.set_state(ConnectionState::Connecting)
   let headers : Array[(String, String)] = [("accept", "text/event-stream")]
   // Strictly match `station/src/api/routes/events.ts:37,51`: station ONLY reads `?since=<eid>`.
@@ -3340,6 +3434,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     None => "/events"
   }
   let my_epoch = self.stream_epoch
+  let stream_account_epoch = self.current_account_epoch()
   let stream_cap : Option[WorkspaceCapability] = match self.auth {
     Some(tracker) => Some(tracker.capture_workspace(self.workspace))
     None => None
@@ -3354,7 +3449,15 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       path,
       headers,
       fn(chunk : Bytes) -> Unit {
-        if aborted[0] || self.stopped || self.stream_epoch != my_epoch {
+        if aborted[0] || self.stopped || self.stream_epoch != my_epoch || self.current_account_epoch() != stream_account_epoch {
+          return
+        }
+        if !self.is_admitted_for_current_auth() {
+          // Pause without firing `on_connected` or scheduling reconnect timers!
+          self.paused_for_admission = true
+          aborted[0] = true
+          self.cancel_active_stream()
+          let _ = done_sig.succeed(false)
           return
         }
         if !marked_connected {
@@ -3370,10 +3473,15 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
               Ok(true) => ()
               Ok(false) | Err(_) => {
                 // Immediately cancel the underlying old stream so no further chunks arrive or advance
-                // `last_event_id`, and wake the outer `stream_fiber` to reconnect via `?since=`.
+                // `last_event_id`. If paused for admission, do NOT schedule a reconnect timer!
                 aborted[0] = true
                 self.cancel_active_stream()
-                let _ = done_sig.succeed(true)
+                if !self.is_admitted_for_current_auth() {
+                  self.paused_for_admission = true
+                  let _ = done_sig.succeed(false)
+                } else {
+                  let _ = done_sig.succeed(true)
+                }
               }
             }
           }
@@ -3383,11 +3491,13 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       fn(ex : effect::Exit[Unit]) -> Unit {
         match ex {
           effect::Exit::Interrupted => {
-            let _ = done_sig.succeed(aborted[0])
+            let reconnect = aborted[0] && !self.paused_for_admission && self.is_admitted_for_current_auth()
+            let _ = done_sig.succeed(reconnect)
             ck(effect::Exit::Interrupted)
           }
           effect::Exit::Succeeded(_) | effect::Exit::Failed(_) => {
-            let _ = done_sig.succeed(true)
+            let reconnect = !self.paused_for_admission && self.is_admitted_for_current_auth()
+            let _ = done_sig.succeed(reconnect)
             ck(effect::Exit::Succeeded(()))
           }
         }
@@ -3400,7 +3510,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     self.active_stream_fiber = Some(child)
   }
   done_sig.wait_k(fn(wex : effect::Exit[Bool]) -> Unit {
-    if self.stream_epoch != my_epoch {
+    if self.stream_epoch != my_epoch || self.current_account_epoch() != stream_account_epoch {
       k(effect::Exit::Interrupted)
       return
     }
@@ -3409,6 +3519,13 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     if self.stopped || effect::is_interrupted() {
       self.set_state(ConnectionState::Disconnected("stopped"))
       k(effect::Exit::Interrupted)
+      return
+    }
+    if self.paused_for_admission || !self.is_admitted_for_current_auth() {
+      self.paused_for_admission = true
+      self.stream_fiber = None
+      self.set_state(ConnectionState::Disconnected("awaiting_admission"))
+      k(effect::Exit::Succeeded(()))
       return
     }
     match wex {
