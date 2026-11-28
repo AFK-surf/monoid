@@ -292,6 +292,24 @@ int32_t sts_write_under_nofollow(
     int32_t mode,
     int32_t truncate_end);
 
+// Dirfd-anchored exclusive create, positioned write+fsync, atomic no-replace publish, and unlink
+// under `root` (`openat(O_DIRECTORY|O_NOFOLLOW)` + `O_CREAT|O_EXCL` + `linkat`/`unlinkat` on POSIX;
+// `CREATE_NEW` + `MoveFileExW(..., 0)` without `MOVEFILE_REPLACE_EXISTING` on Windows).
+// Returns: 0 on success, -7 on EEXIST, -5 on symlink/non-regular, -2 on ENOENT, -1 on IO error.
+int32_t sts_create_excl_under_nofollow(const char *root, const char *rel, int32_t mode);
+int32_t sts_write_at_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t sync);
+int32_t sts_publish_noreplace_under_nofollow(
+    const char *root,
+    const char *src_rel,
+    const char *dst_rel);
+int32_t sts_unlink_under_nofollow(const char *root, const char *rel);
+
 // Pure C11 V8 String.prototype.toLowerCase() (1:1 aligned with `jscase::lower`).
 // Returns 1 on success (exact byte length written to `*out_len`), 0 on invalid args / small cap / OOM.
 int32_t sts_js_lower_utf8(

@@ -3148,6 +3148,152 @@ int32_t sts_write_under_nofollow(
     return 1;
 }
 
+int32_t sts_create_excl_under_nofollow(const char *root, const char *rel, int32_t mode) {
+    (void)mode;
+    if (root == NULL || rel == NULL) return -1;
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 1, parents, 128, &n_parents);
+    if (full == NULL) return -5;
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return -1;
+    }
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    DWORD gle = GetLastError();
+    free(w);
+    sts_win_close_handles(parents, n_parents);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS) return -7;
+        return -1;
+    }
+    CloseHandle(h);
+    return 0;
+}
+
+int32_t sts_write_at_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t sync) {
+    if (root == NULL || rel == NULL || len < 0 || offset < 0) return -1;
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 0, parents, 128, &n_parents);
+    if (full == NULL) return -5;
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    if (w == NULL) {
+        sts_win_close_handles(parents, n_parents);
+        return -1;
+    }
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        sts_win_close_handles(parents, n_parents);
+        return -2;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    int valid = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0
+        && n_parents > 0
+        && sts_win_verify_leaf_under_parent(h, parents[n_parents - 1]);
+    sts_win_close_handles(parents, n_parents);
+    if (!valid) {
+        CloseHandle(h);
+        return -5;
+    }
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return -1;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        DWORD chunk = (DWORD)((len - done) > 0x7fffffffLL ? 0x7fffffffLL : (len - done));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + done, chunk, &wrote, NULL)) {
+            CloseHandle(h);
+            return -1;
+        }
+        done += (int64_t)wrote;
+    }
+    if (sync != 0 && !FlushFileBuffers(h)) {
+        CloseHandle(h);
+        return -1;
+    }
+    CloseHandle(h);
+    return 0;
+}
+
+int32_t sts_publish_noreplace_under_nofollow(
+    const char *root,
+    const char *src_rel,
+    const char *dst_rel) {
+    if (root == NULL || src_rel == NULL || dst_rel == NULL) return -1;
+    HANDLE src_parents[128], dst_parents[128];
+    size_t n_src = 0, n_dst = 0;
+    char *src_full = sts_win_walk_lock_parents(root, src_rel, 0, src_parents, 128, &n_src);
+    if (src_full == NULL) return -5;
+    char *dst_full = sts_win_walk_lock_parents(root, dst_rel, 1, dst_parents, 128, &n_dst);
+    if (dst_full == NULL) {
+        free(src_full);
+        sts_win_close_handles(src_parents, n_src);
+        return -5;
+    }
+    wchar_t *sw = utf8_to_wide(src_full);
+    wchar_t *dw = utf8_to_wide(dst_full);
+    free(src_full);
+    free(dst_full);
+    int32_t rc = -1;
+    if (sw != NULL && dw != NULL) {
+        // Strictly WITHOUT MOVEFILE_REPLACE_EXISTING: atomically fails if dst exists.
+        if (MoveFileExW(sw, dw, 0)) {
+            rc = 0;
+        } else {
+            DWORD gle = GetLastError();
+            if (gle == ERROR_ALREADY_EXISTS || gle == ERROR_FILE_EXISTS) rc = -7;
+            else if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) rc = -2;
+        }
+    }
+    if (sw != NULL) free(sw);
+    if (dw != NULL) free(dw);
+    sts_win_close_handles(dst_parents, n_dst);
+    sts_win_close_handles(src_parents, n_src);
+    return rc;
+}
+
+int32_t sts_unlink_under_nofollow(const char *root, const char *rel) {
+    if (root == NULL || rel == NULL) return -1;
+    HANDLE parents[128];
+    size_t n_parents = 0;
+    char *full = sts_win_walk_lock_parents(root, rel, 0, parents, 128, &n_parents);
+    if (full == NULL) return -5;
+    wchar_t *w = utf8_to_wide(full);
+    free(full);
+    int32_t rc = -1;
+    if (w != NULL) {
+        if (DeleteFileW(w)) {
+            rc = 0;
+        } else {
+            DWORD gle = GetLastError();
+            if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) rc = -2;
+        }
+        free(w);
+    }
+    sts_win_close_handles(parents, n_parents);
+    return rc;
+}
+
 int32_t sts_write_file_mode(
     const char *path,
     const uint8_t *data,
@@ -7447,6 +7593,122 @@ int32_t sts_write_under_nofollow(
         }
     }
     return close(fd) == 0 ? 1 : 0;
+}
+
+int32_t sts_create_excl_under_nofollow(const char *root, const char *rel, int32_t mode) {
+    if (root == NULL || rel == NULL) return -1;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 1, leaf, sizeof(leaf));
+    if (dirfd < 0) return -5;
+    mode_t m = mode > 0 ? (mode_t)mode : (mode_t)0600;
+    int fd = openat(dirfd, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, m);
+    int saved_err = errno;
+    close(dirfd);
+    if (fd < 0) {
+        if (saved_err == EEXIST) return -7;
+        if (saved_err == ELOOP) return -5;
+        if (saved_err == ENOENT) return -2;
+        return -1;
+    }
+    return close(fd) == 0 ? 0 : -1;
+}
+
+int32_t sts_write_at_under_nofollow(
+    const char *root,
+    const char *rel,
+    const uint8_t *data,
+    int64_t len,
+    int64_t offset,
+    int32_t sync) {
+    if (root == NULL || rel == NULL || len < 0 || offset < 0) return -1;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 0, leaf, sizeof(leaf));
+    if (dirfd < 0) return -5;
+    int fd = openat(dirfd, leaf, O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    int saved_err = errno;
+    close(dirfd);
+    if (fd < 0) {
+        if (saved_err == ELOOP) return -5;
+        if (saved_err == ENOENT) return -2;
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return -5;
+    }
+    int64_t done = 0;
+    while (done < len) {
+        ssize_t w = pwrite(fd, data + done, (size_t)(len - done), (off_t)(offset + done));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return -1;
+        }
+        done += (int64_t)w;
+    }
+    if (sync != 0) {
+        int frc;
+        do {
+            frc = fsync(fd);
+        } while (frc < 0 && errno == EINTR);
+        if (frc != 0) {
+            close(fd);
+            return -1;
+        }
+    }
+    return close(fd) == 0 ? 0 : -1;
+}
+
+int32_t sts_publish_noreplace_under_nofollow(
+    const char *root,
+    const char *src_rel,
+    const char *dst_rel) {
+    if (root == NULL || src_rel == NULL || dst_rel == NULL) return -1;
+    char src_leaf[512], dst_leaf[512];
+    int src_dirfd = sts_open_dir_nofollow_walk(root, src_rel, 0, src_leaf, sizeof(src_leaf));
+    if (src_dirfd < 0) return -5;
+    int dst_dirfd = sts_open_dir_nofollow_walk(root, dst_rel, 1, dst_leaf, sizeof(dst_leaf));
+    if (dst_dirfd < 0) {
+        close(src_dirfd);
+        return -5;
+    }
+    struct stat st;
+    if (fstatat(src_dirfd, src_leaf, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) {
+        close(dst_dirfd);
+        close(src_dirfd);
+        return -5;
+    }
+    // Truly atomic no-replace publish: linkat(0) fails with EEXIST if dst_leaf already exists
+    // and never follows symlinks; unlinkat removes the .part name on success.
+    if (linkat(src_dirfd, src_leaf, dst_dirfd, dst_leaf, 0) != 0) {
+        int saved_err = errno;
+        close(dst_dirfd);
+        close(src_dirfd);
+        if (saved_err == EEXIST) return -7;
+        if (saved_err == ENOENT) return -2;
+        if (saved_err == ELOOP) return -5;
+        return -1;
+    }
+    int urc = unlinkat(src_dirfd, src_leaf, 0);
+    close(dst_dirfd);
+    close(src_dirfd);
+    return urc == 0 ? 0 : -1;
+}
+
+int32_t sts_unlink_under_nofollow(const char *root, const char *rel) {
+    if (root == NULL || rel == NULL) return -1;
+    char leaf[512];
+    int dirfd = sts_open_dir_nofollow_walk(root, rel, 0, leaf, sizeof(leaf));
+    if (dirfd < 0) return -5;
+    int rc = unlinkat(dirfd, leaf, 0);
+    int saved_err = errno;
+    close(dirfd);
+    if (rc != 0) {
+        if (saved_err == ENOENT) return -2;
+        return -1;
+    }
+    return 0;
 }
 
 void *sts_read_dir(const char *path, int64_t *out_len) {

@@ -81,6 +81,17 @@ extern "C" fn sts_write_at(
   out_short : Ptr,
 ) -> Int
 extern "C" fn sts_sync_file(path : Ptr) -> Int
+extern "C" fn sts_create_excl_under_nofollow(root : Ptr, rel : Ptr, mode : Int) -> Int
+extern "C" fn sts_write_at_under_nofollow(
+  root : Ptr,
+  rel : Ptr,
+  data : Ptr,
+  len : Int64,
+  offset : Int64,
+  sync : Int,
+) -> Int
+extern "C" fn sts_publish_noreplace_under_nofollow(root : Ptr, src_rel : Ptr, dst_rel : Ptr) -> Int
+extern "C" fn sts_unlink_under_nofollow(root : Ptr, rel : Ptr) -> Int
 extern "C" fn sts_file_open_ro(path : Ptr, out_size : Ptr, out_err : Ptr) -> Int64
 extern "C" fn sts_file_pread(
   handle : Int64,
@@ -1182,6 +1193,68 @@ pub fn write_at(
 pub fn sync_file(path : String) -> Result[Unit, Int] {
   let rc = sts_sync_file(path.as_cstr())
   let _ = path.length()
+  if rc != 0 {
+    return Err(rc)
+  }
+  Ok(())
+}
+
+/// Exclusively create a new regular file under `root` (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`),
+/// walking parents with `O_DIRECTORY|O_NOFOLLOW`. Returns `Err(-7)` on `EEXIST`, `Err(-5)` on symlink/escape.
+pub fn create_excl_under_nofollow(root : String, rel : String, mode : Int = 384) -> Result[Unit, Int] {
+  let rc = sts_create_excl_under_nofollow(root.as_cstr(), rel.as_cstr(), mode)
+  let _ = root.length()
+  let _ = rel.length()
+  if rc != 0 {
+    return Err(rc)
+  }
+  Ok(())
+}
+
+/// Positioned write (+ optional `fsync`) to an existing regular file under `root` via dirfd-anchored
+/// `openat(O_WRONLY|O_NOFOLLOW)` (never creates or truncates).
+pub fn write_at_under_nofollow(
+  root : String,
+  rel : String,
+  offset : Int64,
+  data : Bytes,
+  sync : Bool = false,
+) -> Result[Unit, Int] {
+  let rc = sts_write_at_under_nofollow(
+    root.as_cstr(),
+    rel.as_cstr(),
+    bytes_data_ptr(data),
+    data.length().to_int64(),
+    offset,
+    if sync { 1 } else { 0 },
+  )
+  let _ = root.length()
+  let _ = rel.length()
+  let _ = data.length()
+  if rc != 0 {
+    return Err(rc)
+  }
+  Ok(())
+}
+
+/// Truly atomic no-replace publish under `root`: `linkat(0)` + `unlinkat` on POSIX,
+/// `MoveFileExW(..., 0)` (no `MOVEFILE_REPLACE_EXISTING`) on Windows. Returns `Err(-7)` if `dst_rel` exists!
+pub fn publish_noreplace_under_nofollow(root : String, src_rel : String, dst_rel : String) -> Result[Unit, Int] {
+  let rc = sts_publish_noreplace_under_nofollow(root.as_cstr(), src_rel.as_cstr(), dst_rel.as_cstr())
+  let _ = root.length()
+  let _ = src_rel.length()
+  let _ = dst_rel.length()
+  if rc != 0 {
+    return Err(rc)
+  }
+  Ok(())
+}
+
+/// Unlink a file under `root` via dirfd-anchored `unlinkat` (`O_DIRECTORY|O_NOFOLLOW`).
+pub fn unlink_under_nofollow(root : String, rel : String) -> Result[Unit, Int] {
+  let rc = sts_unlink_under_nofollow(root.as_cstr(), rel.as_cstr())
+  let _ = root.length()
+  let _ = rel.length()
   if rc != 0 {
     return Err(rc)
   }

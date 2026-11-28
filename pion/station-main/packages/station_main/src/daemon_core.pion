@@ -3489,8 +3489,13 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                               }
                             }
                             if cid >= 0L {
-                              ob.conn_id = Some(cid)
-                              call_envelope(mux_mesh, 0, MESH_TOK_OUT_OPEN_BI, oid, mesh_door::direct_conn_open_bi(cid))
+                              if ob.cancelled {
+                                call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                                active_outbounds.remove(oid)
+                              } else {
+                                ob.conn_id = Some(cid)
+                                call_envelope(mux_mesh, 0, MESH_TOK_OUT_OPEN_BI, oid, mesh_door::direct_conn_open_bi(cid))
+                              }
                             } else {
                               active_outbounds.remove(oid)
                               requeue_outbound(ob)
@@ -3518,9 +3523,18 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                               }
                             }
                             if sid >= 0L {
-                              ob.stream_id = Some(sid)
-                              ob.sent = true
-                              call_envelope(mux_mesh, 0, MESH_TOK_OUT_WRITE, oid, mesh_door::direct_istream_write(sid, ob.payload))
+                              if ob.cancelled {
+                                call_envelope(mux_mesh, 0, MESH_TOK_OUT_FINISH, oid, mesh_door::direct_istream_finish(sid))
+                                match ob.conn_id {
+                                  Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                                  None => ()
+                                }
+                                active_outbounds.remove(oid)
+                              } else {
+                                ob.stream_id = Some(sid)
+                                ob.sent = true
+                                call_envelope(mux_mesh, 0, MESH_TOK_OUT_WRITE, oid, mesh_door::direct_istream_write(sid, ob.payload))
+                              }
                             } else {
                               match ob.conn_id {
                                 Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
@@ -4042,13 +4056,18 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                         _ => -1L
                                       }
                                       if fconn >= 0L {
-                                        ob.conn_id = Some(fconn)
-                                        front_send_ask(
-                                          "openBi",
-                                          [("conn", base_codec::json_int64(fconn))],
-                                          "out_open",
-                                          oid,
-                                        )
+                                        if ob.cancelled {
+                                          front_send_ask("close", [("conn", base_codec::json_int64(fconn))], "out_close", 0L)
+                                          active_outbounds.remove(oid)
+                                        } else {
+                                          ob.conn_id = Some(fconn)
+                                          front_send_ask(
+                                            "openBi",
+                                            [("conn", base_codec::json_int64(fconn))],
+                                            "out_open",
+                                            oid,
+                                          )
+                                        }
                                       } else {
                                         active_outbounds.remove(oid)
                                         requeue_outbound(ob)
@@ -4070,22 +4089,38 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                         }
                                       }
                                       if fsid >= 0L {
-                                        ob.stream_id = Some(fsid)
-                                        match front_early_out_socks.get(fsid) {
-                                          Some(early_sock) => {
-                                            front_early_out_socks.remove(fsid)
-                                            front_out_by_sock.set(early_sock, oid)
-                                            ob.sock_id = Some(early_sock)
-                                            ob.sent = true
-                                            let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
-                                            let _ = mux_mesh.call_async_raw(
-                                              builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
-                                              "tcp.write",
-                                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
-                                              Some(framed),
-                                            )
+                                        if ob.cancelled {
+                                          match front_early_out_socks.get(fsid) {
+                                            Some(early_sock) => {
+                                              front_early_out_socks.remove(fsid)
+                                              let _ = mux_mesh.call_async_raw(
+                                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, early_sock),
+                                                "tcp.close",
+                                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
+                                                None,
+                                              )
+                                            }
+                                            None => ()
                                           }
-                                          None => front_out_by_stream.set(fsid, oid)
+                                          active_outbounds.remove(oid)
+                                        } else {
+                                          ob.stream_id = Some(fsid)
+                                          match front_early_out_socks.get(fsid) {
+                                            Some(early_sock) => {
+                                              front_early_out_socks.remove(fsid)
+                                              front_out_by_sock.set(early_sock, oid)
+                                              ob.sock_id = Some(early_sock)
+                                              ob.sent = true
+                                              let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
+                                              let _ = mux_mesh.call_async_raw(
+                                                builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
+                                                "tcp.write",
+                                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
+                                                Some(framed),
+                                              )
+                                            }
+                                            None => front_out_by_stream.set(fsid, oid)
+                                          }
                                         }
                                       } else {
                                         active_outbounds.remove(oid)

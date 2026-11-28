@@ -85,7 +85,7 @@ pub fn build_remote_task_rpc_payload(intent : station_whole::DeferredMcpIntent) 
       ("key", base_codec::json_str(intent.task_key)),
     ])
   }
-  if intent.action == "start" {
+  if intent.action == "prepare" || intent.action == "start" {
     let spec_obj = match intent.prepared_spec {
       Some(sp) => {
         let sfields : Array[(String, base_codec::Json)] = [
@@ -102,7 +102,7 @@ pub fn build_remote_task_rpc_payload(intent : station_whole::DeferredMcpIntent) 
       None => base_codec::json_obj([])
     }
     return base_codec::json_obj([
-      ("method", base_codec::json_str("task.start")),
+      ("method", base_codec::json_str("task." + intent.action)),
       ("workspace", base_codec::json_str(intent.caller_ws)),
       ("session", base_codec::json_str(intent.session)),
       ("key", base_codec::json_str(intent.task_key)),
@@ -521,17 +521,8 @@ pub fn wire_daemon_mcp_remote_system(
     relays_add: fn(_ws : String, _url : String, _by : String, _now : Int64) -> Result[(String, Int, station_whole::McpRelaysView), String] {
       Err("relays add is not yet wired on the Pion engine (async relay HTTP probe pending)")
     },
-    relays_remove: fn(ws : String, raw_url : String, now_ms : Int64) -> Result[(String, station_whole::McpRelaysView), String] {
-      match ways.remove_relay(ws, raw_url, now_ms) {
-        Ok(_) => {
-          let norm = match station_mesh::validate_relay_url(raw_url, insecure=true) {
-            Some(u) => u
-            None => raw_url
-          }
-          Ok((norm, ways_to_mcp_view(ctx, ways, ws)))
-        }
-        Err(e) => Err("not removed: " + e)
-      }
+    relays_remove: fn(_ws : String, _raw_url : String, _now_ms : Int64) -> Result[(String, station_whole::McpRelaysView), String] {
+      Err("relays remove is not yet wired on the Pion engine (workspace ways sync pending)")
     },
     relays_enroll: None,
     relays_revoke: None,
@@ -543,6 +534,34 @@ pub fn wire_daemon_mcp_remote_system(
     fs: core.agents.jobs.fs,
   }
   core.agents.remote_system_port = Some(port)
+  core.agents.is_workspace_bound = Some(fn(session : String) -> Bool {
+    if ctx.cloud.removed() {
+      return false
+    }
+    let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+    let caller_ws = match core.store.require_open() {
+      Ok(st) => {
+        match st.db.all("SELECT ws FROM sessions WHERE key = ?1 LIMIT 1", [base_codec::json_str(session)]) {
+          Ok(rows) => {
+            if rows.length() > 0 {
+              match rows[0].get("ws") {
+                Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { core.config.home_workspace }
+                _ => core.config.home_workspace
+              }
+            } else {
+              core.config.home_workspace
+            }
+          }
+          _ => core.config.home_workspace
+        }
+      }
+      Err(_) => core.config.home_workspace
+    }
+    if caller_ws.length() == 0 {
+      return false
+    }
+    ctx.cloud.membership(caller_ws, now_secs) is Some(_)
+  })
 }
 
 fn dispatch_local_remote_task(
@@ -679,6 +698,34 @@ fn dispatch_local_remote_task(
 // Disconnect / Timeout / Shutdown, and Streaming File Chunk Transfer
 // ---------------------------------------------------------------------------
 
+fn close_mcp_req_upload_fd(req : station_whole::McpPendingReq) -> Unit {
+  match req.upload_fd {
+    Some(h) => {
+      req.upload_fd = None
+      let _ = station_sys::ReadOnlyFile::{ handle: h, size: 0L }.close()
+    }
+    None => ()
+  }
+}
+
+fn cleanup_mcp_req_part(fs : station_jobs::FsPort, req : station_whole::McpPendingReq) -> Unit {
+  match (req.part_root, req.part_rel) {
+    (Some(root), Some(rel)) => {
+      req.part_root = None
+      req.part_rel = None
+      let _ = station_sys::unlink_under_nofollow(root, rel)
+    }
+    _ => ()
+  }
+  match req.part_path {
+    Some(pp) => {
+      req.part_path = None
+      let _ = (fs.remove_file)(pp)
+    }
+    None => ()
+  }
+}
+
 fn cleanup_aborted_mcp_req(
   ctx : DaemonCtx,
   fs : station_jobs::FsPort,
@@ -687,15 +734,11 @@ fn cleanup_aborted_mcp_req(
   if req.ask_id > 0L {
     let _ = ctx.cancel_peer_rpc(req.ask_id)
   }
-  match req.part_path {
-    Some(pp) => {
-      let _ = (fs.remove_file)(pp)
-    }
-    None => ()
-  }
+  close_mcp_req_upload_fd(req)
+  cleanup_mcp_req_part(fs, req)
 }
 
-/// Handle HTTP client disconnect on `/mcp`: cancel mesh RPC and remove any residual `.part` file.
+/// Handle HTTP client disconnect on `/mcp`: cancel mesh RPC, close upload FD, and remove any residual `.part` file.
 pub fn on_mcp_conn_closed(
   ctx : DaemonCtx,
   fs : station_jobs::FsPort,
@@ -724,12 +767,15 @@ fn complete_deferred_mcp(
   mcp_srv : station_http::HttpServer,
   mcp_cb : station_http::ServerCallbacks,
   mcp_pending : station_whole::McpPendingTable,
+  fs : station_jobs::FsPort,
   conn_id : Int,
   req_gen : Int64,
   reply : station_tools::ToolReply,
 ) -> Unit {
   match mcp_pending.take_if_active(conn_id, req_gen) {
     Some(p) => {
+      close_mcp_req_upload_fd(p)
+      cleanup_mcp_req_part(fs, p)
       let body_str = station_whole::encode_mcp_tool_jsonrpc(p.rpc_id, reply)
       let resp = station_http::HttpResponse::json(200, body_str)
       let _ = mcp_srv.respond_with_callbacks(conn_id, station_http::HandlerAction::Respond(resp), mcp_cb)
@@ -794,7 +840,7 @@ pub fn flush_deferred_mcp_starts(
             Ok(v) => station_tools::text_reply(base_codec::json_stringify(v))
             Err(e) => station_tools::error_reply(e)
           }
-          complete_deferred_mcp(mcp_srv, mcp_cb, mcp_pending, intent.conn_id, req_gen, reply)
+          complete_deferred_mcp(mcp_srv, mcp_cb, mcp_pending, fs, intent.conn_id, req_gen, reply)
         },
       )
       mcp_pending.set_ask_id(intent.conn_id, req_gen, aid)
@@ -818,7 +864,7 @@ pub fn flush_deferred_mcp_starts(
             Ok(v) => station_tools::text_reply(base_codec::json_stringify(v))
             Err(e) => station_tools::error_reply(e)
           }
-          complete_deferred_mcp(mcp_srv, mcp_cb, mcp_pending, intent.conn_id, req_gen, reply)
+          complete_deferred_mcp(mcp_srv, mcp_cb, mcp_pending, fs, intent.conn_id, req_gen, reply)
         },
       )
       mcp_pending.set_ask_id(intent.conn_id, req_gen, aid)
@@ -839,6 +885,7 @@ pub fn flush_deferred_mcp_starts(
               mcp_srv,
               mcp_cb,
               mcp_pending,
+              fs,
               intent.conn_id,
               req_gen,
               station_tools::error_reply("failed to open regular local file for upload"),
@@ -851,17 +898,20 @@ pub fn flush_deferred_mcp_starts(
                 mcp_srv,
                 mcp_cb,
                 mcp_pending,
+                fs,
                 intent.conn_id,
                 req_gen,
                 station_tools::error_reply("input must be a regular file of at most 1 GiB"),
               )
+            } else if !mcp_pending.set_upload_fd(intent.conn_id, req_gen, Some(ro_file.handle)) {
+              let _ = ro_file.close()
             } else {
               pump_async_file_upload_ro(
                 ctx,
                 mcp_srv,
                 mcp_cb,
                 mcp_pending,
-                ro_file,
+                fs,
                 intent.conn_id,
                 req_gen,
                 intent.peer_id,
@@ -881,26 +931,43 @@ pub fn flush_deferred_mcp_starts(
           Ok(b) => dm_bytes_to_hex(b)
           Err(_) => now_mono.to_string()
         }
-        let part_path = intent.local_path + "." + rand_suffix + ".part"
-        mcp_pending.set_part_path(intent.conn_id, req_gen, Some(part_path))
-        pump_async_file_download_stream(
-          ctx,
-          mcp_srv,
-          mcp_cb,
-          mcp_pending,
-          fs,
-          intent.conn_id,
-          req_gen,
-          intent.peer_id,
-          intent.caller_ws,
-          intent.session,
-          intent.task_key,
-          intent.remote_path,
-          intent.local_path,
-          part_path,
-          0L,
-          None,
-        )
+        let part_rel = intent.local_rel + "." + rand_suffix + ".part"
+        match station_sys::create_excl_under_nofollow(intent.ws_root, part_rel, 384) {
+          Err(_) => {
+            complete_deferred_mcp(
+              mcp_srv,
+              mcp_cb,
+              mcp_pending,
+              fs,
+              intent.conn_id,
+              req_gen,
+              station_tools::error_reply("failed to create temporary download file"),
+            )
+          }
+          Ok(()) => {
+            mcp_pending.set_part_location(intent.conn_id, req_gen, Some(intent.ws_root), Some(part_rel))
+            pump_async_file_download_stream(
+              ctx,
+              mcp_srv,
+              mcp_cb,
+              mcp_pending,
+              fs,
+              intent.conn_id,
+              req_gen,
+              intent.peer_id,
+              intent.caller_ws,
+              intent.session,
+              intent.task_key,
+              intent.remote_path,
+              intent.ws_root,
+              intent.local_rel,
+              intent.local_path,
+              part_rel,
+              0L,
+              None,
+            )
+          }
+        }
       }
     }
   }
@@ -911,7 +978,7 @@ fn pump_async_file_upload_ro(
   mcp_srv : station_http::HttpServer,
   cb : station_http::ServerCallbacks,
   mcp_pending : station_whole::McpPendingTable,
-  ro_file : station_sys::ReadOnlyFile,
+  fs : station_jobs::FsPort,
   conn_id : Int,
   req_gen : Int64,
   peer_id : String,
@@ -923,10 +990,11 @@ fn pump_async_file_upload_ro(
   offset : Int64,
   total_size : Int64,
 ) -> Unit {
-  if !mcp_pending.is_active(conn_id, req_gen) {
-    let _ = ro_file.close()
-    return
+  let handle = match mcp_pending.get_upload_fd(conn_id, req_gen) {
+    Some(h) => h
+    None => return
   }
+  let ro_view = station_sys::ReadOnlyFile::{ handle: handle, size: total_size }
   let rem = total_size - offset
   let chunk_len = if rem > station_jobs::REMOTE_CHUNK.to_int64() {
     station_jobs::REMOTE_CHUNK.to_int64()
@@ -938,14 +1006,14 @@ fn pump_async_file_upload_ro(
   let chunk = if chunk_len == 0L {
     Bytes::new(0)
   } else {
-    match ro_file.pread(offset, chunk_len) {
+    match ro_view.pread(offset, chunk_len) {
       Ok(b) => {
         if b.length() == 0 {
-          let _ = ro_file.close()
           complete_deferred_mcp(
             mcp_srv,
             cb,
             mcp_pending,
+            fs,
             conn_id,
             req_gen,
             station_tools::error_reply("input changed while reading"),
@@ -955,11 +1023,11 @@ fn pump_async_file_upload_ro(
         b
       }
       Err(_) => {
-        let _ = ro_file.close()
         complete_deferred_mcp(
           mcp_srv,
           cb,
           mcp_pending,
+          fs,
           conn_id,
           req_gen,
           station_tools::error_reply("failed to read local file chunk"),
@@ -986,31 +1054,28 @@ fn pump_async_file_upload_ro(
     req,
     fn(res : Result[base_codec::Json, String]) -> Unit {
       if !mcp_pending.is_active(conn_id, req_gen) {
-        let _ = ro_file.close()
         return
       }
       match res {
         Err(e) => {
-          let _ = ro_file.close()
-          complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::error_reply(e))
+          complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::error_reply(e))
         }
         Ok(_) => {
           if is_final {
-            let _ = ro_file.close()
             let ok_json = base_codec::json_stringify(
               base_codec::json_obj([
                 ("uploaded", base_codec::json_str(local_path)),
                 ("bytes", base_codec::json_int64(total_size)),
               ]),
             )
-            complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::text_reply(ok_json))
+            complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::text_reply(ok_json))
           } else {
             pump_async_file_upload_ro(
               ctx,
               mcp_srv,
               cb,
               mcp_pending,
-              ro_file,
+              fs,
               conn_id,
               req_gen,
               peer_id,
@@ -1043,13 +1108,14 @@ fn pump_async_file_download_stream(
   caller_session : String,
   task_key : String,
   remote_path : String,
+  ws_root : String,
+  local_rel : String,
   local_path : String,
-  part_path : String,
+  part_rel : String,
   offset : Int64,
   expected_size : Option[Int64],
 ) -> Unit {
   if !mcp_pending.is_active(conn_id, req_gen) {
-    let _ = (fs.remove_file)(part_path)
     return
   }
   let req = base_codec::json_obj([
@@ -1066,51 +1132,73 @@ fn pump_async_file_download_stream(
     req,
     fn(res : Result[base_codec::Json, String]) -> Unit {
       if !mcp_pending.is_active(conn_id, req_gen) {
-        let _ = (fs.remove_file)(part_path)
         return
       }
       match res {
         Err(e) => {
-          let _ = (fs.remove_file)(part_path)
-          complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::error_reply(e))
+          complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::error_reply(e))
         }
         Ok(v) => {
-          let eff_size = match expected_size {
-            Some(s) => Some(s)
-            None => dm_json_i64(v, "size")
+          let chunk_size = match dm_json_i64(v, "size") {
+            Some(sz) => sz
+            None => {
+              complete_deferred_mcp(
+                mcp_srv,
+                cb,
+                mcp_pending,
+                fs,
+                conn_id,
+                req_gen,
+                station_tools::error_reply("remote file.get reply missing size field"),
+              )
+              return
+            }
           }
-          match eff_size {
-            Some(sz) => {
-              if sz < 0L || sz > station_jobs::REMOTE_MAX_FILE {
-                let _ = (fs.remove_file)(part_path)
+          if chunk_size < 0L || chunk_size > station_jobs::REMOTE_MAX_FILE {
+            complete_deferred_mcp(
+              mcp_srv,
+              cb,
+              mcp_pending,
+              fs,
+              conn_id,
+              req_gen,
+              station_tools::error_reply("remote file exceeds 1 GiB limit"),
+            )
+            return
+          }
+          let eff_size = match expected_size {
+            Some(prev_sz) => {
+              if chunk_size != prev_sz {
                 complete_deferred_mcp(
                   mcp_srv,
                   cb,
                   mcp_pending,
+                  fs,
                   conn_id,
                   req_gen,
-                  station_tools::error_reply("remote file exceeds 1 GiB limit"),
+                  station_tools::error_reply("remote file size changed during download"),
                 )
                 return
               }
+              prev_sz
             }
-            None => ()
+            None => chunk_size
           }
           let b64_opt = match base_codec::json_get(v, "data") {
             Some(base_codec::Json::Str(s)) => Some(s)
             _ => None
           }
-          let is_eof_flag = match base_codec::json_get(v, "eof") {
+          let is_eof = match base_codec::json_get(v, "eof") {
             Some(base_codec::Json::Bool(true)) => true
             _ => false
           }
           let decoded = match b64_opt {
             None => {
-              let _ = (fs.remove_file)(part_path)
               complete_deferred_mcp(
                 mcp_srv,
                 cb,
                 mcp_pending,
+                fs,
                 conn_id,
                 req_gen,
                 station_tools::error_reply("remote file.get reply missing data field"),
@@ -1123,11 +1211,11 @@ fn pump_async_file_download_stream(
               match base64::decode(b64) {
                 Ok(b) => b
                 Err(_) => {
-                  let _ = (fs.remove_file)(part_path)
                   complete_deferred_mcp(
                     mcp_srv,
                     cb,
                     mcp_pending,
+                    fs,
                     conn_id,
                     req_gen,
                     station_tools::error_reply("invalid base64 chunk from remote station"),
@@ -1138,11 +1226,11 @@ fn pump_async_file_download_stream(
             }
           }
           if decoded.length() > station_jobs::REMOTE_CHUNK {
-            let _ = (fs.remove_file)(part_path)
             complete_deferred_mcp(
               mcp_srv,
               cb,
               mcp_pending,
+              fs,
               conn_id,
               req_gen,
               station_tools::error_reply("remote chunk exceeds maximum chunk size"),
@@ -1151,112 +1239,97 @@ fn pump_async_file_download_stream(
           }
           let next_off = offset + decoded.length().to_int64()
           if next_off > station_jobs::REMOTE_MAX_FILE {
-            let _ = (fs.remove_file)(part_path)
             complete_deferred_mcp(
               mcp_srv,
               cb,
               mcp_pending,
+              fs,
               conn_id,
               req_gen,
               station_tools::error_reply("downloaded file exceeds 1 GiB limit"),
             )
             return
           }
-          // Stream chunk directly to `.part` on disk (O_NOFOLLOW in `station_sys::write_at`, zero full-file RAM buffer).
-          if decoded.length() > 0 || offset == 0L {
-            match station_sys::write_at(part_path, offset, decoded, offset == 0L, None, None, false) {
-              Ok(_) => ()
-              Err(_) => {
-                let _ = (fs.remove_file)(part_path)
-                complete_deferred_mcp(
-                  mcp_srv,
-                  cb,
-                  mcp_pending,
-                  conn_id,
-                  req_gen,
-                  station_tools::error_reply("failed to write downloaded chunk to temp file"),
-                )
-                return
-              }
-            }
-          }
-          let reached_size = match eff_size {
-            Some(sz) => next_off >= sz
-            None => false
-          }
-          let is_eof = is_eof_flag || reached_size
-          if !is_eof && decoded.length() == 0 {
-            let _ = (fs.remove_file)(part_path)
+          if next_off > eff_size {
             complete_deferred_mcp(
               mcp_srv,
               cb,
               mcp_pending,
+              fs,
+              conn_id,
+              req_gen,
+              station_tools::error_reply("downloaded byte count exceeds remote file size"),
+            )
+            return
+          }
+          if !is_eof && decoded.length() == 0 {
+            complete_deferred_mcp(
+              mcp_srv,
+              cb,
+              mcp_pending,
+              fs,
               conn_id,
               req_gen,
               station_tools::error_reply("remote station returned empty chunk before EOF"),
             )
             return
           }
-          if is_eof {
-            match eff_size {
-              Some(sz) => {
-                if next_off != sz {
-                  let _ = (fs.remove_file)(part_path)
-                  complete_deferred_mcp(
-                    mcp_srv,
-                    cb,
-                    mcp_pending,
-                    conn_id,
-                    req_gen,
-                    station_tools::error_reply("downloaded byte count does not match remote file size"),
-                  )
-                  return
-                }
-              }
-              None => ()
-            }
-            let _ = station_sys::sync_file(part_path)
-            // Re-verify generation BEFORE atomic publish so a cancelled/timed-out request never publishes.
-            if !mcp_pending.is_active(conn_id, req_gen) {
-              let _ = (fs.remove_file)(part_path)
-              return
-            }
-            // Refuse to overwrite an existing local file!
-            match (fs.lstat)(local_path) {
-              Some(_) => {
-                let _ = (fs.remove_file)(part_path)
+          // Stream chunk directly to dirfd-anchored `.part` on disk (O_NOFOLLOW; fsync on explicit EOF with return check).
+          if decoded.length() > 0 || is_eof {
+            match station_sys::write_at_under_nofollow(ws_root, part_rel, offset, decoded, is_eof) {
+              Ok(()) => ()
+              Err(_) => {
                 complete_deferred_mcp(
                   mcp_srv,
                   cb,
                   mcp_pending,
+                  fs,
                   conn_id,
                   req_gen,
-                  station_tools::error_reply("local file already exists: downloads never overwrite an existing local file"),
+                  station_tools::error_reply("failed to write or sync downloaded chunk to temp file"),
                 )
                 return
               }
-              None => ()
             }
-            if !(fs.rename)(part_path, local_path) {
-              let _ = (fs.remove_file)(part_path)
+          }
+          if is_eof {
+            if next_off != eff_size {
               complete_deferred_mcp(
                 mcp_srv,
                 cb,
                 mcp_pending,
+                fs,
                 conn_id,
                 req_gen,
-                station_tools::error_reply("failed to publish downloaded file"),
+                station_tools::error_reply("downloaded byte count does not match remote file size"),
               )
               return
             }
-            mcp_pending.set_part_path(conn_id, req_gen, None)
-            let ok_json = base_codec::json_stringify(
-              base_codec::json_obj([
-                ("downloaded", base_codec::json_str(local_path)),
-                ("bytes", base_codec::json_int64(next_off)),
-              ]),
-            )
-            complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::text_reply(ok_json))
+            // Re-verify generation BEFORE atomic no-replace publish so a cancelled/timed-out request never publishes.
+            if !mcp_pending.is_active(conn_id, req_gen) {
+              return
+            }
+            // True atomic no-replace publish anchored under `ws_root` (POSIX linkat+unlinkat / Win32 MoveFileExW(0)).
+            match station_sys::publish_noreplace_under_nofollow(ws_root, part_rel, local_rel) {
+              Ok(()) => {
+                mcp_pending.set_part_location(conn_id, req_gen, None, None)
+                let ok_json = base_codec::json_stringify(
+                  base_codec::json_obj([
+                    ("downloaded", base_codec::json_str(local_path)),
+                    ("bytes", base_codec::json_int64(next_off)),
+                  ]),
+                )
+                complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::text_reply(ok_json))
+              }
+              Err(rc) => {
+                let msg = if rc == -7 {
+                  "local file already exists: downloads never overwrite an existing local file"
+                } else {
+                  "failed to publish downloaded file"
+                }
+                complete_deferred_mcp(mcp_srv, cb, mcp_pending, fs, conn_id, req_gen, station_tools::error_reply(msg))
+              }
+            }
           } else {
             pump_async_file_download_stream(
               ctx,
@@ -1271,10 +1344,12 @@ fn pump_async_file_download_stream(
               caller_session,
               task_key,
               remote_path,
+              ws_root,
+              local_rel,
               local_path,
-              part_path,
+              part_rel,
               next_off,
-              eff_size,
+              Some(eff_size),
             )
           }
         }

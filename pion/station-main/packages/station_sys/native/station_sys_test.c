@@ -2549,6 +2549,56 @@ int main(void) {
     assert(sts_selftest_verified_send_cancel() == 0);
     printf("  [PASS] verified_send cancel state machine selftest\n");
 
+    // Wave 17E-2A R3: dirfd-anchored exclusive create, positioned write+fsync, atomic no-replace publish, unlink.
+    {
+        char rdir[128], outside[256], sym_parent[256], existing[256], published[256];
+        make_temp_dir(rdir, sizeof(rdir));
+        snprintf(outside, sizeof(outside), "%s_outside", rdir);
+        assert(mkdir(outside, 0755) == 0);
+        snprintf(sym_parent, sizeof(sym_parent), "%s/symdir", rdir);
+        assert(symlink(outside, sym_parent) == 0);
+
+        assert(sts_create_excl_under_nofollow(rdir, "sub/file.part", 0600) == 0);
+        assert(sts_create_excl_under_nofollow(rdir, "sub/file.part", 0600) == -7);
+        assert(sts_create_excl_under_nofollow(rdir, "symdir/escape.part", 0600) == -5);
+        assert(sts_create_excl_under_nofollow(rdir, "../escape.part", 0600) == -5);
+
+        const uint8_t c1[] = "hello ";
+        const uint8_t c2[] = "world";
+        assert(sts_write_at_under_nofollow(rdir, "sub/file.part", c1, 6, 0, 0) == 0);
+        assert(sts_write_at_under_nofollow(rdir, "sub/file.part", c2, 5, 6, 1) == 0);
+
+        snprintf(existing, sizeof(existing), "%s/sub/existing.txt", rdir);
+        write_file_str(existing, "ORIGINAL");
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "sub/existing.txt") == -7);
+        int64_t rlen = 0;
+        int32_t rerr = 0;
+        char *orig_read = (char *)sts_read_file_strict(existing, &rlen, &rerr);
+        assert(orig_read != NULL && rerr == 0 && rlen == 8 && memcmp(orig_read, "ORIGINAL", 8) == 0);
+        sts_free(orig_read);
+
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "symdir/escape.txt") == -5);
+
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "sub/final.txt") == 0);
+        snprintf(published, sizeof(published), "%s/sub/final.txt", rdir);
+        rlen = 0;
+        rerr = 0;
+        char *fin_read = (char *)sts_read_file_strict(published, &rlen, &rerr);
+        assert(fin_read != NULL && rerr == 0 && rlen == 11 && memcmp(fin_read, "hello world", 11) == 0);
+        sts_free(fin_read);
+        assert(sts_unlink_under_nofollow(rdir, "sub/file.part") == -2);
+
+        assert(sts_unlink_under_nofollow(rdir, "sub/final.txt") == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/existing.txt") == 0);
+        char subdir[256];
+        snprintf(subdir, sizeof(subdir), "%s/sub", rdir);
+        assert(rmdir(subdir) == 0);
+        assert(unlink(sym_parent) == 0);
+        assert(rmdir(outside) == 0);
+        assert(rmdir(rdir) == 0);
+        printf("  [PASS] dirfd no-replace atomic publish (O_CREAT|O_EXCL, linkat+unlinkat, symlink/EEXIST guards)\n");
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 

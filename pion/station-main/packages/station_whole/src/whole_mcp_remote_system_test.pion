@@ -815,3 +815,60 @@ test "w17e2a async deferred McpPendingTable out-of-order settle, disconnect, and
   rs_assert(tbl.take_if_active(101, g1) is None, "double settle must be no-op")
   rs_assert(tbl.count() == 0, "expected 0 pending")
 }
+
+test "w17e2a_r3 WholeAgents live is_workspace_bound triggers UNBOUND_REFUSAL including self station_task" {
+  let fs = mem_job_fs_port(fn() -> Int64 { 1000L })
+  let cfg = WholeAgentsConfig::{
+    data_dir: "/tmp/w17e2a-r3-test",
+    assets_dir: "/tmp/w17e2a-r3-test/assets",
+    runner_bin: "/usr/bin/true",
+    mcp_port: 9999,
+    home_ws: "ws-1",
+  }
+  let agents = WholeAgents::new_with_deps(
+    cfg,
+    fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] {
+      let b = Bytes::new(n)
+      for i in 0..<n {
+        b[i] = (i % 251 + 1).to_byte()
+      }
+      Ok(b)
+    },
+  )
+  let _ = agents.register_adopted_token("sess-live", "tok-live")
+  let mut in_workspace = true
+  agents.is_workspace_bound = Some(fn(_sess : String) -> Bool { in_workspace })
+  let mut remote_called = 0
+  let handlers = station_tools::DomainHandlers::{
+    ..station_tools::default_domain_handlers(),
+    remote: fn(_s : String, _t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      remote_called = remote_called + 1
+      station_tools::text_reply("{\"tasks\":[]}")
+    },
+  }
+  let body_self = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"self\",\"action\":\"list\"}}}"
+  let ok_resp = agents.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:9999"),
+    None,
+    Some("Bearer tok-live"),
+    body_self,
+    handlers,
+  )
+  rs_assert(ok_resp.status == 200 && remote_called == 1, "bound station should execute station_task")
+  in_workspace = false
+  let ref_resp = agents.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:9999"),
+    None,
+    Some("Bearer tok-live"),
+    body_self,
+    handlers,
+  )
+  rs_assert(remote_called == 1, "unbound station must NOT execute remote handler")
+  rs_assert(ref_resp.body.contains("isError") && ref_resp.body.contains("Refused:"), "must return UNBOUND_REFUSAL")
+}

@@ -63,6 +63,8 @@ test "w17e2a_r2 wire payloads: task.start spec, task.collected release, login.ca
     peer_name: "build-1",
     action: "start",
     args: base_codec::json_obj([("station", base_codec::json_str("build-1")), ("action", base_codec::json_str("start")), ("key", base_codec::json_str("k1"))]),
+    ws_root: "",
+    local_rel: "",
     local_path: "",
     file_size: 0L,
     remote_path: "",
@@ -72,6 +74,12 @@ test "w17e2a_r2 wire payloads: task.start spec, task.collected release, login.ca
     chat_title: Some("Build Chat"),
     prepared_spec: Some(station_whole::PreparedTaskSpec::{ key: "k1", name: "compile", command: "make -j4", screen: false, small: true }),
   }
+  let prep_intent = station_whole::DeferredMcpIntent::{ ..start_intent, action: "prepare" }
+  let prep_s = base_codec::json_stringify(build_remote_task_rpc_payload(prep_intent))
+  r2_assert(prep_s.contains("\"method\":\"task.prepare\""), "prepare must emit task.prepare")
+  r2_assert(prep_s.contains("\"spec\":{"), "task.prepare must carry spec object")
+  r2_assert(prep_s.contains("\"command\":\"make -j4\""), "task.prepare spec must carry command")
+
   let start_rpc = build_remote_task_rpc_payload(start_intent)
   let start_s = base_codec::json_stringify(start_rpc)
   r2_assert(start_s.contains("\"method\":\"task.start\""), "must emit task.start")
@@ -197,6 +205,21 @@ test "w17e2a_r2 McpServer indirect station_tool routing, UNBOUND_REFUSAL, and un
     None => panic("expected deferred intent from indirect station_tool")
   }
 
+  // 1b. Remote `station_task prepare` captures a deferred intent with `action == "prepare"` and `prepared_spec` (real cross-station handshake)!
+  let body_prep = "{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-ok\",\"action\":\"prepare\",\"key\":\"k-prep\",\"command\":\"echo hi\",\"name\":\"hello\"}}}"
+  cap.reset_for_request(102, extract_mcp_rpc_id(body_prep))
+  let _ = mcp.handle("POST", Some("Bearer tok-1"), body_prep, make_host(true))
+  match cap.take_pending() {
+    Some(intent) => {
+      r2_assert(intent.conn_id == 102 && intent.action == "prepare" && intent.task_key == "k-prep", "remote prepare must defer task.prepare RPC")
+      match intent.prepared_spec {
+        Some(sp) => r2_assert(sp.command == "echo hi" && sp.name == "hello", "remote prepare intent must carry prepared_spec")
+        None => panic("expected prepared_spec on remote prepare intent")
+      }
+    }
+    None => panic("expected deferred intent for remote station_task prepare")
+  }
+
   // 2. When unbound (`bound = false`), `UNBOUND_REFUSAL` blocks BEFORE capturing any deferred intent!
   cap.reset_for_request(100, extract_mcp_rpc_id(body_indirect))
   let unbound_rep = mcp.handle("POST", Some("Bearer tok-1"), body_indirect, make_host(false))
@@ -247,4 +270,22 @@ test "w17e2a_r2 LoginsManager::start_words preserves argv boundaries and isolate
     Err(e) => panic("start_words ws2 failed: " + e.message)
   }
   r2_assert(v2.id != v1.id, "different workspace must NOT share login id")
+}
+
+test "w17e2a_r3 McpPendingTable owns upload_fd and dirfd part_location across abort paths" {
+  let tbl = station_whole::McpPendingTable::new()
+  let g1 = tbl.register(10, base_codec::json_int(1), "s1", "ws1", "station_file", 100L)
+  r2_assert(tbl.set_upload_fd(10, g1, Some(42L)), "set_upload_fd active")
+  r2_assert(tbl.get_upload_fd(10, g1) == Some(42L), "get_upload_fd active")
+  r2_assert(!tbl.set_upload_fd(10, g1 + 99L, Some(99L)), "stale generation rejected")
+  match tbl.on_conn_closed(10) {
+    Some(req) => r2_assert(req.upload_fd == Some(42L), "on_conn_closed returns upload_fd for closing")
+    None => panic("expected pending req on disconnect")
+  }
+  r2_assert(tbl.get_upload_fd(10, g1) is None, "closed entry no longer active")
+
+  let g2 = tbl.register(11, base_codec::json_int(2), "s1", "ws1", "station_file", 100L, timeout_ms=50L)
+  tbl.set_part_location(11, g2, Some("/tmp/ws"), Some("sub/a.part"))
+  let exp = tbl.sweep_expired(160L)
+  r2_assert(exp.length() == 1 && exp[0].part_root == Some("/tmp/ws") && exp[0].part_rel == Some("sub/a.part"), "expired returns part_location")
 }

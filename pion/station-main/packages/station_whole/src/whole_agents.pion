@@ -254,6 +254,7 @@ pub struct WholeAgents {
   pub mcp : station_tools::McpServer
   pub jobs : station_jobs::JobManager
   pub mut bound_to_workspace : Bool
+  pub mut is_workspace_bound : Option[(String) -> Bool]
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   pub active_adopted_instances : Map[String, Bool]
@@ -293,6 +294,7 @@ pub fn WholeAgents::new_with_deps(
     mcp: station_tools::McpServer::new(),
     jobs: jobs,
     bound_to_workspace: true,
+    is_workspace_bound: None,
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     active_adopted_instances: Map::new(),
@@ -3626,9 +3628,13 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
   let tools_host = station_tools::ToolsHost::{
     resolve_token: fn(tok : String) -> Option[String] { self.resolve_token_ct(tok) },
     call_context: fn(session : String) -> station_tools::CallContext {
+      let bound = match self.is_workspace_bound {
+        Some(f) => f(session)
+        None => self.bound_to_workspace
+      }
       station_tools::CallContext::{
         session: session,
-        unbound_reason: if self.bound_to_workspace {
+        unbound_reason: if bound {
           None
         } else {
           Some(station_tools::UNBOUND_REFUSAL)
