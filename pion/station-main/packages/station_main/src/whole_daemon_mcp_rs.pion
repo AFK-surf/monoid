@@ -1,0 +1,1238 @@
+// Wave 17E-2A: Production daemon wiring for `DomainHandlers.remote` + `DomainHandlers.system`
+// and non-blocking async deferred `/mcp` HTTP state machine (zero `host_shim::wait`).
+//
+// Isolated into its own file to minimize merge conflicts with parallel Wave 17E-1 work.
+
+import "base64"
+import "base_codec"
+import "host_shim"
+import "http1"
+import "jscase"
+import "nodepath"
+import "sql_db"
+import "station_cloud"
+import "station_devices"
+import "station_http"
+import "station_jobs"
+import "station_mesh"
+import "station_replica"
+import "station_rig"
+import "station_store"
+import "station_sys"
+import "station_tools"
+import "station_whole"
+
+fn dm_bytes_to_hex(b : Bytes) -> String {
+  let hex = "0123456789abcdef".to_bytes()
+  let out = Bytes::new(b.length() * 2)
+  for i in 0..<b.length() {
+    let v = b[i].to_int() & 0xFF
+    out[i * 2] = hex[(v >> 4) & 0xF]
+    out[i * 2 + 1] = hex[v & 0xF]
+  }
+  out.to_string()
+}
+
+fn dm_json_str(j : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s.trim()
+    _ => ""
+  }
+}
+
+fn dm_json_int(j : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.to_int())
+    _ => None
+  }
+}
+
+fn dm_json_i64(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+    _ => None
+  }
+}
+
+fn dm_json_num(j : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d)
+    _ => None
+  }
+}
+
+/// Build the workspace-scoped station list for `caller_ws` from live `CloudStore` + local telemetry.
+pub fn build_daemon_station_peers(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  caller_ws : String,
+) -> Array[station_whole::McpStationPeer] {
+  let out : Array[station_whole::McpStationPeer] = []
+  let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+  let mut self_cores = 0
+  let mut self_load : Option[Double] = None
+  let mut self_free_mem : Option[Int64] = None
+  let mut self_free_disk : Option[Int64] = None
+  match base_codec::json_parse(station_sys::machine_stats_json()) {
+    base_codec::JsonParseResult::Ok(mj) => {
+      match dm_json_int(mj, "cores") {
+        Some(c) => self_cores = c
+        None => ()
+      }
+      self_load = dm_json_num(mj, "load1")
+      self_free_mem = dm_json_i64(mj, "freeMem")
+    }
+    _ => ()
+  }
+  match station_sys::disk_of_json(ctx.data) {
+    Some(dj_str) => {
+      match base_codec::json_parse(dj_str) {
+        base_codec::JsonParseResult::Ok(dj) => {
+          self_free_disk = dm_json_i64(dj, "free")
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let mut self_name = station_sys::hostname()
+  if self_name.length() == 0 {
+    self_name = "this station"
+  }
+  let mem_opt = ctx.cloud.membership(caller_ws, now_secs)
+  match mem_opt {
+    Some(m) => {
+      if m.name.length() > 0 {
+        self_name = m.name
+      }
+    }
+    None => ()
+  }
+  let running_jobs = core.agents.jobs.list().length()
+  let self_ver = if core.config.station_build.length() > 0 { Some(core.config.station_build) } else { None }
+  out.push(
+    station_whole::McpStationPeer::{
+      id: ctx.station_key.id,
+      name: self_name,
+      workspace: caller_ws,
+      is_self: true,
+      mode: "whole",
+      owner_sub: "",
+      owner_email: "",
+      owner_name: "",
+      rig_open: false,
+      unprotected_why: None,
+      version: self_ver,
+      cores: self_cores,
+      arch: station_sys::arch_name(),
+      os: station_sys::os_name(),
+      cpu_busy: None,
+      load_1m: self_load,
+      free_mem_bytes: self_free_mem,
+      free_disk_bytes: self_free_disk,
+      running_jobs: running_jobs,
+      relay_ping_ms: None,
+    },
+  )
+  match mem_opt {
+    Some(m) => {
+      let seen : Map[String, Bool] = Map::new()
+      seen.set(ctx.station_key.id, true)
+      for i in 0..<m.peers.length() {
+        let pj = m.peers[i]
+        let pid = dm_json_str(pj, "id")
+        if pid.length() == 0 || seen.contains(pid) {
+          continue
+        }
+        seen.set(pid, true)
+        let pname = dm_json_str(pj, "name")
+        let pver = match base_codec::json_get(pj, "version") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+          _ => None
+        }
+        out.push(
+          station_whole::McpStationPeer::{
+            id: pid,
+            name: if pname.length() > 0 { pname } else { pid },
+            workspace: caller_ws,
+            is_self: false,
+            mode: "whole",
+            owner_sub: "",
+            owner_email: "",
+            owner_name: "",
+            rig_open: false,
+            unprotected_why: None,
+            version: pver,
+            cores: 0,
+            arch: "",
+            os: "",
+            cpu_busy: None,
+            load_1m: None,
+            free_mem_bytes: None,
+            free_disk_bytes: None,
+            running_jobs: 0,
+            relay_ping_ms: None,
+          },
+        )
+      }
+      match m.rigs {
+        Some(rigs) => {
+          for i in 0..<rigs.length() {
+            let r = rigs[i]
+            if r.id.length() == 0 || seen.contains(r.id) {
+              continue
+            }
+            seen.set(r.id, true)
+            out.push(
+              station_whole::McpStationPeer::{
+                id: r.id,
+                name: if r.name.length() > 0 { r.name } else { r.id },
+                workspace: caller_ws,
+                is_self: false,
+                mode: "tasks",
+                owner_sub: r.owner,
+                owner_email: r.owner_email,
+                owner_name: r.owner_name,
+                rig_open: false,
+                unprotected_why: None,
+                version: r.version,
+                cores: 0,
+                arch: "",
+                os: "",
+                cpu_busy: None,
+                load_1m: None,
+                free_mem_bytes: None,
+                free_disk_bytes: None,
+                running_jobs: 0,
+                relay_ping_ms: None,
+              },
+            )
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+/// Build a production `station_rig::RigRequests` backed by SQLite + mesh tells.
+pub fn build_daemon_rig_requests(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+) -> station_rig::RigRequests {
+  let deps = station_rig::RequestsDeps::{
+    self_station: fn() -> String { ctx.station_key.id },
+    now_ms: host_shim::wall_ms,
+    session_archived: fn(sess : String) -> Bool {
+      match core.store.require_open() {
+        Ok(st) => match st.get_session(sess) {
+          Ok(Some(row)) => row.archived_at is Some(_)
+          _ => true
+        }
+        Err(_) => true
+      }
+    },
+    session_chat: fn(sess : String) -> Option[String] {
+      match core.store.require_open() {
+        Ok(st) => match st.db.first(
+          "SELECT channel, thread_ts FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+          [base_codec::json_str(sess)],
+        ) {
+          Ok(Some(row)) => {
+            let ch = match row.get("channel") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let tts = match row.get("thread_ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            if ch.length() > 0 && tts.length() > 0 { Some(ch + "/" + tts) } else { Some(sess) }
+          }
+          _ => Some(sess)
+        }
+        Err(_) => None
+      }
+    },
+    session_starter: fn(sess : String) -> Option[String] {
+      match core.store.require_open() {
+        Ok(st) => match st.db.first(
+          "SELECT created_by FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+          [base_codec::json_str(sess)],
+        ) {
+          Ok(Some(row)) => match row.get("created_by") {
+            Some(base_codec::Json::Str(s)) => Some(s)
+            _ => None
+          }
+          _ => None
+        }
+        Err(_) => None
+      }
+    },
+    chat_title: fn(sess : String, _chat : String) -> Option[String] {
+      match core.store.require_open() {
+        Ok(st) => match st.db.first(
+          "SELECT title FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+          [base_codec::json_str(sess)],
+        ) {
+          Ok(Some(row)) => match row.get("title") {
+            Some(base_codec::Json::Str(s)) => Some(s)
+            _ => None
+          }
+          _ => None
+        }
+        Err(_) => None
+      }
+    },
+    next_id: fn() -> String {
+      match station_sys::random_bytes(8) {
+        Ok(b) => "rr_" + dm_bytes_to_hex(b)
+        Err(_) => "rr_" + host_shim::wall_ms().to_string()
+      }
+    },
+    bring: fn(r : station_rig::RigRequest) -> Result[Int64, station_rig::BringError] {
+      let req_json = base_codec::json_obj([
+        ("method", base_codec::json_str("rig.grant")),
+        ("workspace", base_codec::json_str(r.ws)),
+        ("request", base_codec::json_str(r.id)),
+      ])
+      ctx.enqueue_tell(r.rig, r.ws, req_json)
+      Ok(host_shim::wall_ms() / 1000L + r.timeout.seconds)
+    },
+    release_remote: fn(r : station_rig::RigRequest, _rev) -> Unit {
+      let req_json = base_codec::json_obj([
+        ("method", base_codec::json_str("rig.release")),
+        ("workspace", base_codec::json_str(r.ws)),
+        ("request", base_codec::json_str(r.id)),
+      ])
+      ctx.enqueue_tell(r.rig, r.ws, req_json)
+    },
+    notify: fn(sess : String, text : String) -> Unit {
+      match core.store.require_open() {
+        Ok(st) => match st.db.first(
+          "SELECT id FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+          [base_codec::json_str(sess)],
+        ) {
+          Ok(Some(row)) => {
+            let tid = match row.get("id") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            if tid > 0L {
+              let _ = st.insert_message(
+                station_store::NewMessage::{
+                  thread: tid,
+                  ts: None,
+                  author_kind: "station",
+                  author: "station",
+                  agent_identity: None,
+                  text: Some(text),
+                  attachments: None,
+                  quotes: None,
+                  declared: None,
+                  client: None,
+                  card: None,
+                  options: None,
+                  proposal: None,
+                  at: host_shim::wall_ms(),
+                },
+              )
+            }
+          }
+          _ => ()
+        }
+        Err(_) => ()
+      }
+    },
+    told: fn(r : station_rig::RigRequest) -> Unit {
+      match r.status {
+        station_rig::RequestStatus::Pending => {
+          match core.store.require_open() {
+            Ok(st) => match st.db.first(
+              "SELECT id FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+              [base_codec::json_str(r.session)],
+            ) {
+              Ok(Some(row)) => {
+                let tid = match row.get("id") {
+                  Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                  _ => 0L
+                }
+                if tid > 0L {
+                  let card = base_codec::json_obj([
+                    ("type", base_codec::json_str("rig")),
+                    ("assignee", base_codec::json_str(r.owner_email)),
+                    ("request", base_codec::json_str(r.id)),
+                    ("rig", base_codec::json_str(r.rig)),
+                    ("rigName", base_codec::json_str(r.rig_name)),
+                    ("reason", base_codec::json_str(r.reason)),
+                  ])
+                  let _ = st.insert_message(
+                    station_store::NewMessage::{
+                      thread: tid,
+                      ts: None,
+                      author_kind: "station",
+                      author: "station",
+                      agent_identity: None,
+                      text: Some("Request to use tasks-only station " + r.rig_name + ": " + r.reason),
+                      attachments: None,
+                      quotes: None,
+                      declared: None,
+                      client: None,
+                      card: Some(base_codec::json_stringify(card)),
+                      options: None,
+                      proposal: None,
+                      at: host_shim::wall_ms(),
+                    },
+                  )
+                }
+              }
+              _ => ()
+            }
+            Err(_) => ()
+          }
+        }
+        _ => ()
+      }
+    },
+  }
+  station_rig::RigRequests::new(deps)
+}
+
+/// Build a production `station_mesh::WaysStore` seeded from `CloudStore`.
+pub fn build_daemon_ways_store(ctx : DaemonCtx) -> station_mesh::WaysStore {
+  let still_fail : Array[String] = []
+  let mut insecure = false
+  match ctx.cloud.state {
+    Some(cs) => {
+      if cs.relay_url.length() > 0 {
+        still_fail.push(cs.relay_url)
+      }
+      if cs.origin.starts_with("http://") {
+        insecure = true
+      }
+    }
+    None => ()
+  }
+  station_mesh::WaysStore::new(ctx.station_key.id, still_fail, insecure=insecure)
+}
+
+/// Build a read-only `MoveScheduler` populated from SQLite chats in `ws` (`plan`/`status` work;
+/// `move`/`back` honestly report unavailable until remote move executor is wired).
+pub fn build_daemon_move_scheduler(core : station_whole::WholeCore) -> Option[station_replica::MoveScheduler] {
+  let chats_mod = station_replica::MoveModule::{
+    id: "chats",
+    needs: [],
+    plan: fn(ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] {
+      let st = match core.store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(e)
+      }
+      let items : Array[station_replica::MoveItem] = []
+      match st.db.all(
+        "SELECT key, archived_at FROM sessions WHERE COALESCE(ws, ?1) = ?2 ORDER BY last_active_at DESC LIMIT 500",
+        [base_codec::json_str(core.config.home_workspace), base_codec::json_str(ws)],
+      ) {
+        Ok(rows) => {
+          for i in 0..<rows.length() {
+            let k = match rows[i].get("key") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => ""
+            }
+            if k.length() == 0 {
+              continue
+            }
+            items.push(
+              station_replica::MoveItem::{
+                module_id: "chats",
+                id: k,
+                label: k,
+                needs: [],
+                cannot: None,
+                again: false,
+                size: None,
+                leaves: None,
+              },
+            )
+          }
+        }
+        Err(e) => return Err(e.message)
+      }
+      Ok(items)
+    },
+    move_item: fn(_item : station_replica::MoveItem, _to : String, _waits : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      Err("remote move execution is not wired yet on the Pion engine")
+    },
+    back_item: fn(_item : station_replica::MoveItem, _from : String, _waits : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      Err("remote move execution is not wired yet on the Pion engine")
+    },
+    state: fn(_item : station_replica::MoveItem) -> station_replica::MoveItemStateKind {
+      station_replica::MoveItemStateKind::Here
+    },
+    usable_here: fn(_item : station_replica::MoveItem) -> Bool { true },
+    usable_there: fn(_item : station_replica::MoveItem) -> Bool { false },
+    can_lend: fn(_item : station_replica::MoveItem) -> Bool { false },
+    lend: fn(_item : station_replica::MoveItem, _to : String, _for_items : Array[station_replica::MoveNeed]) -> Result[Unit, String] {
+      Err("lending is not supported for chats")
+    },
+    left: fn(_returned : Array[station_replica::MoveNeed]) -> Result[Unit, String] { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_item : station_replica::MoveItem, _waits : station_replica::MoveWaits) -> Result[Unit, String] { Ok(()) },
+    resume_item: fn(_item : station_replica::MoveItem) -> Result[Unit, String] { Ok(()) },
+    abandon: fn() -> Unit { () },
+  }
+  match station_replica::MoveScheduler::new([chats_mod]) {
+    Ok(s) => Some(s)
+    Err(_) => None
+  }
+}
+
+fn ways_to_mcp_view(ways : station_mesh::WaysStore, ws : String) -> station_whole::McpRelaysView {
+  let v = ways.view(ws)
+  let own : Array[station_whole::McpRelayEntry] = []
+  for i in 0..<v.relays.length() {
+    own.push(station_whole::McpRelayEntry::{ url: v.relays[i].url, by: v.relays[i].by })
+  }
+  station_whole::McpRelaysView::{
+    workspace: ws,
+    own: own,
+    still_fail: ways.stillfail_relays,
+    off: v.off,
+    mesh: None,
+  }
+}
+
+/// Wire `core.agents.remote_system_port` for synchronous/local tool paths.
+pub fn wire_daemon_mcp_remote_system(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  logins : station_whole::LoginsOsRuntime,
+  ways : station_mesh::WaysStore,
+  rig_requests : station_rig::RigRequests,
+  move_sched : Option[station_replica::MoveScheduler],
+) -> Unit {
+  let port = station_whole::McpRemoteSystemPort::{
+    station_id: fn() -> String { ctx.station_key.id },
+    station_build: fn() -> String { core.config.station_build },
+    station_channel: fn() -> Option[String] {
+      match base_codec::json_get(ctx.cfg_raw, "updateChannel") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
+    },
+    list_stations: fn(ws : String) -> Array[station_whole::McpStationPeer] {
+      build_daemon_station_peers(ctx, core, ws)
+    },
+    list_sandboxes: fn() -> Array[station_whole::McpSandboxInfo] { [] },
+    rig_requests: Some(rig_requests),
+    dispatch_remote_task: fn(ws : String, session : String, target : String, action : String, args : base_codec::Json) -> Result[base_codec::Json, String] {
+      // Local self execution uses `core.remote` directly; remote stations are dispatched
+      // asynchronously via `try_dispatch_deferred_mcp_call` before reaching this fallback.
+      if target == ctx.station_key.id {
+        return dispatch_local_remote_task(core.remote, ws, ctx.station_key.id, session, action, args)
+      }
+      Err("remote station_task must run asynchronously via deferred MCP dispatcher")
+    },
+    dispatch_remote_file: fn(_ws : String, _session : String, target : String, _key : String, dir : String, _rpath : String, _lpath : String) -> Result[base_codec::Json, String] {
+      Err("remote station_file (" + dir + " to " + target + ") must run asynchronously via deferred MCP dispatcher")
+    },
+    forward_list: fn(_sess : String) -> Array[station_whole::McpPeerForwardEntry] { [] },
+    forward_open: fn(_ws : String, _sess : String, target : String, _name : String, _port : Int, _lport : Option[Int], _job : Option[String]) -> Result[station_whole::McpPeerForwardEntry, String] {
+      Err("outbound peer_forward listener to " + target + " is not yet wired on the Pion engine (use $STILLFAIL_PEER_HTTP for HTTP APIs)")
+    },
+    forward_close: fn(_sess : String, port : Int) -> Result[station_whole::McpPeerForwardEntry, String] {
+      Err("no forwarded port " + port.to_string() + " for this session")
+    },
+    logins: Some(station_whole::McpLoginsPort::from_os_runtime(logins)),
+    login_link: fn(_sess : String, _id : String) -> Option[String] { None },
+    remote_login: None,
+    relays_list: fn(ws : String) -> Result[station_whole::McpRelaysView, String] {
+      Ok(ways_to_mcp_view(ways, ws))
+    },
+    relays_add: fn(_ws : String, _url : String, _by : String, _now : Int64) -> Result[(String, Int, station_whole::McpRelaysView), String] {
+      Err("relays add requires asynchronous HTTP probe via deferred MCP dispatcher")
+    },
+    relays_remove: fn(ws : String, raw_url : String, now_ms : Int64) -> Result[(String, station_whole::McpRelaysView), String] {
+      match ways.remove_relay(ws, raw_url, now_ms) {
+        Ok(_) => {
+          let norm = match station_mesh::validate_relay_url(raw_url, insecure=true) {
+            Some(u) => u
+            None => raw_url
+          }
+          Ok((norm, ways_to_mcp_view(ways, ws)))
+        }
+        Err(e) => Err("not removed: " + e)
+      }
+    },
+    relays_enroll: None,
+    relays_revoke: None,
+    move_scheduler: move_sched,
+    move_has_executor: false,
+    update_trigger: None,
+    feedback_send: None,
+    feedback_reply: None,
+    fs: core.agents.jobs.fs,
+  }
+  core.agents.remote_system_port = Some(port)
+}
+
+fn dispatch_local_remote_task(
+  remote : station_jobs::RemoteManager,
+  ws : String,
+  station_id : String,
+  session : String,
+  action : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let key = dm_json_str(args, "key")
+  let now = host_shim::wall_ms()
+  if action == "list" {
+    let tasks = remote.list_scoped(ws, station_id, session)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<tasks.length() {
+      arr.push(
+        base_codec::json_obj([
+          ("key", base_codec::json_str(tasks[i].key)),
+          ("name", base_codec::json_str(tasks[i].name)),
+          ("state", base_codec::json_str(station_jobs::remote_task_state_str(tasks[i].state))),
+        ]),
+      )
+    }
+    return Ok(base_codec::json_obj([("tasks", base_codec::json_arr(arr))]))
+  }
+  if action == "mirrors" {
+    let ms = remote.mirrors_scoped(ws, station_id, session)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<ms.length() {
+      arr.push(
+        base_codec::json_obj([
+          ("name", base_codec::json_str(ms[i].name)),
+          ("state", base_codec::json_str(station_jobs::mirror_state_str(ms[i].state))),
+        ]),
+      )
+    }
+    return Ok(base_codec::json_obj([("mirrors", base_codec::json_arr(arr))]))
+  }
+  if action == "clean" {
+    let mname = dm_json_str(args, "mirror")
+    match remote.clean_mirror_scoped(ws, station_id, session, mname) {
+      Ok(_) => return Ok(base_codec::json_obj([("cleaned", base_codec::json_str(mname))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "get" {
+    match remote.get_scoped(ws, station_id, session, key) {
+      Some(t) => return Ok(
+        base_codec::json_obj([
+          ("key", base_codec::json_str(t.key)),
+          ("name", base_codec::json_str(t.name)),
+          ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state))),
+        ]),
+      )
+      None => return Err("unknown task " + key)
+    }
+  }
+  if action == "log" {
+    let lines = match dm_json_int(args, "lines") {
+      Some(l) => l
+      None => 100
+    }
+    match remote.log_scoped(ws, station_id, session, key, lines) {
+      Ok(txt) => return Ok(base_codec::json_obj([("log", base_codec::json_str(txt))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "stop" {
+    match remote.stop_scoped(ws, station_id, session, key, now) {
+      Ok(t) => return Ok(base_codec::json_obj([("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state)))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "release" {
+    match remote.release_scoped(ws, station_id, session, key) {
+      Ok(t) => return Ok(base_codec::json_obj([("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state)))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "prepare" {
+    let cmd = dm_json_str(args, "command")
+    let name = dm_json_str(args, "name")
+    let dir_s = dm_json_str(args, "dir")
+    let dir_opt = if dir_s.length() > 0 { Some(dir_s) } else { None }
+    let screen = match base_codec::json_get(args, "screen") {
+      Some(base_codec::Json::Bool(true)) => true
+      _ => false
+    }
+    let small = match base_codec::json_get(args, "small") {
+      Some(base_codec::Json::Bool(true)) => true
+      _ => false
+    }
+    let back : Array[String] = []
+    match base_codec::json_get(args, "back") {
+      Some(base_codec::Json::Arr(xs)) => {
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(s) => back.push(s)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let prep = station_jobs::RemotePrepareRequest::{
+      key: key,
+      workspace: ws,
+      source_station: station_id,
+      source_session: session,
+      name: name,
+      command: cmd,
+      mirror_name: dir_opt,
+      back_paths: back,
+      screen: screen,
+      small: small,
+    }
+    match remote.prepare_scoped(prep, now) {
+      Ok(t) => return Ok(base_codec::json_obj([("key", base_codec::json_str(t.key)), ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state)))]))
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "start" {
+    match remote.start_scoped(ws, station_id, session, key, now) {
+      Ok(t) => return Ok(base_codec::json_obj([("key", base_codec::json_str(t.key)), ("state", base_codec::json_str(station_jobs::remote_task_state_str(t.state)))]))
+      Err(e) => return Err(e)
+    }
+  }
+  Err("unsupported action: " + action)
+}
+
+// ---------------------------------------------------------------------------
+// Non-blocking Async Deferred `/mcp` Dispatcher (uses `HandlerAction::Defer`)
+// ---------------------------------------------------------------------------
+
+fn complete_deferred_mcp(
+  mcp_srv : station_http::HttpServer,
+  mcp_cb : station_http::ServerCallbacks,
+  mcp_pending : station_whole::McpPendingTable,
+  conn_id : Int,
+  req_gen : Int64,
+  reply : station_tools::ToolReply,
+) -> Unit {
+  match mcp_pending.take_if_active(conn_id, req_gen) {
+    Some(p) => {
+      let body_str = station_whole::encode_mcp_tool_jsonrpc(p.rpc_id, reply)
+      let resp = station_http::HttpResponse::json(200, body_str)
+      let _ = mcp_srv.respond_with_callbacks(conn_id, station_http::HandlerAction::Respond(resp), mcp_cb)
+    }
+    None => ()
+  }
+}
+
+/// Complete any timed-out deferred `/mcp` requests (called from `on_tick`).
+pub fn sweep_expired_mcp_pending(
+  mcp_srv : station_http::HttpServer,
+  mcp_cb : station_http::ServerCallbacks,
+  mcp_pending : station_whole::McpPendingTable,
+  now_ms : Int64,
+) -> Unit {
+  let expired = mcp_pending.sweep_expired(now_ms)
+  for i in 0..<expired.length() {
+    let p = expired[i]
+    let reply = station_tools::error_reply("MCP tool " + p.tool + " timed out waiting for remote response")
+    let body_str = station_whole::encode_mcp_tool_jsonrpc(p.rpc_id, reply)
+    let resp = station_http::HttpResponse::json(200, body_str)
+    let _ = mcp_srv.respond_with_callbacks(p.conn_id, station_http::HandlerAction::Respond(resp), mcp_cb)
+  }
+}
+
+/// Attempt to handle an asynchronous cross-station `/mcp` `tools/call` without blocking the loop.
+/// Returns `true` iff the request was accepted as `HandlerAction::Defer` (caller MUST return `Defer`).
+/// Returns `false` to fall through to synchronous `core.handle_mcp_http(...)` (including all auth,
+/// readiness, origin, validation, and local tool paths).
+pub fn try_dispatch_deferred_mcp_call(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  mcp_srv : station_http::HttpServer,
+  mcp_cb_cell : Array[Option[station_http::ServerCallbacks]],
+  mcp_pending : station_whole::McpPendingTable,
+  conn_id : Int,
+  host_hdr : Option[String],
+  origin_hdr : Option[String],
+  auth_hdr : Option[String],
+  req_body : String,
+) -> Bool {
+  if !core.ready || core.shut_down {
+    return false
+  }
+  let cb = match mcp_cb_cell[0] {
+    Some(c) => c
+    None => return false
+  }
+  if station_tools::check_local_origin(host_hdr, origin_hdr, [core.agents.config.mcp_port]) is Some(_) {
+    return false
+  }
+  // Authenticate Bearer token BEFORE inspecting tool params (zero unauthenticated oracle).
+  let caller_session = match auth_hdr {
+    Some(ah) => {
+      let tr = ah.trim()
+      if tr.starts_with("Bearer ") || tr.starts_with("bearer ") {
+        let tok_bytes = tr.to_bytes()
+        let sub = Bytes::new(tok_bytes.length() - 7)
+        for i in 7..<tok_bytes.length() {
+          sub[i - 7] = tok_bytes[i]
+        }
+        match core.agents.resolve_token_ct(sub.to_string().trim()) {
+          Some(s) => s
+          None => return false
+        }
+      } else {
+        return false
+      }
+    }
+    None => return false
+  }
+  let rpc_obj = match base_codec::json_parse(req_body) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return false
+  }
+  if dm_json_str(rpc_obj, "method") != "tools/call" {
+    return false
+  }
+  let rpc_id = match base_codec::json_get(rpc_obj, "id") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let params = match base_codec::json_get(rpc_obj, "params") {
+    Some(p) => p
+    None => return false
+  }
+  let tool_name = dm_json_str(params, "name")
+  if tool_name != "station_task" && tool_name != "station_file" && tool_name != "login" {
+    return false
+  }
+  let args = match base_codec::json_get(params, "arguments") {
+    Some(a) => a
+    None => base_codec::json_obj([])
+  }
+  let st_db = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let caller_ws = match st_db.get_session(caller_session) {
+    Ok(Some(srow)) => match srow.ws {
+      Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
+      None => core.config.home_workspace
+    }
+    _ => return false
+  }
+  let rs_port = match core.agents.remote_system_port {
+    Some(p) => p
+    None => return false
+  }
+  let target_name = dm_json_str(args, "station")
+  if target_name.length() == 0 {
+    return false
+  }
+  let stations = (rs_port.list_stations)(caller_ws)
+  let peer = match station_whole::resolve_ws_station(stations, caller_ws, target_name) {
+    Some(p) => p
+    None => return false
+  }
+  // Only defer when calling ANOTHER station over the mesh!
+  if peer.is_self || peer.unprotected_why is Some(_) {
+    return false
+  }
+  let now_ms = host_shim::wall_ms()
+
+  if tool_name == "station_task" {
+    let action = dm_json_str(args, "action")
+    if action != "prepare" && action != "start" && action != "get" && action != "log" &&
+    action != "stop" && action != "release" && action != "list" && action != "mirrors" &&
+    action != "clean" {
+      return false
+    }
+    if (action == "prepare" || action == "start" || action == "get" || action == "log" ||
+      action == "stop" || action == "release") && dm_json_str(args, "key").length() == 0 {
+      return false
+    }
+    if action == "prepare" && dm_json_str(args, "command").length() == 0 {
+      return false
+    }
+    if action == "clean" && dm_json_str(args, "mirror").length() == 0 {
+      return false
+    }
+    if action == "prepare" || action == "start" || action == "release" || action == "clean" {
+      match station_whole::check_rig_access(rs_port, peer, caller_session, caller_ws) {
+        Ok(()) => ()
+        Err(_) => return false
+      }
+    }
+    let rpc_fields : Array[(String, base_codec::Json)] = [
+      ("method", base_codec::json_str("task." + action)),
+      ("workspace", base_codec::json_str(caller_ws)),
+      ("session", base_codec::json_str(caller_session)),
+    ]
+    match args {
+      base_codec::Json::Obj(kvs) => {
+        for i in 0..<kvs.length() {
+          let (k, v) = kvs[i]
+          if k != "station" && k != "action" && k != "method" && k != "workspace" && k != "session" {
+            rpc_fields.push((k, v))
+          }
+        }
+      }
+      _ => ()
+    }
+    let req_gen = mcp_pending.register(conn_id, rpc_id, caller_session, caller_ws, "station_task", now_ms)
+    ctx.ask_peer_rpc(
+      peer.id,
+      caller_ws,
+      base_codec::json_obj(rpc_fields),
+      fn(res : Result[base_codec::Json, String]) -> Unit {
+        let reply = match res {
+          Ok(v) => station_tools::text_reply(base_codec::json_stringify(v))
+          Err(e) => station_tools::error_reply(e)
+        }
+        complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, reply)
+      },
+    )
+    return true
+  }
+
+  if tool_name == "login" {
+    let rpc_fields : Array[(String, base_codec::Json)] = [
+      ("method", base_codec::json_str("login.tool")),
+      ("workspace", base_codec::json_str(caller_ws)),
+      ("session", base_codec::json_str(caller_session)),
+      ("args", args),
+    ]
+    let req_gen = mcp_pending.register(conn_id, rpc_id, caller_session, caller_ws, "login", now_ms)
+    ctx.ask_peer_rpc(
+      peer.id,
+      caller_ws,
+      base_codec::json_obj(rpc_fields),
+      fn(res : Result[base_codec::Json, String]) -> Unit {
+        let reply = match res {
+          Ok(base_codec::Json::Str(s)) => station_tools::text_reply(s)
+          Ok(v) => station_tools::text_reply(base_codec::json_stringify(v))
+          Err(e) => station_tools::error_reply(e)
+        }
+        complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, reply)
+      },
+    )
+    return true
+  }
+
+  if tool_name == "station_file" {
+    let key = dm_json_str(args, "key")
+    let direction = dm_json_str(args, "direction")
+    let remote_path_raw = dm_json_str(args, "path")
+    let local_raw = dm_json_str(args, "local")
+    if key.length() == 0 || (direction != "upload" && direction != "download") {
+      return false
+    }
+    let remote_path = match station_whole::validate_remote_file_path(remote_path_raw) {
+      Ok(p) => p
+      Err(_) => return false
+    }
+    if direction == "upload" {
+      match station_whole::check_rig_access(rs_port, peer, caller_session, caller_ws) {
+        Ok(()) => ()
+        Err(_) => return false
+      }
+    }
+    let session_ws_dir = match st_db.get_session(caller_session) {
+      Ok(Some(srow)) => srow.workspace
+      _ => return false
+    }
+    let (local_resolved, file_size) = match station_whole::resolve_session_local_file(
+      rs_port.fs,
+      session_ws_dir,
+      local_raw,
+      direction == "download",
+    ) {
+      Ok(v) => v
+      Err(_) => return false
+    }
+    let req_gen = mcp_pending.register(
+      conn_id,
+      rpc_id,
+      caller_session,
+      caller_ws,
+      "station_file",
+      now_ms,
+      timeout_ms=120000L,
+    )
+    if direction == "upload" {
+      pump_async_file_upload(
+        ctx,
+        mcp_srv,
+        cb,
+        mcp_pending,
+        rs_port.fs,
+        conn_id,
+        req_gen,
+        peer.id,
+        caller_ws,
+        caller_session,
+        key,
+        remote_path,
+        local_resolved,
+        0L,
+        file_size,
+      )
+      return true
+    }
+    pump_async_file_download(
+      ctx,
+      mcp_srv,
+      cb,
+      mcp_pending,
+      rs_port.fs,
+      conn_id,
+      req_gen,
+      peer.id,
+      caller_ws,
+      caller_session,
+      key,
+      remote_path,
+      local_resolved,
+      0L,
+      [],
+    )
+    return true
+  }
+
+  false
+}
+
+fn pump_async_file_upload(
+  ctx : DaemonCtx,
+  mcp_srv : station_http::HttpServer,
+  cb : station_http::ServerCallbacks,
+  mcp_pending : station_whole::McpPendingTable,
+  fs : station_jobs::FsPort,
+  conn_id : Int,
+  req_gen : Int64,
+  peer_id : String,
+  caller_ws : String,
+  caller_session : String,
+  task_key : String,
+  remote_path : String,
+  local_path : String,
+  offset : Int64,
+  total_size : Int64,
+) -> Unit {
+  if !mcp_pending.is_active(conn_id, req_gen) {
+    return
+  }
+  let rem = total_size - offset
+  let chunk_len = if rem > station_jobs::REMOTE_CHUNK.to_int64() {
+    station_jobs::REMOTE_CHUNK.to_int64()
+  } else if rem < 0L {
+    0L
+  } else {
+    rem
+  }
+  let chunk = if chunk_len == 0L {
+    Bytes::new(0)
+  } else {
+    match (fs.read_range)(local_path, offset, chunk_len) {
+      Some(b) => b
+      None => {
+        complete_deferred_mcp(
+          mcp_srv,
+          cb,
+          mcp_pending,
+          conn_id,
+          req_gen,
+          station_tools::error_reply("failed to read local file chunk"),
+        )
+        return
+      }
+    }
+  }
+  let next_off = offset + chunk.length().to_int64()
+  let is_final = next_off >= total_size
+  let req = base_codec::json_obj([
+    ("method", base_codec::json_str("file.put")),
+    ("workspace", base_codec::json_str(caller_ws)),
+    ("session", base_codec::json_str(caller_session)),
+    ("key", base_codec::json_str(task_key)),
+    ("path", base_codec::json_str(remote_path)),
+    ("offset", base_codec::json_int64(offset)),
+    ("data", base_codec::json_str(base64::encode(chunk))),
+    ("final", base_codec::json_bool(is_final)),
+  ])
+  ctx.ask_peer_rpc(
+    peer_id,
+    caller_ws,
+    req,
+    fn(res : Result[base_codec::Json, String]) -> Unit {
+      match res {
+        Err(e) => complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::error_reply(e))
+        Ok(_) => {
+          if is_final {
+            let ok_json = base_codec::json_stringify(
+              base_codec::json_obj([
+                ("uploaded", base_codec::json_str(local_path)),
+                ("bytes", base_codec::json_int64(total_size)),
+              ]),
+            )
+            complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::text_reply(ok_json))
+          } else {
+            pump_async_file_upload(
+              ctx,
+              mcp_srv,
+              cb,
+              mcp_pending,
+              fs,
+              conn_id,
+              req_gen,
+              peer_id,
+              caller_ws,
+              caller_session,
+              task_key,
+              remote_path,
+              local_path,
+              next_off,
+              total_size,
+            )
+          }
+        }
+      }
+    },
+  )
+}
+
+fn concat_download_chunks(chunks : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  for i in 0..<chunks.length() {
+    total = total + chunks[i].length()
+  }
+  let out = Bytes::new(total)
+  let mut pos = 0
+  for i in 0..<chunks.length() {
+    let c = chunks[i]
+    for j in 0..<c.length() {
+      out[pos] = c[j]
+      pos = pos + 1
+    }
+  }
+  out
+}
+
+fn pump_async_file_download(
+  ctx : DaemonCtx,
+  mcp_srv : station_http::HttpServer,
+  cb : station_http::ServerCallbacks,
+  mcp_pending : station_whole::McpPendingTable,
+  fs : station_jobs::FsPort,
+  conn_id : Int,
+  req_gen : Int64,
+  peer_id : String,
+  caller_ws : String,
+  caller_session : String,
+  task_key : String,
+  remote_path : String,
+  local_path : String,
+  offset : Int64,
+  acc : Array[Bytes],
+) -> Unit {
+  if !mcp_pending.is_active(conn_id, req_gen) {
+    return
+  }
+  let req = base_codec::json_obj([
+    ("method", base_codec::json_str("file.get")),
+    ("workspace", base_codec::json_str(caller_ws)),
+    ("session", base_codec::json_str(caller_session)),
+    ("key", base_codec::json_str(task_key)),
+    ("path", base_codec::json_str(remote_path)),
+    ("offset", base_codec::json_int64(offset)),
+  ])
+  ctx.ask_peer_rpc(
+    peer_id,
+    caller_ws,
+    req,
+    fn(res : Result[base_codec::Json, String]) -> Unit {
+      match res {
+        Err(e) => complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::error_reply(e))
+        Ok(v) => {
+          let b64 = dm_json_str(v, "data")
+          let decoded = if b64.length() == 0 {
+            Bytes::new(0)
+          } else {
+            match base64::decode(b64) {
+              Ok(b) => b
+              Err(_) => {
+                complete_deferred_mcp(
+                  mcp_srv,
+                  cb,
+                  mcp_pending,
+                  conn_id,
+                  req_gen,
+                  station_tools::error_reply("invalid base64 chunk from remote station"),
+                )
+                return
+              }
+            }
+          }
+          acc.push(decoded)
+          let next_off = offset + decoded.length().to_int64()
+          let is_eof = match base_codec::json_get(v, "eof") {
+            Some(base_codec::Json::Bool(true)) => true
+            _ => decoded.length() == 0
+          }
+          if is_eof {
+            // Re-check non-existence right before writing: downloads NEVER overwrite existing files!
+            match (fs.lstat)(local_path) {
+              Some(_) => {
+                complete_deferred_mcp(
+                  mcp_srv,
+                  cb,
+                  mcp_pending,
+                  conn_id,
+                  req_gen,
+                  station_tools::error_reply("local file already exists: downloads never overwrite an existing local file"),
+                )
+                return
+              }
+              None => ()
+            }
+            let full = concat_download_chunks(acc)
+            if !(fs.write_bytes)(local_path, full) {
+              complete_deferred_mcp(
+                mcp_srv,
+                cb,
+                mcp_pending,
+                conn_id,
+                req_gen,
+                station_tools::error_reply("failed to write downloaded file"),
+              )
+              return
+            }
+            let ok_json = base_codec::json_stringify(
+              base_codec::json_obj([
+                ("downloaded", base_codec::json_str(local_path)),
+                ("bytes", base_codec::json_int64(full.length().to_int64())),
+              ]),
+            )
+            complete_deferred_mcp(mcp_srv, cb, mcp_pending, conn_id, req_gen, station_tools::text_reply(ok_json))
+          } else {
+            pump_async_file_download(
+              ctx,
+              mcp_srv,
+              cb,
+              mcp_pending,
+              fs,
+              conn_id,
+              req_gen,
+              peer_id,
+              caller_ws,
+              caller_session,
+              task_key,
+              remote_path,
+              local_path,
+              next_off,
+              acc,
+            )
+          }
+        }
+      }
+    },
+  )
+}

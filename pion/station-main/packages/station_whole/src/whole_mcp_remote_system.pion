@@ -1,0 +1,2272 @@
+// Wave 17E-2A: Production MCP handlers for `DomainHandlers.remote` (6 tools) and
+// `DomainHandlers.system` (8 tools), plus non-blocking async deferred MCP state machine.
+//
+// Tools wired here (1:1 with `station/src/tools/{remote,forward,workspace-size,version,relays,move,retire,archive,feedback}.ts`,
+// `station/src/rigs/tool.ts`, and `station/src/logins/tool.ts`):
+//   Remote (6): `station_list`, `station_task`, `station_file`, `station_use`, `peer_forward`, `workspace_limit`
+//   System (8): `station_version`, `login`, `relays`, `archive_policy`, `station_move`, `station_retire`,
+//               `feedback_send`, `feedback_reply`
+//
+// Security & architecture invariants:
+// - Strictly workspace-isolated: every station lookup, rig grant, forward, relay, login, and archive
+//   policy is scoped to `caller_ws` resolved from SQLite; cross-workspace targets are always refused.
+// - Zero event-loop blocking: never calls `host_shim::wait` / `await_call` / `fetch_bounded_stream`.
+// - Path safety: `station_file` rejects `..`, absolute escapes, symlinks, non-regular uploads, >1 GiB
+//   files, and refuses to overwrite existing local files on download.
+// - Zero fake success: unimplemented sub-actions (e.g. `station_retire`, `relays enroll/revoke`,
+//   `station_move move/back` without executor, `station_version update/back` without updater) return
+//   explicit, actionable errors.
+
+import "base_codec"
+import "crypto"
+import "jscase"
+import "nodepath"
+import "sql_db"
+import "station_devices"
+import "station_jobs"
+import "station_replica"
+import "station_rig"
+import "station_sessions"
+import "station_store"
+import "station_tools"
+
+pub let WORKSPACE_LIMIT_GIB : Int64 = 1073741824L
+pub let WORKSPACE_LIMIT_DEFAULT_GIB : Int = 10
+pub let WORKSPACE_LIMIT_MAX_GIB : Int = 8388607
+pub let MOVE_PAGE_DEFAULT : Int = 50
+pub let MOVE_PAGE_MAX : Int = 200
+pub let MCP_DEFERRED_DEFAULT_TIMEOUT_MS : Int64 = 30000L
+
+// ---------------------------------------------------------------------------
+// 1. Port types (decoupled from daemon_core / mesh transport for clean DI)
+// ---------------------------------------------------------------------------
+
+pub struct McpStationPeer {
+  pub id : String
+  pub name : String
+  pub workspace : String
+  pub is_self : Bool
+  pub mode : String
+  pub owner_sub : String
+  pub owner_email : String
+  pub owner_name : String
+  pub rig_open : Bool
+  pub unprotected_why : Option[String]
+  pub version : Option[String]
+  pub cores : Int
+  pub arch : String
+  pub os : String
+  pub cpu_busy : Option[Double]
+  pub load_1m : Option[Double]
+  pub free_mem_bytes : Option[Int64]
+  pub free_disk_bytes : Option[Int64]
+  pub running_jobs : Int
+  pub relay_ping_ms : Option[Int]
+}
+
+pub struct McpSandboxInfo {
+  pub name : String
+  pub kind : String
+  pub available : Bool
+  pub detail : String
+}
+
+pub struct McpPeerForwardEntry {
+  pub local_port : Int
+  pub station_id : String
+  pub station_name : String
+  pub remote_port : Int
+  pub workspace : String
+  pub session : String
+  pub job : Option[String]
+}
+
+pub struct McpRelayEntry {
+  pub url : String
+  pub by : Option[String]
+}
+
+pub struct McpRelaysView {
+  pub workspace : String
+  pub own : Array[McpRelayEntry]
+  pub still_fail : Array[String]
+  pub off : Array[String]
+  pub mesh : Option[Array[base_codec::Json]]
+}
+
+pub struct McpLoginsPort {
+  pub get : (String) -> Option[station_devices::LoginView]
+  pub screen : (String) -> Option[station_devices::LoginScreen]
+  pub start : (String, station_devices::LoginStarter, String, Option[String], Int64) -> Result[station_devices::LoginView, String]
+  pub send_input : (String, Option[String], Option[station_devices::LoginKey]) -> Result[Unit, String]
+  pub set_paste : (String, Bool) -> Result[Unit, String]
+  pub cancel : (String, Int64) -> Result[Unit, String]
+}
+
+pub fn McpLoginsPort::from_os_runtime(rt : LoginsOsRuntime) -> McpLoginsPort {
+  McpLoginsPort::{
+    get: fn(id : String) -> Option[station_devices::LoginView] { rt.manager.get(id) },
+    screen: fn(id : String) -> Option[station_devices::LoginScreen] { rt.manager.screen(id) },
+    start: fn(cmd : String, starter : station_devices::LoginStarter, cwd : String, by_code : Option[String], now_ms : Int64) -> Result[station_devices::LoginView, String] {
+      rt.start_login(cmd, starter, cwd, [], now_ms, by_code_line=by_code)
+    },
+    send_input: fn(id : String, inp : Option[String], key : Option[station_devices::LoginKey]) -> Result[Unit, String] {
+      match rt.send_input(id, inp, key) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+    set_paste: fn(id : String, on : Bool) -> Result[Unit, String] {
+      match rt.manager.paste(id, on) {
+        Ok(_) => Ok(())
+        Err(r) => Err(r.message)
+      }
+    },
+    cancel: fn(id : String, now_ms : Int64) -> Result[Unit, String] {
+      match rt.cancel_login(id, None, now_ms) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    },
+  }
+}
+
+pub struct McpRemoteSystemPort {
+  pub station_id : () -> String
+  pub station_build : () -> String
+  pub station_channel : () -> Option[String]
+  pub list_stations : (String) -> Array[McpStationPeer]
+  pub list_sandboxes : () -> Array[McpSandboxInfo]
+  pub rig_requests : Option[station_rig::RigRequests]
+  pub dispatch_remote_task : (String, String, String, String, base_codec::Json) -> Result[base_codec::Json, String]
+  pub dispatch_remote_file : (String, String, String, String, String, String, String) -> Result[base_codec::Json, String]
+  pub forward_list : (String) -> Array[McpPeerForwardEntry]
+  pub forward_open : (String, String, String, String, Int, Option[Int], Option[String]) -> Result[McpPeerForwardEntry, String]
+  pub forward_close : (String, Int) -> Result[McpPeerForwardEntry, String]
+  pub logins : Option[McpLoginsPort]
+  pub login_link : (String, String) -> Option[String]
+  pub remote_login : Option[(String, String, String, base_codec::Json) -> Result[String, String]]
+  pub relays_list : (String) -> Result[McpRelaysView, String]
+  pub relays_add : (String, String, String, Int64) -> Result[(String, Int, McpRelaysView), String]
+  pub relays_remove : (String, String, Int64) -> Result[(String, McpRelaysView), String]
+  pub relays_enroll : Option[(String, String, String) -> Result[base_codec::Json, String]]
+  pub relays_revoke : Option[(String, String) -> Result[base_codec::Json, String]]
+  pub move_scheduler : Option[station_replica::MoveScheduler]
+  pub move_has_executor : Bool
+  pub update_trigger : Option[(String, Option[String]) -> Result[base_codec::Json, String]]
+  pub feedback_send : Option[(base_codec::Json) -> Result[base_codec::Json, String]]
+  pub feedback_reply : Option[(base_codec::Json) -> Result[base_codec::Json, String]]
+  pub fs : station_jobs::FsPort
+}
+
+/// Default port when no daemon transport hooks are attached yet (honest errors, zero fake success).
+pub fn default_mcp_remote_system_port(
+  station_id : String,
+  station_build : String,
+  fs : station_jobs::FsPort,
+) -> McpRemoteSystemPort {
+  McpRemoteSystemPort::{
+    station_id: fn() -> String { station_id },
+    station_build: fn() -> String { station_build },
+    station_channel: fn() -> Option[String] { None },
+    list_stations: fn(ws : String) -> Array[McpStationPeer] {
+      [
+        McpStationPeer::{
+          id: station_id,
+          name: "this station",
+          workspace: ws,
+          is_self: true,
+          mode: "whole",
+          owner_sub: "",
+          owner_email: "",
+          owner_name: "",
+          rig_open: false,
+          unprotected_why: None,
+          version: if station_build.length() > 0 { Some(station_build) } else { None },
+          cores: 0,
+          arch: "",
+          os: "",
+          cpu_busy: None,
+          load_1m: None,
+          free_mem_bytes: None,
+          free_disk_bytes: None,
+          running_jobs: 0,
+          relay_ping_ms: None,
+        },
+      ]
+    },
+    list_sandboxes: fn() -> Array[McpSandboxInfo] { [] },
+    rig_requests: None,
+    dispatch_remote_task: fn(_ws : String, _sess : String, target : String, action : String, _args : base_codec::Json) -> Result[base_codec::Json, String] {
+      Err("remote station task transport not available for " + target + " (" + action + ")")
+    },
+    dispatch_remote_file: fn(_ws : String, _sess : String, target : String, _key : String, dir : String, _rpath : String, _lpath : String) -> Result[base_codec::Json, String] {
+      Err("remote station file transport not available for " + target + " (" + dir + ")")
+    },
+    forward_list: fn(_sess : String) -> Array[McpPeerForwardEntry] { [] },
+    forward_open: fn(_ws : String, _sess : String, target : String, _name : String, _port : Int, _lport : Option[Int], _job : Option[String]) -> Result[McpPeerForwardEntry, String] {
+      Err("peer_forward transport is not available for " + target + " on this station")
+    },
+    forward_close: fn(_sess : String, port : Int) -> Result[McpPeerForwardEntry, String] {
+      Err("no forwarded port " + port.to_string() + " for this session")
+    },
+    logins: None,
+    login_link: fn(_sess : String, _id : String) -> Option[String] { None },
+    remote_login: None,
+    relays_list: fn(_ws : String) -> Result[McpRelaysView, String] {
+      Err("this station is in no workspace")
+    },
+    relays_add: fn(_ws : String, _url : String, _by : String, _now : Int64) -> Result[(String, Int, McpRelaysView), String] {
+      Err("this station is in no workspace")
+    },
+    relays_remove: fn(_ws : String, _url : String, _now : Int64) -> Result[(String, McpRelaysView), String] {
+      Err("this station is in no workspace")
+    },
+    relays_enroll: None,
+    relays_revoke: None,
+    move_scheduler: None,
+    move_has_executor: false,
+    update_trigger: None,
+    feedback_send: None,
+    feedback_reply: None,
+    fs: fs,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Non-blocking Async Deferred MCP Pending Table (used by `whole_daemon.pion`)
+// ---------------------------------------------------------------------------
+
+pub struct McpPendingReq {
+  pub conn_id : Int
+  pub req_gen : Int64
+  pub rpc_id : base_codec::Json
+  pub session : String
+  pub caller_ws : String
+  pub tool : String
+  pub created_at_ms : Int64
+  pub deadline_ms : Int64
+}
+
+pub struct McpPendingTable {
+  mut next_gen : Int64
+  by_conn : Map[Int, McpPendingReq]
+}
+
+pub fn McpPendingTable::new() -> McpPendingTable {
+  McpPendingTable::{ next_gen: 1L, by_conn: Map::new() }
+}
+
+pub fn McpPendingTable::count(self : McpPendingTable) -> Int {
+  self.by_conn.length()
+}
+
+pub fn McpPendingTable::register(
+  self : McpPendingTable,
+  conn_id : Int,
+  rpc_id : base_codec::Json,
+  session : String,
+  caller_ws : String,
+  tool : String,
+  now_ms : Int64,
+  timeout_ms : Int64 = MCP_DEFERRED_DEFAULT_TIMEOUT_MS,
+) -> Int64 {
+  let g = self.next_gen
+  self.next_gen = g + 1L
+  let eff_timeout = if timeout_ms > 0L { timeout_ms } else { MCP_DEFERRED_DEFAULT_TIMEOUT_MS }
+  self.by_conn.set(
+    conn_id,
+    McpPendingReq::{
+      conn_id: conn_id,
+      req_gen: g,
+      rpc_id: rpc_id,
+      session: session,
+      caller_ws: caller_ws,
+      tool: tool,
+      created_at_ms: now_ms,
+      deadline_ms: now_ms + eff_timeout,
+    },
+  )
+  g
+}
+
+pub fn McpPendingTable::is_active(self : McpPendingTable, conn_id : Int, req_gen : Int64) -> Bool {
+  match self.by_conn.get(conn_id) {
+    Some(r) => r.req_gen == req_gen
+    None => false
+  }
+}
+
+/// Atomically remove and return the pending request only if `(conn_id, req_gen)` matches.
+pub fn McpPendingTable::take_if_active(
+  self : McpPendingTable,
+  conn_id : Int,
+  req_gen : Int64,
+) -> Option[McpPendingReq] {
+  match self.by_conn.get(conn_id) {
+    Some(r) => {
+      if r.req_gen == req_gen {
+        let _ = self.by_conn.remove(conn_id)
+        Some(r)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+/// Remove and discard any pending request when the client TCP connection closes.
+pub fn McpPendingTable::on_conn_closed(self : McpPendingTable, conn_id : Int) -> Bool {
+  match self.by_conn.get(conn_id) {
+    Some(_) => {
+      let _ = self.by_conn.remove(conn_id)
+      true
+    }
+    None => false
+  }
+}
+
+/// Evict all expired pending requests (`now_ms >= deadline_ms`) and return them so the
+/// caller can respond with a timeout JSON-RPC tool error.
+pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_ms : Int64) -> Array[McpPendingReq] {
+  let expired : Array[McpPendingReq] = []
+  let keys = self.by_conn.keys()
+  for i in 0..<keys.length() {
+    let cid = keys[i]
+    match self.by_conn.get(cid) {
+      Some(r) => {
+        if now_ms >= r.deadline_ms {
+          expired.push(r)
+        }
+      }
+      None => ()
+    }
+  }
+  for i in 0..<expired.length() {
+    let _ = self.by_conn.remove(expired[i].conn_id)
+  }
+  expired
+}
+
+/// Encode a `station_tools::ToolReply` into a JSON-RPC 2.0 `tools/call` HTTP body.
+pub fn encode_mcp_tool_jsonrpc(rpc_id : base_codec::Json, reply : station_tools::ToolReply) -> String {
+  let content : Array[base_codec::Json] = []
+  for i in 0..<reply.content.length() {
+    match reply.content[i] {
+      station_tools::ContentItem::Text(t) => content.push(
+        base_codec::json_obj([
+          ("type", base_codec::json_str("text")),
+          ("text", base_codec::json_str(t)),
+        ]),
+      )
+      station_tools::ContentItem::Raw(raw) => content.push(raw)
+      _ => ()
+    }
+  }
+  let res_fields : Array[(String, base_codec::Json)] = [("content", base_codec::json_arr(content))]
+  if reply.is_error {
+    res_fields.push(("isError", base_codec::json_bool(true)))
+  }
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("jsonrpc", base_codec::json_str("2.0")),
+      ("id", rpc_id),
+      ("result", base_codec::json_obj(res_fields)),
+    ]),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 3. Shared Argument, Station Resolution & Path Security Helpers
+// ---------------------------------------------------------------------------
+
+fn rs_arg_str(args : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn rs_arg_trim(args : base_codec::Json, key : String) -> String {
+  match rs_arg_str(args, key) {
+    Some(s) => s.trim()
+    None => ""
+  }
+}
+
+fn rs_arg_bool(args : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(args, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn rs_arg_int(args : base_codec::Json, key : String) -> Result[Option[Int], String] {
+  match base_codec::json_get(args, key) {
+    None | Some(base_codec::Json::Null) => Ok(None)
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int()
+      if n.to_double() == d {
+        Ok(Some(n))
+      } else {
+        Err(key + " must be an integer")
+      }
+    }
+    _ => Err(key + " must be an integer")
+  }
+}
+
+fn rs_str_slice_bytes(s : String, start : Int, end : Int) -> String {
+  let b = s.to_bytes()
+  let lo = if start < 0 { 0 } else if start > b.length() { b.length() } else { start }
+  let hi = if end < lo { lo } else if end > b.length() { b.length() } else { end }
+  let out = Bytes::new(hi - lo)
+  for i in lo..<hi {
+    out[i - lo] = b[i]
+  }
+  out.to_string()
+}
+
+fn rs_has_nul(s : String) -> Bool {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == 0 {
+      return true
+    }
+  }
+  false
+}
+
+/// Resolve a station strictly within `caller_ws` by exact id, case-insensitive name, or >=8-char id prefix.
+pub fn resolve_ws_station(
+  stations : Array[McpStationPeer],
+  caller_ws : String,
+  query : String,
+) -> Option[McpStationPeer] {
+  let q = query.trim()
+  if q.length() == 0 {
+    return None
+  }
+  let ql = jscase::lower(q)
+  for i in 0..<stations.length() {
+    if stations[i].workspace == caller_ws && stations[i].id == q {
+      return Some(stations[i])
+    }
+  }
+  for i in 0..<stations.length() {
+    if stations[i].workspace == caller_ws && jscase::lower(stations[i].name) == ql {
+      return Some(stations[i])
+    }
+  }
+  if q.length() >= 8 {
+    for i in 0..<stations.length() {
+      if stations[i].workspace == caller_ws && stations[i].id.starts_with(q) {
+        return Some(stations[i])
+      }
+    }
+  }
+  None
+}
+
+/// Validate a remote relative path for `station_file` (rejects empty, NUL, absolute, `.` / `..`, backslash).
+pub fn validate_remote_file_path(raw : String) -> Result[String, String] {
+  let t = raw.trim()
+  if t.length() == 0 || rs_has_nul(t) {
+    return Err("path must be a non-empty relative path")
+  }
+  if t.starts_with("/") || t.starts_with("\\") {
+    return Err("path must be relative to this session's directory on that station")
+  }
+  let b = t.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == 92 {
+      return Err("path must use forward slashes without backslashes")
+    }
+  }
+  match nodepath::relative_parts("/", t) {
+    None => Err("path must be relative, without . or ..")
+    Some(parts) => {
+      if parts.length() == 0 {
+        return Err("path must be relative, without . or ..")
+      }
+      for i in 0..<parts.length() {
+        let p = parts[i]
+        if p == "." || p == ".." || p.length() == 0 {
+          return Err("path must be relative, without . or ..")
+        }
+      }
+      Ok(t)
+    }
+  }
+}
+
+/// Strip `root` prefix from an absolute `local_path` on whole path components; returns `None` if outside.
+fn strip_workspace_prefix(sep : String, root : String, abs_path : String) -> Option[String] {
+  let mut norm_root = root
+  while norm_root.length() > 1 && norm_root.ends_with(sep) {
+    norm_root = rs_str_slice_bytes(norm_root, 0, norm_root.to_bytes().length() - sep.to_bytes().length())
+  }
+  if abs_path == norm_root {
+    return Some("")
+  }
+  let prefix = norm_root + sep
+  if abs_path.starts_with(prefix) {
+    Some(rs_str_slice_bytes(abs_path, prefix.to_bytes().length(), abs_path.to_bytes().length()))
+  } else {
+    None
+  }
+}
+
+/// Strictly resolve `local_arg` inside `session_ws_root`:
+/// - Rejects NUL bytes, absolute paths outside `session_ws_root`, `..` traversal, and any symlink component.
+/// - For `download`: refuses if destination already exists (never overwrites existing local file).
+/// - For `upload`: requires an existing regular file `<= 1 GiB`.
+pub fn resolve_session_local_file(
+  fs : station_jobs::FsPort,
+  session_ws_root : String,
+  local_arg : String,
+  is_download : Bool,
+) -> Result[(String, Int64), String] {
+  let trimmed = local_arg.trim()
+  if trimmed.length() == 0 || rs_has_nul(trimmed) {
+    return Err("local file path is required")
+  }
+  if session_ws_root.length() == 0 {
+    return Err("session has no workspace directory")
+  }
+  let relative = if nodepath::is_absolute(fs.sep, trimmed) {
+    match strip_workspace_prefix(fs.sep, session_ws_root, trimmed) {
+      Some(rel) => rel
+      None => return Err("local file must be inside this session workspace")
+    }
+  } else {
+    trimmed
+  }
+  let resolved = match station_jobs::safe_transfer_path(fs, session_ws_root, relative, create_parent=is_download) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if is_download {
+    match (fs.lstat)(resolved) {
+      Some(_) => return Err("local file already exists: downloads never overwrite an existing local file")
+      None => return Ok((resolved, 0L))
+    }
+  }
+  match (fs.lstat)(resolved) {
+    None => Err("local file does not exist")
+    Some(st) => {
+      if st.is_symlink() || st.kind != "file" {
+        return Err("input must be a regular file of at most 1 GiB")
+      }
+      if st.size < 0L || st.size > station_jobs::REMOTE_MAX_FILE {
+        return Err("input must be a regular file of at most 1 GiB")
+      }
+      Ok((resolved, st.size))
+    }
+  }
+}
+
+/// Check whether `session` has an active grant on a `mode == "tasks"` rig (or the rig is open).
+pub fn check_rig_access(
+  port : McpRemoteSystemPort,
+  peer : McpStationPeer,
+  session : String,
+  caller_ws : String,
+) -> Result[Unit, String] {
+  if peer.mode != "tasks" || peer.rig_open {
+    return Ok(())
+  }
+  match port.rig_requests {
+    Some(reqs) => {
+      let open = reqs.of(session, peer.id, None)
+      for i in 0..<open.length() {
+        if open[i].ws == caller_ws {
+          match open[i].status {
+            station_rig::RequestStatus::Granted => return Ok(())
+            _ => ()
+          }
+        }
+      }
+      Err("this chat has no grant of this station, which only runs tasks: ask for one with station_use (its owner approves it in still.fail)")
+    }
+    None => Err("this chat has no grant of this station, which only runs tasks: ask for one with station_use (its owner approves it in still.fail)")
+  }
+}
+
+fn rig_this_chat_status(
+  port : McpRemoteSystemPort,
+  peer : McpStationPeer,
+  session : String,
+  caller_ws : String,
+) -> String {
+  if peer.rig_open {
+    return "open to every chat"
+  }
+  let owner_str = if peer.owner_email.length() > 0 { peer.owner_email } else { peer.owner_name }
+  match port.rig_requests {
+    Some(reqs) => {
+      let open = reqs.of(session, peer.id, None)
+      for i in 0..<open.length() {
+        if open[i].ws == caller_ws {
+          match open[i].status {
+            station_rig::RequestStatus::Granted => return "granted (" + open[i].id + ")"
+            station_rig::RequestStatus::Pending => return "pending approval (" + open[i].id + ")"
+            _ => ()
+          }
+        }
+      }
+      "no grant: ask with station_use {station: \"" + peer.name + "\", reason}; its card goes to " + owner_str
+    }
+    None => "no grant: ask with station_use {station: \"" + peer.name + "\", reason}; its card goes to " + owner_str
+  }
+}
+
+fn format_station_peer_json(
+  port : McpRemoteSystemPort,
+  p : McpStationPeer,
+  session : String,
+  caller_ws : String,
+  detailed : Bool,
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(p.id)),
+    ("name", base_codec::json_str(p.name)),
+    ("self", base_codec::json_bool(p.is_self)),
+    ("mode", base_codec::json_str(p.mode)),
+  ]
+  match p.version {
+    Some(v) => fields.push(("version", base_codec::json_str(v)))
+    None => ()
+  }
+  if p.cores > 0 {
+    fields.push(("cores", base_codec::json_int(p.cores)))
+  }
+  if p.arch.length() > 0 {
+    fields.push(("arch", base_codec::json_str(p.arch)))
+  }
+  if p.os.length() > 0 {
+    fields.push(("os", base_codec::json_str(p.os)))
+  }
+  match p.cpu_busy {
+    Some(v) => fields.push(("cpuBusy", base_codec::json_num(v)))
+    None => ()
+  }
+  match p.load_1m {
+    Some(v) => fields.push(("load", base_codec::json_num(v)))
+    None => ()
+  }
+  match p.free_mem_bytes {
+    Some(v) => fields.push(("freeMemoryBytes", base_codec::json_int64(v)))
+    None => ()
+  }
+  match p.free_disk_bytes {
+    Some(v) => fields.push(("freeDiskBytes", base_codec::json_int64(v)))
+    None => ()
+  }
+  fields.push(("runningJobs", base_codec::json_int(p.running_jobs)))
+  match p.relay_ping_ms {
+    Some(ms) => fields.push(("relayPingMs", base_codec::json_int(ms)))
+    None => ()
+  }
+  match p.unprotected_why {
+    Some(why) => fields.push(("unprotected", base_codec::json_str(why)))
+    None => ()
+  }
+  if p.mode == "tasks" {
+    let owner_label = if p.owner_email.length() > 0 { p.owner_email } else { p.owner_name }
+    fields.push(("owner", base_codec::json_str(owner_label)))
+    fields.push(("access", base_codec::json_str(if p.rig_open { "open" } else { "approval" })))
+    fields.push(("thisChat", base_codec::json_str(rig_this_chat_status(port, p, session, caller_ws))))
+  }
+  if detailed {
+    fields.push(("acceptsTasks", base_codec::json_bool(p.unprotected_why is None)))
+    fields.push(("maxFileBytes", base_codec::json_int64(station_jobs::REMOTE_MAX_FILE)))
+    fields.push(("chunkBytes", base_codec::json_int(station_jobs::REMOTE_CHUNK)))
+  }
+  base_codec::json_obj(fields)
+}
+
+// ---------------------------------------------------------------------------
+// 4. `DomainHandlers.remote` (6 tools)
+// ---------------------------------------------------------------------------
+
+/// Pure DI session/policy store adapter so `handle_remote_domain_tool` and `handle_system_domain_tool`
+/// work identically against live SQLite (`McpSessionStorePort::from_sqlite`) and in-memory unit tests.
+pub struct McpSessionStorePort {
+  pub session_exists : (String) -> Bool
+  pub session_workspace : (String) -> String
+  pub session_chat_title : (String) -> Option[String]
+  pub session_starter : (String) -> String
+  pub read_archive_policy_raw : (String, String) -> Option[String]
+  pub write_archive_policy_raw : (String, String, String, String, Int64) -> Result[Unit, String]
+}
+
+pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSessionStorePort {
+  McpSessionStorePort::{
+    session_exists: fn(session : String) -> Bool {
+      match st.get_session(session) {
+        Ok(Some(_)) => true
+        _ => false
+      }
+    },
+    session_workspace: fn(session : String) -> String {
+      match st.get_session(session) {
+        Ok(Some(srow)) => srow.workspace
+        _ => ""
+      }
+    },
+    session_chat_title: fn(session : String) -> Option[String] {
+      match st.db.first(
+        "SELECT title FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+        [base_codec::json_str(session)],
+      ) {
+        Ok(Some(row)) => match row.get("title") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+          _ => None
+        }
+        _ => None
+      }
+    },
+    session_starter: fn(session : String) -> String {
+      match st.db.first(
+        "SELECT created_by FROM threads WHERE home = ?1 ORDER BY id DESC LIMIT 1",
+        [base_codec::json_str(session)],
+      ) {
+        Ok(Some(row)) => match row.get("created_by") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        _ => ""
+      }
+    },
+    read_archive_policy_raw: fn(caller_ws : String, home_ws : String) -> Option[String] {
+      let row_opt = if caller_ws == home_ws {
+        st.db.first(
+          "SELECT policy FROM archive_policy WHERE ws = ?1 OR ws IS NULL ORDER BY at DESC, id DESC LIMIT 1",
+          [base_codec::json_str(caller_ws)],
+        )
+      } else {
+        st.db.first(
+          "SELECT policy FROM archive_policy WHERE ws = ?1 ORDER BY at DESC, id DESC LIMIT 1",
+          [base_codec::json_str(caller_ws)],
+        )
+      }
+      match row_opt {
+        Ok(Some(row)) => match row.get("policy") {
+          Some(base_codec::Json::Str(raw)) => Some(raw)
+          _ => None
+        }
+        _ => None
+      }
+    },
+    write_archive_policy_raw: fn(caller_ws : String, pol_json : String, author_json : String, summary : String, now_ms : Int64) -> Result[Unit, String] {
+      match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+        t.run(
+          "INSERT INTO archive_policy (at, policy, author, summary, ws) VALUES (?1, ?2, ?3, ?4, ?5)",
+          [
+            sql_db::int64_to_json(now_ms),
+            base_codec::json_str(pol_json),
+            base_codec::json_str(author_json),
+            base_codec::json_str(summary),
+            base_codec::json_str(caller_ws),
+          ],
+        )
+      }) {
+        Ok(_) => Ok(())
+        Err(e) => Err("failed to save archive policy: " + e.message)
+      }
+    },
+  }
+}
+
+pub fn handle_remote_domain_tool(
+  port : McpRemoteSystemPort,
+  data_dir : String,
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  session : String,
+  tool : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  let stations = (port.list_stations)(caller_ws)
+
+  if tool == "station_list" {
+    let named = rs_arg_trim(args, "station")
+    if named.length() > 0 {
+      match resolve_ws_station(stations, caller_ws, named) {
+        Some(p) => {
+          return station_tools::text_reply(
+            base_codec::json_stringify(format_station_peer_json(port, p, session, caller_ws, true)),
+          )
+        }
+        None => return station_tools::error_reply("no station " + named + " in this chat's workspace")
+      }
+    }
+    let st_arr : Array[base_codec::Json] = []
+    for i in 0..<stations.length() {
+      if stations[i].workspace == caller_ws {
+        st_arr.push(format_station_peer_json(port, stations[i], session, caller_ws, false))
+      }
+    }
+    let sbs = (port.list_sandboxes)()
+    let sb_arr : Array[base_codec::Json] = []
+    for i in 0..<sbs.length() {
+      sb_arr.push(
+        base_codec::json_obj([
+          ("name", base_codec::json_str(sbs[i].name)),
+          ("kind", base_codec::json_str(sbs[i].kind)),
+          ("available", base_codec::json_bool(sbs[i].available)),
+          ("detail", base_codec::json_str(sbs[i].detail)),
+        ]),
+      )
+    }
+    let out_fields : Array[(String, base_codec::Json)] = [("stations", base_codec::json_arr(st_arr))]
+    if sb_arr.length() > 0 {
+      out_fields.push(("sandboxes", base_codec::json_arr(sb_arr)))
+    }
+    return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(out_fields)))
+  }
+
+  if tool == "station_task" {
+    let target_name = rs_arg_trim(args, "station")
+    let action = rs_arg_trim(args, "action")
+    if target_name.length() == 0 {
+      return station_tools::error_reply("station is required (station_list lists them)")
+    }
+    if action != "prepare" && action != "start" && action != "get" && action != "log" &&
+    action != "stop" && action != "release" && action != "list" && action != "mirrors" &&
+    action != "clean" {
+      return station_tools::error_reply("action must be one of prepare, start, get, log, stop, release, list, mirrors, clean")
+    }
+    if (action == "prepare" || action == "start" || action == "get" || action == "log" ||
+      action == "stop" || action == "release") && rs_arg_trim(args, "key").length() == 0 {
+      return station_tools::error_reply("key is required for station_task " + action)
+    }
+    if action == "prepare" && rs_arg_trim(args, "command").length() == 0 {
+      return station_tools::error_reply("command is required for station_task prepare")
+    }
+    if action == "clean" && rs_arg_trim(args, "mirror").length() == 0 {
+      return station_tools::error_reply("mirror is required for station_task clean")
+    }
+    // Check workspace stations first (strictly scoped to `caller_ws`).
+    match resolve_ws_station(stations, caller_ws, target_name) {
+      Some(peer) => {
+        match peer.unprotected_why {
+          Some(why) => return station_tools::error_reply("cannot call " + peer.name + ": " + why)
+          None => ()
+        }
+        // Require rig grant for mutating/execution actions on mode:"tasks" rigs.
+        if action == "prepare" || action == "start" || action == "release" || action == "clean" {
+          match check_rig_access(port, peer, session, caller_ws) {
+            Ok(()) => ()
+            Err(e) => return station_tools::error_reply(e)
+          }
+        }
+        match (port.dispatch_remote_task)(caller_ws, session, peer.id, action, args) {
+          Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => {
+        // Also check local sandboxes.
+        let sbs = (port.list_sandboxes)()
+        let tl = jscase::lower(target_name)
+        for i in 0..<sbs.length() {
+          if jscase::lower(sbs[i].name) == tl {
+            if !sbs[i].available {
+              return station_tools::error_reply("sandbox " + sbs[i].name + " is not available: " + sbs[i].detail)
+            }
+            match (port.dispatch_remote_task)(caller_ws, session, "sandbox:" + sbs[i].name, action, args) {
+              Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+              Err(e) => return station_tools::error_reply(e)
+            }
+          }
+        }
+        return station_tools::error_reply("no station or sandbox " + target_name + " in this chat's workspace")
+      }
+    }
+  }
+
+  if tool == "station_file" {
+    let target_name = rs_arg_trim(args, "station")
+    let key = rs_arg_trim(args, "key")
+    let direction = rs_arg_trim(args, "direction")
+    let remote_path_raw = rs_arg_trim(args, "path")
+    let local_raw = rs_arg_trim(args, "local")
+    if target_name.length() == 0 {
+      return station_tools::error_reply("station is required")
+    }
+    if key.length() == 0 {
+      return station_tools::error_reply("key is required")
+    }
+    if direction != "upload" && direction != "download" {
+      return station_tools::error_reply("direction must be upload or download")
+    }
+    let remote_path = match validate_remote_file_path(remote_path_raw) {
+      Ok(p) => p
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let peer = match resolve_ws_station(stations, caller_ws, target_name) {
+      Some(p) => p
+      None => return station_tools::error_reply("no station " + target_name + " in this chat's workspace")
+    }
+    match peer.unprotected_why {
+      Some(why) => return station_tools::error_reply("cannot call " + peer.name + ": " + why)
+      None => ()
+    }
+    if direction == "upload" {
+      match check_rig_access(port, peer, session, caller_ws) {
+        Ok(()) => ()
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    let session_ws_dir = (store_port.session_workspace)(session)
+    let (local_resolved, _) = match resolve_session_local_file(port.fs, session_ws_dir, local_raw, direction == "download") {
+      Ok(v) => v
+      Err(e) => return station_tools::error_reply(e)
+    }
+    match (port.dispatch_remote_file)(caller_ws, session, peer.id, key, direction, remote_path, local_resolved) {
+      Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+
+  if tool == "station_use" {
+    let rig_name = rs_arg_trim(args, "station")
+    let is_done = match rs_arg_bool(args, "done") {
+      Some(true) => true
+      _ => false
+    }
+    let reqs = match port.rig_requests {
+      Some(r) => r
+      None => return station_tools::error_reply("station_use is not available on this station")
+    }
+    if is_done {
+      let target_id_opt : Option[String] = if rig_name.length() > 0 {
+        match resolve_ws_station(stations, caller_ws, rig_name) {
+          Some(p) => Some(p.id)
+          None => return station_tools::error_reply("no station " + rig_name + " in this chat's workspace")
+        }
+      } else {
+        None
+      }
+      let ended = reqs.release(session, target_id_opt, station_rig::DeviceFilter::RigOnly)
+      if ended.length() == 0 {
+        return station_tools::text_reply("This chat holds no grant or pending request for that station.")
+      }
+      let names : Array[String] = []
+      for i in 0..<ended.length() {
+        names.push(ended[i].rig_name)
+      }
+      return station_tools::text_reply("Handed back: " + rs_join(names, ", ") + ".")
+    }
+    if rig_name.length() == 0 {
+      return station_tools::error_reply("station is required (its name from station_list)")
+    }
+    let peer = match resolve_ws_station(stations, caller_ws, rig_name) {
+      Some(p) => p
+      None => return station_tools::error_reply("no station " + rig_name + " in this chat's workspace")
+    }
+    if peer.mode != "tasks" {
+      return station_tools::text_reply(peer.name + " is a whole station: no station_use is needed.")
+    }
+    if peer.rig_open {
+      return station_tools::text_reply(peer.name + " is open to every chat in this workspace: no station_use is needed.")
+    }
+    let reason = rs_arg_trim(args, "reason")
+    let timeout_opt : Option[station_rig::Timeout] = match base_codec::json_get(args, "timeout") {
+      None | Some(base_codec::Json::Null) => None
+      Some(t_obj) => {
+        let kind_s = rs_arg_trim(t_obj, "kind")
+        let kind = if kind_s == "idle" {
+          station_rig::TimeoutKind::Idle
+        } else if kind_s == "fixed" {
+          station_rig::TimeoutKind::Fixed
+        } else {
+          return station_tools::error_reply("timeout.kind must be idle or fixed")
+        }
+        let secs = match rs_arg_int(t_obj, "seconds") {
+          Ok(Some(v)) => v.to_int64()
+          _ => return station_tools::error_reply("timeout.seconds must be an integer")
+        }
+        Some(station_rig::Timeout::{ kind: kind, seconds: secs })
+      }
+    }
+    let target = station_rig::RigTarget::{
+      id: peer.id,
+      name: peer.name,
+      owner: peer.owner_sub,
+      owner_email: peer.owner_email,
+    }
+    match reqs.ask(session, target, caller_ws, reason, timeout_opt, None) {
+      Ok(req) => {
+        match req.status {
+          station_rig::RequestStatus::Granted => {
+            return station_tools::text_reply(
+              "This chat already has an active grant (" + req.id + ") for " + req.rig_name + ".",
+            )
+          }
+          _ => {
+            return station_tools::text_reply(
+              "Requested access to " + req.rig_name + " (" + req.id + ", owner " + req.owner_email + "). " +
+              station_rig::undecided_notice,
+            )
+          }
+        }
+      }
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+
+  if tool == "peer_forward" {
+    let close_opt = match rs_arg_int(args, "close") {
+      Ok(v) => v
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let port_opt = match rs_arg_int(args, "port") {
+      Ok(v) => v
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let local_port_opt = match rs_arg_int(args, "local_port") {
+      Ok(v) => v
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let station_name = rs_arg_trim(args, "station")
+    match close_opt {
+      Some(cport) => {
+        match (port.forward_close)(session, cport) {
+          Ok(was) => {
+            return station_tools::text_reply(
+              "Closed " + was.local_port.to_string() + " (to " + was.station_name + ":" + was.remote_port.to_string() + ").",
+            )
+          }
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => ()
+    }
+    if station_name.length() == 0 && port_opt is None {
+      let list = (port.forward_list)(session)
+      if list.length() == 0 {
+        return station_tools::text_reply("No forwarded ports.")
+      }
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<list.length() {
+        arr.push(format_forward_entry_json(list[i]))
+      }
+      return station_tools::text_reply(base_codec::json_stringify(base_codec::json_arr(arr)))
+    }
+    let rport = match port_opt {
+      Some(p) => p
+      None => return station_tools::error_reply("give both station and port to forward one (none: list them; close: close one)")
+    }
+    match local_port_opt {
+      Some(lp) => {
+        if lp < 1 || lp > 65535 {
+          return station_tools::error_reply("local_port: a port, 1 to 65535")
+        }
+      }
+      None => ()
+    }
+    let peer = match resolve_ws_station(stations, caller_ws, station_name) {
+      Some(p) => p
+      None => return station_tools::error_reply("no station " + station_name + " in this chat's workspace")
+    }
+    if peer.is_self {
+      return station_tools::error_reply("that is this station: name another")
+    }
+    match peer.unprotected_why {
+      Some(why) => return station_tools::error_reply("cannot forward to " + peer.name + ": " + why)
+      None => ()
+    }
+    match check_rig_access(port, peer, session, caller_ws) {
+      Ok(()) => ()
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let job_raw = rs_arg_trim(args, "job")
+    let job_opt = if job_raw.length() > 0 { Some(job_raw) } else { None }
+    match (port.forward_open)(caller_ws, session, peer.id, peer.name, rport, local_port_opt, job_opt) {
+      Ok(entry) => return station_tools::text_reply(base_codec::json_stringify(format_forward_entry_json(entry)))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+
+  if tool == "workspace_limit" {
+    let named = rs_arg_trim(args, "station")
+    let target_key = if named.length() == 0 {
+      "local"
+    } else {
+      match resolve_ws_station(stations, caller_ws, named) {
+        Some(p) => if p.is_self { "local" } else { p.id }
+        None => return station_tools::error_reply("no station " + named + " in this chat's workspace")
+      }
+    }
+    let limit_gib_opt = match base_codec::json_get(args, "limit_gib") {
+      None | Some(base_codec::Json::Null) => None
+      Some(base_codec::Json::Num(d, _)) => {
+        let n = d.to_int()
+        if n.to_double() != d || n < 1 || n > WORKSPACE_LIMIT_MAX_GIB {
+          return station_tools::error_reply("limit_gib must be a positive whole number of GiB")
+        }
+        Some(n)
+      }
+      _ => return station_tools::error_reply("limit_gib must be a positive whole number of GiB")
+    }
+    match read_or_update_workspace_limit(port.fs, data_dir, session, target_key, limit_gib_opt) {
+      Ok(gib) => {
+        let label = if target_key == "local" { "this station" } else { target_key }
+        return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("station", base_codec::json_str(label)),
+              ("limit_gib", base_codec::json_int(gib)),
+            ]),
+          ),
+        )
+      }
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+
+  let _ = now_ms
+  station_tools::error_reply("unsupported remote tool: " + tool)
+}
+
+fn format_forward_entry_json(e : McpPeerForwardEntry) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("local", base_codec::json_int(e.local_port)),
+    ("url", base_codec::json_str("http://127.0.0.1:" + e.local_port.to_string())),
+    ("station", base_codec::json_str(e.station_name)),
+    ("stationId", base_codec::json_str(e.station_id)),
+    ("port", base_codec::json_int(e.remote_port)),
+  ]
+  match e.job {
+    Some(j) => fields.push(("job", base_codec::json_str(j)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn workspace_limits_file(fs : station_jobs::FsPort, data_dir : String, session : String) -> String {
+  let hash = crypto::sha256_hex(session.to_bytes())
+  nodepath::join(fs.sep, [data_dir, "workspace-limits", hash + ".json"])
+}
+
+fn read_or_update_workspace_limit(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+  session : String,
+  station_key : String,
+  new_gib_opt : Option[Int],
+) -> Result[Int, String] {
+  let path = workspace_limits_file(fs, data_dir, session)
+  let entries : Map[String, base_codec::Json] = Map::new()
+  match (fs.read_file)(path) {
+    Some(txt) => {
+      match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Obj(kvs)) => {
+          for i in 0..<kvs.length() {
+            let (k, v) = kvs[i]
+            entries.set(k, v)
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  match new_gib_opt {
+    Some(gib) => {
+      let bytes = gib.to_int64() * WORKSPACE_LIMIT_GIB
+      entries.set(
+        station_key,
+        base_codec::json_obj([
+          ("bytes", base_codec::json_int64(bytes)),
+          ("over", base_codec::json_bool(false)),
+          ("told", base_codec::json_null()),
+        ]),
+      )
+      let dir = nodepath::dirname(fs.sep, path)
+      let _ = (fs.mkdir_p)(dir)
+      let out_kvs : Array[(String, base_codec::Json)] = []
+      let ks = entries.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        match entries.get(k) {
+          Some(v) => out_kvs.push((k, v))
+          None => ()
+        }
+      }
+      let payload = base_codec::json_stringify(base_codec::json_obj(out_kvs))
+      if !(fs.write_file)(path, payload) {
+        return Err("failed to save workspace limit")
+      }
+      Ok(gib)
+    }
+    None => {
+      match entries.get(station_key) {
+        Some(obj) => {
+          match base_codec::json_get(obj, "bytes") {
+            Some(base_codec::Json::Num(d, _)) => {
+              let b = d.to_int64()
+              if b >= WORKSPACE_LIMIT_GIB {
+                Ok((b / WORKSPACE_LIMIT_GIB).to_int())
+              } else {
+                Ok(WORKSPACE_LIMIT_DEFAULT_GIB)
+              }
+            }
+            _ => Ok(WORKSPACE_LIMIT_DEFAULT_GIB)
+          }
+        }
+        None => Ok(WORKSPACE_LIMIT_DEFAULT_GIB)
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. `DomainHandlers.system` (8 tools)
+// ---------------------------------------------------------------------------
+
+pub fn handle_system_domain_tool(
+  port : McpRemoteSystemPort,
+  data_dir : String,
+  home_ws : String,
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  session : String,
+  tool : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  if tool == "station_version" {
+    return handle_station_version_tool(port, data_dir, args)
+  }
+  if tool == "archive_policy" {
+    return handle_archive_policy_tool(store_port, caller_ws, home_ws, session, args, now_ms)
+  }
+  if tool == "login" {
+    return handle_login_tool(port, store_port, caller_ws, session, args, now_ms)
+  }
+  if tool == "relays" {
+    return handle_relays_tool(port, store_port, caller_ws, session, args, now_ms)
+  }
+  if tool == "station_move" {
+    return handle_station_move_tool(port, caller_ws, session, args)
+  }
+  if tool == "station_retire" {
+    return handle_station_retire_tool(args)
+  }
+  if tool == "feedback_send" || tool == "feedback_reply" {
+    return handle_feedback_tool(port, store_port, session, tool, args)
+  }
+  station_tools::error_reply("unsupported system tool: " + tool)
+}
+
+// --- 5a. `station_version` ---
+
+fn validate_wait_spec(spec : String) -> Result[String, String] {
+  let s = spec.trim()
+  if s.starts_with("pr:") && s.length() > 3 {
+    return Ok(s)
+  }
+  if s.starts_with("fix:FB-") && s.length() > 7 {
+    return Ok(s)
+  }
+  if s.starts_with("commit:") && s.length() > 7 {
+    return Ok(s)
+  }
+  if s.starts_with("version:") && s.length() > 8 {
+    return Ok(s)
+  }
+  if s.starts_with("after:") && s.length() > 6 {
+    return Ok(s)
+  }
+  Err("invalid wait condition '" + s + "': expected pr:N, fix:FB-N, commit:SHA, version:0.1.N, or after:0.1.N")
+}
+
+fn update_wait_path(fs : station_jobs::FsPort, data_dir : String) -> String {
+  nodepath::join(fs.sep, [data_dir, "update-wait.json"])
+}
+
+fn read_update_wait(fs : station_jobs::FsPort, data_dir : String) -> Array[String] {
+  let out : Array[String] = []
+  match (fs.read_file)(update_wait_path(fs, data_dir)) {
+    Some(txt) => {
+      match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Str(s) => if s.length() > 0 { out.push(s) }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn write_update_wait(fs : station_jobs::FsPort, data_dir : String, specs : Array[String]) -> Bool {
+  let path = update_wait_path(fs, data_dir)
+  if specs.length() == 0 {
+    let _ = (fs.remove_file)(path)
+    return true
+  }
+  let _ = (fs.mkdir_p)(data_dir)
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<specs.length() {
+    arr.push(base_codec::json_str(specs[i]))
+  }
+  (fs.write_file)(path, base_codec::json_stringify(base_codec::json_arr(arr)))
+}
+
+fn build_version_line(port : McpRemoteSystemPort, data_dir : String) -> base_codec::Json {
+  let ver = (port.station_build)()
+  let waits = read_update_wait(port.fs, data_dir)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("version", if ver.length() > 0 { base_codec::json_str(ver) } else { base_codec::json_null() }),
+    ("engine", base_codec::json_str("pion")),
+    ("latest", base_codec::json_null()),
+    ("newer", base_codec::json_bool(false)),
+    (
+      "channel",
+      match (port.station_channel)() {
+        Some(ch) => base_codec::json_str(ch)
+        None => base_codec::json_null()
+      },
+    ),
+    ("auto", base_codec::json_null()),
+    ("autoAfter", base_codec::json_null()),
+    ("earlier", base_codec::json_arr([])),
+    ("state", base_codec::json_str("idle")),
+  ]
+  if waits.length() > 0 {
+    let warr : Array[base_codec::Json] = []
+    for i in 0..<waits.length() {
+      warr.push(base_codec::json_str(waits[i]))
+    }
+    fields.push(("autoWhen", base_codec::json_arr(warr)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn handle_station_version_tool(
+  port : McpRemoteSystemPort,
+  data_dir : String,
+  args : base_codec::Json,
+) -> station_tools::ToolReply {
+  let action = rs_arg_trim(args, "action")
+  if action == "list" {
+    return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
+  }
+  if action == "wait" {
+    let is_clear = match rs_arg_bool(args, "clear") {
+      Some(true) => true
+      _ => false
+    }
+    if is_clear {
+      let _ = write_update_wait(port.fs, data_dir, [])
+      return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
+    }
+    match base_codec::json_get(args, "until") {
+      Some(base_codec::Json::Arr(xs)) => {
+        if xs.length() == 0 {
+          return station_tools::error_reply("wait: pass until (non-empty array of conditions) or clear: true")
+        }
+        let specs : Array[String] = []
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(s) => {
+              match validate_wait_spec(s) {
+                Ok(v) => specs.push(v)
+                Err(e) => return station_tools::error_reply(e)
+              }
+            }
+            _ => return station_tools::error_reply("wait: until must be an array of strings")
+          }
+        }
+        if !write_update_wait(port.fs, data_dir, specs) {
+          return station_tools::error_reply("failed to persist wait conditions")
+        }
+        return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
+      }
+      _ => return station_tools::error_reply("wait: pass until (array of conditions) or clear: true")
+    }
+  }
+  if action == "update" {
+    match port.update_trigger {
+      Some(trigger) => {
+        match trigger("update", None) {
+          Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => {
+        return station_tools::error_reply(
+          "station_version update is not yet wired on the Pion engine; run 'stillfail update' or update from the station page",
+        )
+      }
+    }
+  }
+  if action == "back" {
+    let to_ver = rs_arg_trim(args, "to")
+    if to_ver.length() == 0 {
+      return station_tools::error_reply("to: a version list names in earlier")
+    }
+    match port.update_trigger {
+      Some(trigger) => {
+        match trigger("back", Some(to_ver)) {
+          Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => {
+        return station_tools::error_reply(
+          "station_version back is not yet wired on the Pion engine; roll back from the station page or CLI",
+        )
+      }
+    }
+  }
+  station_tools::error_reply("action: list, update, back or wait")
+}
+
+// --- 5b. `archive_policy` ---
+
+fn archive_policy_to_json(p : station_sessions::ArchivePolicy) -> base_codec::Json {
+  let opts : Array[base_codec::Json] = []
+  for i in 0..<p.options.length() {
+    let o = p.options[i]
+    opts.push(
+      base_codec::json_obj([
+        ("id", base_codec::json_str(o.id)),
+        ("name", base_codec::json_str(o.name)),
+        ("rubric", base_codec::json_str(o.rubric)),
+        ("archive", base_codec::json_bool(o.archive)),
+      ]),
+    )
+  }
+  base_codec::json_obj([
+    ("policy", base_codec::json_str(p.policy)),
+    ("options", base_codec::json_arr(opts)),
+  ])
+}
+
+fn parse_archive_options_json(arr : Array[base_codec::Json]) -> Result[Array[station_sessions::ArchiveOption], String] {
+  let out : Array[station_sessions::ArchiveOption] = []
+  for i in 0..<arr.length() {
+    let item = arr[i]
+    let id = rs_arg_trim(item, "id")
+    let name = match rs_arg_str(item, "name") {
+      Some(s) => s
+      None => return Err("option " + (i + 1).to_string() + " is missing name")
+    }
+    let rubric = match rs_arg_str(item, "rubric") {
+      Some(s) => s
+      None => return Err("option " + (i + 1).to_string() + " is missing rubric")
+    }
+    let archive = match rs_arg_bool(item, "archive") {
+      Some(b) => b
+      None => return Err("option " + (i + 1).to_string() + " is missing archive boolean")
+    }
+    out.push(station_sessions::ArchiveOption::{ id: id, name: name, rubric: rubric, archive: archive })
+  }
+  Ok(out)
+}
+
+fn read_current_archive_policy(
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  home_ws : String,
+) -> station_sessions::ArchivePolicy {
+  match (store_port.read_archive_policy_raw)(caller_ws, home_ws) {
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(j) => {
+          let p_str = match rs_arg_str(j, "policy") {
+            Some(s) => s
+            None => ""
+          }
+          let opts_res = match base_codec::json_get(j, "options") {
+            Some(base_codec::Json::Arr(a)) => parse_archive_options_json(a)
+            _ => Err("bad options")
+          }
+          match opts_res {
+            Ok(opts) => match station_sessions::checked_policy(p_str, opts) {
+              Ok(valid) => valid
+              Err(_) => station_sessions::default_archive_policy()
+            }
+            Err(_) => station_sessions::default_archive_policy()
+          }
+        }
+        _ => station_sessions::default_archive_policy()
+      }
+    }
+    None => station_sessions::default_archive_policy()
+  }
+}
+
+fn handle_archive_policy_tool(
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  home_ws : String,
+  session : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  let cur = read_current_archive_policy(store_port, caller_ws, home_ws)
+  let pol_arg = base_codec::json_get(args, "policy")
+  let opts_arg = base_codec::json_get(args, "options")
+  let has_pol = match pol_arg {
+    None | Some(base_codec::Json::Null) => false
+    _ => true
+  }
+  let has_opts = match opts_arg {
+    None | Some(base_codec::Json::Null) => false
+    _ => true
+  }
+  if !has_pol && !has_opts {
+    return station_tools::text_reply(base_codec::json_stringify(archive_policy_to_json(cur)))
+  }
+  let next_pol_str = if has_pol {
+    match pol_arg {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return station_tools::error_reply("policy must be a string")
+    }
+  } else {
+    cur.policy
+  }
+  let next_opts = if has_opts {
+    match opts_arg {
+      Some(base_codec::Json::Arr(a)) => match parse_archive_options_json(a) {
+        Ok(xs) => xs
+        Err(e) => return station_tools::error_reply(e)
+      }
+      _ => return station_tools::error_reply("options must be an array")
+    }
+  } else {
+    cur.options
+  }
+  let validated = match station_sessions::checked_policy(next_pol_str, next_opts) {
+    Ok(p) => p
+    Err(e) => return station_tools::error_reply(e)
+  }
+  let summary = station_sessions::policy_change_summary(cur, validated)
+  if summary.length() == 0 {
+    return station_tools::text_reply("Nothing changed: the policy is already so.")
+  }
+  let pol_json = base_codec::json_stringify(archive_policy_to_json(validated))
+  let author_json = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("agent")),
+      ("session", base_codec::json_str(session)),
+    ]),
+  )
+  match (store_port.write_archive_policy_raw)(caller_ws, pol_json, author_json, summary, now_ms) {
+    Ok(()) => {
+      station_tools::text_reply(
+        "Saved (" + summary + "). The done chats are checked again under it; this chat is when your turn ends all_done. Tell the person what you changed.",
+      )
+    }
+    Err(e) => station_tools::error_reply(e)
+  }
+}
+
+// --- 5c. `login` ---
+
+fn parse_login_cmd_arg(v : Option[base_codec::Json]) -> Option[String] {
+  match v {
+    Some(base_codec::Json::Str(s)) => {
+      let t = s.trim()
+      if t.length() > 0 { Some(t) } else { None }
+    }
+    Some(base_codec::Json::Arr(xs)) => {
+      let parts : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => parts.push(s)
+          _ => return None
+        }
+      }
+      if parts.length() > 0 { Some(rs_join(parts, " ")) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn handle_login_tool(
+  port : McpRemoteSystemPort,
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  session : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  let target_station = rs_arg_trim(args, "station")
+  if target_station.length() > 0 {
+    let stations = (port.list_stations)(caller_ws)
+    let peer = match resolve_ws_station(stations, caller_ws, target_station) {
+      Some(p) => p
+      None => return station_tools::error_reply("no station " + target_station + " in this chat's workspace")
+    }
+    if !peer.is_self {
+      match port.remote_login {
+        Some(rfn) => {
+          match rfn(caller_ws, session, peer.id, args) {
+            Ok(txt) => return station_tools::text_reply(txt)
+            Err(e) => return station_tools::error_reply(e)
+          }
+        }
+        None => {
+          return station_tools::error_reply("logging in another station is not there yet: log in on this station")
+        }
+      }
+    }
+  }
+  let logins_rt = match port.logins {
+    Some(l) => l
+    None => return station_tools::error_reply("the station is starting: try again in a moment")
+  }
+  let id_str = rs_arg_trim(args, "id")
+  if id_str.length() > 0 {
+    let existing = match (logins_rt.get)(id_str) {
+      Some(v) => v
+      None => return station_tools::error_reply("no login " + id_str)
+    }
+    // Enforce workspace isolation: callers cannot inspect/control logins of another workspace.
+    match existing.workspace {
+      Some(lws) => {
+        if lws.length() > 0 && lws != caller_ws {
+          return station_tools::error_reply("no login " + id_str)
+        }
+      }
+      None => ()
+    }
+    let is_cancel = match rs_arg_bool(args, "cancel") {
+      Some(true) => true
+      _ => false
+    }
+    if is_cancel {
+      let _ = (logins_rt.cancel)(id_str, now_ms)
+    } else {
+      match rs_arg_bool(args, "paste") {
+        Some(p) => {
+          match (logins_rt.set_paste)(id_str, p) {
+            Ok(_) => ()
+            Err(e) => return station_tools::error_reply(e)
+          }
+        }
+        None => {
+          let inp_opt = rs_arg_str(args, "input")
+          let key_str_opt = rs_arg_str(args, "key")
+          let key_opt : Option[station_devices::LoginKey] = match key_str_opt {
+            Some(ks) => match station_devices::parse_login_key(ks) {
+              Some(k) => Some(k)
+              None => return station_tools::error_reply("key: one of enter, up, down, left, right, tab, backspace, ctrl-c")
+            }
+            None => None
+          }
+          if inp_opt is Some(_) || key_opt is Some(_) {
+            match (logins_rt.send_input)(id_str, inp_opt, key_opt) {
+              Ok(_) => ()
+              Err(e) => return station_tools::error_reply(e)
+            }
+          }
+        }
+      }
+    }
+    let view = match (logins_rt.get)(id_str) {
+      Some(v) => v
+      None => existing
+    }
+    let screen = (logins_rt.screen)(id_str)
+    let link = (port.login_link)(session, id_str)
+    return station_tools::text_reply(station_devices::login_told(view, screen, link))
+  }
+  let cmd = match parse_login_cmd_arg(base_codec::json_get(args, "command")) {
+    Some(c) => c
+    None => return station_tools::error_reply("command: the tool's own login command (e.g. gh auth login); or id to see or act on one")
+  }
+  let by_code = parse_login_cmd_arg(base_codec::json_get(args, "byCode"))
+  let starter_email = (store_port.session_starter)(session)
+  let starter_name = starter_email
+  let chat_title = (store_port.session_chat_title)(session)
+  let starter = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: starter_email, name: starter_name },
+    workspace: Some(caller_ws),
+    chat: Some(session),
+    chat_title: chat_title,
+  }
+  let ws_dir = (store_port.session_workspace)(session)
+  let session_cwd = if ws_dir.length() > 0 { ws_dir } else { "." }
+  match (logins_rt.start)(cmd, starter, session_cwd, by_code, now_ms) {
+    Ok(view) => {
+      let screen = (logins_rt.screen)(view.id)
+      let link = (port.login_link)(session, view.id)
+      station_tools::text_reply(station_devices::login_told(view, screen, link))
+    }
+    Err(e) => station_tools::error_reply(e)
+  }
+}
+
+// --- 5d. `relays` ---
+
+fn format_relays_view_fields(v : McpRelaysView) -> Array[(String, base_codec::Json)] {
+  let own_arr : Array[base_codec::Json] = []
+  for i in 0..<v.own.length() {
+    let f : Array[(String, base_codec::Json)] = [("url", base_codec::json_str(v.own[i].url))]
+    match v.own[i].by {
+      Some(b) => if b.length() > 0 { f.push(("by", base_codec::json_str(b))) }
+      None => ()
+    }
+    own_arr.push(base_codec::json_obj(f))
+  }
+  let sf_arr : Array[base_codec::Json] = []
+  for i in 0..<v.still_fail.length() {
+    sf_arr.push(base_codec::json_str(v.still_fail[i]))
+  }
+  let off_arr : Array[base_codec::Json] = []
+  for i in 0..<v.off.length() {
+    off_arr.push(base_codec::json_str(v.off[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("workspace", base_codec::json_str(v.workspace)),
+    ("own", base_codec::json_arr(own_arr)),
+    ("still_fail", base_codec::json_arr(sf_arr)),
+    ("off", base_codec::json_arr(off_arr)),
+  ]
+  match v.mesh {
+    Some(m) => fields.push(("mesh", base_codec::json_arr(m)))
+    None => ()
+  }
+  fields
+}
+
+fn is_lower_hex64(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn handle_relays_tool(
+  port : McpRemoteSystemPort,
+  store_port : McpSessionStorePort,
+  caller_ws : String,
+  session : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  let action = rs_arg_trim(args, "action")
+  if action == "list" {
+    match (port.relays_list)(caller_ws) {
+      Ok(v) => return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(format_relays_view_fields(v))))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  if action == "revoke" {
+    let revoke_fn = match port.relays_revoke {
+      Some(f) => f
+      None => return station_tools::error_reply("mesh relay revocation is not available on this station")
+    }
+    let node = rs_arg_trim(args, "node")
+    if !is_lower_hex64(node) {
+      return station_tools::error_reply("node must be a mesh relay public key from list")
+    }
+    match revoke_fn(caller_ws, node) {
+      Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  if action == "enroll" {
+    let enroll_fn = match port.relays_enroll {
+      Some(f) => f
+      None => return station_tools::error_reply("mesh relay enrollment is not available on this station")
+    }
+    let name = rs_arg_trim(args, "name")
+    if name.length() == 0 {
+      return station_tools::error_reply("name is required for mesh relay enrollment")
+    }
+    let by = session_chat_label(store_port, session)
+    match enroll_fn(caller_ws, name, by) {
+      Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  if action == "add" {
+    let raw = rs_arg_trim(args, "url")
+    if raw.length() == 0 {
+      return station_tools::error_reply("url: https://host[:port][/path], with no account, query or fragment")
+    }
+    let by = session_chat_label(store_port, session)
+    match (port.relays_add)(caller_ws, raw, by, now_ms) {
+      Ok((added, ms, view)) => {
+        let fields : Array[(String, base_codec::Json)] = [
+          ("added", base_codec::json_str(added)),
+          ("round_trip_ms", base_codec::json_int(ms)),
+        ]
+        let vf = format_relays_view_fields(view)
+        for i in 0..<vf.length() {
+          fields.push(vf[i])
+        }
+        return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(fields)))
+      }
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  if action == "remove" {
+    let raw = rs_arg_trim(args, "url")
+    if raw.length() == 0 {
+      return station_tools::error_reply("url is required to remove a relay")
+    }
+    match (port.relays_remove)(caller_ws, raw, now_ms) {
+      Ok((removed, view)) => {
+        let fields : Array[(String, base_codec::Json)] = [("removed", base_codec::json_str(removed))]
+        let vf = format_relays_view_fields(view)
+        for i in 0..<vf.length() {
+          fields.push(vf[i])
+        }
+        return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(fields)))
+      }
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  station_tools::error_reply("action: list, add, remove, enroll or revoke")
+}
+
+fn session_chat_label(store_port : McpSessionStorePort, session : String) -> String {
+  match (store_port.session_chat_title)(session) {
+    Some(s) => if s.length() > 0 { s } else { session }
+    None => session
+  }
+}
+
+// --- 5e. `station_move` ---
+
+fn move_state_str(s : station_replica::MoveItemStateKind) -> String {
+  match s {
+    station_replica::MoveItemStateKind::Here => "here"
+    station_replica::MoveItemStateKind::Moving => "moving"
+    station_replica::MoveItemStateKind::There => "there"
+    station_replica::MoveItemStateKind::Failed(_) => "failed"
+    station_replica::MoveItemStateKind::Stopped(_) => "stopped"
+  }
+}
+
+fn move_item_brief_json(p : station_replica::PlannedItem) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("module", base_codec::json_str(p.item.module_id)),
+    ("item", base_codec::json_str(p.item.id)),
+    ("label", base_codec::json_str(p.item.label)),
+    ("state", base_codec::json_str(move_state_str(p.state))),
+  ]
+  if p.item.needs.length() > 0 {
+    let narr : Array[base_codec::Json] = []
+    for i in 0..<p.item.needs.length() {
+      narr.push(base_codec::json_str(station_replica::need_name(p.item.needs[i])))
+    }
+    fields.push(("needs", base_codec::json_arr(narr)))
+  }
+  match p.item.cannot {
+    Some(c) => fields.push(("cannot", base_codec::json_str(c)))
+    None => ()
+  }
+  match p.state {
+    station_replica::MoveItemStateKind::Failed(e) => fields.push(("error", base_codec::json_str(e)))
+    station_replica::MoveItemStateKind::Stopped(w) => {
+      fields.push(("waitsFor", base_codec::json_str(w.module_id + " " + w.id)))
+    }
+    _ => ()
+  }
+  if p.would_stop.length() > 0 {
+    let warr : Array[base_codec::Json] = []
+    for i in 0..<p.would_stop.length() {
+      warr.push(base_codec::json_str(station_replica::need_name(p.would_stop[i])))
+    }
+    fields.push(("wouldStop", base_codec::json_arr(warr)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn format_move_plan_summary(plan : station_replica::MovePlan, to_name : String) -> base_codec::Json {
+  let mut here = 0
+  let mut there = 0
+  let mut moving = 0
+  let mut stopped = 0
+  let mut failed = 0
+  for i in 0..<plan.items.length() {
+    match plan.items[i].state {
+      station_replica::MoveItemStateKind::Here => here = here + 1
+      station_replica::MoveItemStateKind::There => there = there + 1
+      station_replica::MoveItemStateKind::Moving => moving = moving + 1
+      station_replica::MoveItemStateKind::Stopped(_) => stopped = stopped + 1
+      station_replica::MoveItemStateKind::Failed(_) => failed = failed + 1
+    }
+  }
+  let say = plan.items.length().to_string() +
+  " items" +
+  (if to_name.length() > 0 { " for " + to_name } else { "" }) +
+  ": " + here.to_string() + " here, " +
+  there.to_string() + " there, " +
+  moving.to_string() + " moving, " +
+  stopped.to_string() + " stopped, " +
+  failed.to_string() + " failed."
+  base_codec::json_obj([
+    (
+      "summary",
+      base_codec::json_obj([
+        ("items", base_codec::json_int(plan.items.length())),
+        ("here", base_codec::json_int(here)),
+        ("there", base_codec::json_int(there)),
+        ("moving", base_codec::json_int(moving)),
+        ("stopped", base_codec::json_int(stopped)),
+        ("failed", base_codec::json_int(failed)),
+      ]),
+    ),
+    ("say", base_codec::json_str(say)),
+  ])
+}
+
+fn format_move_outcome(out : station_replica::MoveOutcome, verb : String, to_name : String) -> base_codec::Json {
+  let done_arr : Array[base_codec::Json] = []
+  for i in 0..<out.done.length() {
+    done_arr.push(base_codec::json_str(station_replica::need_name(out.done[i])))
+  }
+  let ref_arr : Array[base_codec::Json] = []
+  for i in 0..<out.refused.length() {
+    ref_arr.push(
+      base_codec::json_obj([
+        ("item", base_codec::json_str(station_replica::need_name(out.refused[i].item))),
+        ("why", base_codec::json_str(out.refused[i].why)),
+      ]),
+    )
+  }
+  let fail_arr : Array[base_codec::Json] = []
+  for i in 0..<out.failures.length() {
+    fail_arr.push(
+      base_codec::json_obj([
+        ("item", base_codec::json_str(station_replica::need_name(out.failures[i].item))),
+        ("error", base_codec::json_str(out.failures[i].error)),
+      ]),
+    )
+  }
+  let say = if out.done.length() == 0 {
+    "Nothing " + verb + " " + to_name + "."
+  } else {
+    verb + " " + to_name + " (" + out.done.length().to_string() + ")."
+  }
+  base_codec::json_obj([
+    (
+      "outcome",
+      base_codec::json_obj([
+        ("done", base_codec::json_arr(done_arr)),
+        ("refused", base_codec::json_arr(ref_arr)),
+        ("failures", base_codec::json_arr(fail_arr)),
+      ]),
+    ),
+    ("say", base_codec::json_str(say)),
+  ])
+}
+
+fn handle_station_move_tool(
+  port : McpRemoteSystemPort,
+  caller_ws : String,
+  _session : String,
+  args : base_codec::Json,
+) -> station_tools::ToolReply {
+  let action = rs_arg_trim(args, "action")
+  if action != "plan" && action != "move" && action != "back" && action != "status" && action != "stop" {
+    return station_tools::error_reply("action is one of plan, move, back, status, stop")
+  }
+  let sched = match port.move_scheduler {
+    Some(s) => s
+    None => return station_tools::error_reply("station_move is not initialized on this station")
+  }
+  if action == "stop" {
+    sched.stop_turn()
+    return station_tools::text_reply(
+      base_codec::json_stringify(
+        base_codec::json_obj([
+          ("stopping", base_codec::json_bool(true)),
+          ("say", base_codec::json_str("Stop requested for any move under way.")),
+        ]),
+      ),
+    )
+  }
+  let stations = (port.list_stations)(caller_ws)
+  let to_raw = rs_arg_trim(args, "to")
+  let to_peer_opt : Option[McpStationPeer] = if to_raw.length() == 0 {
+    if action == "status" {
+      None
+    } else {
+      return station_tools::error_reply("to: name the other station (station_list lists them)")
+    }
+  } else {
+    match resolve_ws_station(stations, caller_ws, to_raw) {
+      Some(p) => {
+        if p.is_self {
+          return station_tools::error_reply("that is this station: name another")
+        }
+        Some(p)
+      }
+      None => return station_tools::error_reply("no station " + to_raw + " in this chat's workspace: station_list lists them")
+    }
+  }
+  let to_id = match to_peer_opt {
+    Some(p) => p.id
+    None => ""
+  }
+  let to_name = match to_peer_opt {
+    Some(p) => p.name
+    None => ""
+  }
+  let mod_raw = rs_arg_trim(args, "module")
+  let item_raw = rs_arg_trim(args, "item")
+  let mod_opt = if mod_raw.length() > 0 { Some(mod_raw) } else { None }
+  let item_opt = if item_raw.length() > 0 { Some(item_raw) } else { None }
+
+  if action == "plan" || action == "status" {
+    let plan = match sched.plan(caller_ws, to_id) {
+      Ok(p) => p
+      Err(e) => return station_tools::error_reply(e)
+    }
+    match item_opt {
+      Some(iid) => {
+        for i in 0..<plan.items.length() {
+          let x = plan.items[i]
+          let mod_ok = match mod_opt {
+            Some(m) => x.item.module_id == m
+            None => true
+          }
+          if x.item.id == iid && mod_ok {
+            return station_tools::text_reply(
+              base_codec::json_stringify(base_codec::json_obj([("item", move_item_brief_json(x))])),
+            )
+          }
+        }
+        return station_tools::error_reply("no item " + iid + " in the plan: plan with module lists them")
+      }
+      None => ()
+    }
+    match mod_opt {
+      Some(m) => {
+        let mine : Array[station_replica::PlannedItem] = []
+        for i in 0..<plan.items.length() {
+          if plan.items[i].item.module_id == m {
+            mine.push(plan.items[i])
+          }
+        }
+        let after_raw = rs_arg_trim(args, "after")
+        let mut from_idx = 0
+        if after_raw.length() > 0 {
+          for i in 0..<mine.length() {
+            if mine[i].item.id == after_raw {
+              from_idx = i + 1
+              break
+            }
+          }
+        }
+        let lim_raw = match rs_arg_int(args, "limit") {
+          Ok(Some(v)) => v
+          _ => MOVE_PAGE_DEFAULT
+        }
+        let lim = if lim_raw < 1 { 1 } else if lim_raw > MOVE_PAGE_MAX { MOVE_PAGE_MAX } else { lim_raw }
+        let page : Array[base_codec::Json] = []
+        let end_idx = if from_idx + lim < mine.length() { from_idx + lim } else { mine.length() }
+        for i in from_idx..<end_idx {
+          page.push(move_item_brief_json(mine[i]))
+        }
+        let more = if end_idx < mine.length() && end_idx > from_idx {
+          base_codec::json_str(mine[end_idx - 1].item.id)
+        } else {
+          base_codec::json_null()
+        }
+        return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("module", base_codec::json_str(m)),
+              ("total", base_codec::json_int(mine.length())),
+              ("items", base_codec::json_arr(page)),
+              ("more", more),
+            ]),
+          ),
+        )
+      }
+      None => ()
+    }
+    return station_tools::text_reply(base_codec::json_stringify(format_move_plan_summary(plan, to_name)))
+  }
+
+  // `move` or `back`: never fake success when no remote move executor is wired!
+  if !port.move_has_executor {
+    return station_tools::error_reply(
+      "station_move " + action + " is not yet available on the Pion engine: remote move execution is not wired yet",
+    )
+  }
+  let all_flag = match rs_arg_bool(args, "all") {
+    Some(true) => true
+    _ => false
+  }
+  let with_needs = match rs_arg_bool(args, "withNeeds") {
+    Some(true) => true
+    _ => false
+  }
+  let arrive_stopped = match rs_arg_bool(args, "arriveStopped") {
+    Some(true) => true
+    _ => false
+  }
+  if action == "move" && !all_flag && (mod_opt is None || item_opt is None) {
+    return station_tools::error_reply("move: name the module and the item (station_move plan lists them), or all")
+  }
+  if action == "back" && (mod_opt is None || (item_opt is None && !all_flag)) {
+    return station_tools::error_reply("back: name the module and the item (station_move status lists them), and to: the station it is on")
+  }
+  let sel = station_replica::MoveSelection::{
+    module_id: mod_opt,
+    item: item_opt,
+    all: all_flag,
+    with_needs: with_needs,
+    follow: if mod_raw == "chats" { ["jobs"] } else { [] },
+    arrive_stopped: arrive_stopped,
+  }
+  if action == "move" {
+    match sched.move_forward(caller_ws, to_id, sel) {
+      Ok(out) => return station_tools::text_reply(base_codec::json_stringify(format_move_outcome(out, "moved to", to_name)))
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+  match sched.move_back(caller_ws, to_id, sel) {
+    Ok(out) => station_tools::text_reply(base_codec::json_stringify(format_move_outcome(out, "back here from", to_name)))
+    Err(e) => station_tools::error_reply(e)
+  }
+}
+
+// --- 5f. `station_retire` ---
+
+fn handle_station_retire_tool(args : base_codec::Json) -> station_tools::ToolReply {
+  let action = rs_arg_trim(args, "action")
+  if action != "preview" && action != "status" && action != "start" &&
+  action != "hand_over" && action != "again" && action != "cancel" {
+    return station_tools::error_reply("action must be one of preview, status, start, hand_over, again, cancel")
+  }
+  station_tools::error_reply("station_retire is switched off on this station; use station_move instead")
+}
+
+// --- 5g. `feedback_send` / `feedback_reply` ---
+
+fn handle_feedback_tool(
+  port : McpRemoteSystemPort,
+  store_port : McpSessionStorePort,
+  session : String,
+  tool : String,
+  args : base_codec::Json,
+) -> station_tools::ToolReply {
+  if !(store_port.session_exists)(session) {
+    return station_tools::error_reply("unknown session")
+  }
+  if tool == "feedback_send" {
+    let title = rs_arg_trim(args, "title")
+    let body = rs_arg_trim(args, "body")
+    if title.length() == 0 || body.length() == 0 {
+      return station_tools::error_reply("title and body are required")
+    }
+    let sender = match port.feedback_send {
+      Some(f) => f
+      None => {
+        return station_tools::error_reply(
+          "this station is not connected to still.fail cloud, so the report cannot be sent; give the person the report to pass on themselves",
+        )
+      }
+    }
+    let area_raw = rs_arg_trim(args, "area")
+    let area = if area_raw == "station" || area_raw == "web" || area_raw == "android" ||
+    area_raw == "desktop" || area_raw == "slack" || area_raw == "cloud" || area_raw == "unknown" {
+      area_raw
+    } else {
+      "unknown"
+    }
+    let key_hex = rs_str_slice_bytes(crypto::sha256_hex((session + "\n" + title + "\n" + body).to_bytes()), 0, 32)
+    let report = base_codec::json_obj([
+      ("key", base_codec::json_str(key_hex)),
+      ("title", base_codec::json_str(title)),
+      ("body", base_codec::json_str(body)),
+      ("area", base_codec::json_str(area)),
+      ("reporter", base_codec::json_str(rs_arg_trim(args, "reporter"))),
+      ("session", base_codec::json_str(session)),
+    ])
+    match sender(report) {
+      Ok(ans) => {
+        match base_codec::json_get(ans, "number") {
+          Some(base_codec::Json::Num(d, _)) => {
+            let n = d.to_int()
+            let dup = match rs_arg_bool(ans, "duplicate") {
+              Some(true) => true
+              _ => false
+            }
+            if dup {
+              return station_tools::text_reply("This report was already sent as FB-" + n.to_string() + ".")
+            }
+            return station_tools::text_reply("Sent to the still.fail team as FB-" + n.to_string() + ".")
+          }
+          _ => return station_tools::error_reply("still.fail cloud answered without a number")
+        }
+      }
+      Err(e) => {
+        return station_tools::error_reply(
+          "the report was not sent (" + e + "); give the person the report to pass on themselves",
+        )
+      }
+    }
+  }
+  // `feedback_reply`
+  let num = match rs_arg_int(args, "number") {
+    Ok(Some(n)) => if n >= 1 { n } else { return station_tools::error_reply("number must be the report's number (12 for FB-12)") }
+    _ => return station_tools::error_reply("number must be the report's number (12 for FB-12)")
+  }
+  let text = rs_arg_trim(args, "text")
+  if text.length() == 0 {
+    return station_tools::error_reply("text is required")
+  }
+  let sender = match port.feedback_reply {
+    Some(f) => f
+    None => {
+      return station_tools::error_reply(
+        "this station is not connected to still.fail cloud, so the answer cannot be sent; give the person the text to pass on themselves",
+      )
+    }
+  }
+  match sender(
+    base_codec::json_obj([
+      ("number", base_codec::json_int(num)),
+      ("text", base_codec::json_str(text)),
+      ("session", base_codec::json_str(session)),
+    ]),
+  ) {
+    Ok(_) => station_tools::text_reply("Sent to the still.fail team as a reply on FB-" + num.to_string() + ".")
+    Err(e) => station_tools::error_reply("the answer was not sent (" + e + "); give the person the text to pass on themselves")
+  }
+}
+
+fn rs_join(parts : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
