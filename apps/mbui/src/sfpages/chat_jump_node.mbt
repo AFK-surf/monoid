@@ -1026,6 +1026,14 @@ fn chat_rail_said(
 }
 
 ///|
+/// Named key for a `ChatRailTick` row on the rail (its place and whether a day starts at it).
+#derive(Eq, Hash)
+priv struct RailTickKey {
+  i : Int
+  day : Bool
+}
+
+///|
 /// A tick of the rail as its row draws it (rail_ticks' RailTick, laid out one under another): its place, the message it
 /// stands for (its place among what people said), how long its turn is, whether it is the reader's, whether a day starts
 /// at it after another (a day's gap over it, a dot in its middle) and that day's heading (`name`: said by a tip as the
@@ -1395,7 +1403,7 @@ fn chat_rail_node(
           // keep theirs (the map's stand each for a share of the chat, which moves as it grows: by what they stand for,
           // all of them would be made again); one a day comes to start or stops starting at is another, going as it
           // comes on the column's one way, never a gap's height switched in a frame)
-          fn(t) { (t.i, t.day) },
+          fn(t) { ({ i: t.i, day: t.day } : RailTickKey) },
           fn(row, t) {
             let idx = t.untracked().i
             // (a day's gap over the first of a day after another, a dot in its middle saying a day starts there)

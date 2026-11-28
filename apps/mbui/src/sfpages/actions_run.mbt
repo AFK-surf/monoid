@@ -35,6 +35,14 @@ fn run_elapsed(v : Json?) -> String {
 }
 
 ///|
+/// Named key for a count pill in `run_card_node` (its tone and its words).
+#derive(Eq, Hash)
+priv struct RunCountKey {
+  tone : String
+  words : String
+}
+
+///|
 fn run_counts(v : Json?) -> Array[(String, String)] {
   let counts = field(v, "counts")
   ["failed", "passed", "running", "queued", "cancelled", "skipped", "neutral"].filter_map(fn(state) {
@@ -66,7 +74,7 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
   parent.box(fn(line) {
     @sf.style_node(line, fn() { peek_meta })
     line.wraps(Is(Some(@ui.Space::S2.px()))) |> ignore
-    line.each(fn() { run_counts(value()) }, fn(f) { f }, fn(b, item) {
+    line.each(fn() { run_counts(value()) }, fn(f) { ({ tone: f.0, words: f.1 } : RunCountKey) }, fn(b, item) {
       state_pill_node(b, fn() { item.get().0 }, fn() { None }, fn() { item.get().1 }, style=run_pill)
     })
   }) |> ignore

@@ -1731,6 +1731,14 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
 }
 
 ///|
+/// Named key for a row of `station_logins_node`'s group (its program and the try under it, -1 for the program's own row).
+#derive(Eq, Hash)
+priv struct LoginRowKey {
+  name : String
+  at : Int
+}
+
+///|
 /// Its 登录 (station_logins'): only the logins done there through still.fail; one under way its card (as in its chat), those ended a row per program naming it, who last logged in to it, from
 /// which chat, and how many tries, pressed open to them. Nothing when there are none. Away (`online` false), no card of
 /// one under way: it can be neither done nor cancelled until it is back.
@@ -1763,7 +1771,7 @@ fn station_logins_node(b : @view.View, core : Core, station : String, online : (
             out
           }
           let tool_of = fn(name : String) { tools().iter().find_first(fn(t) { text(Some(t), "name") == name }) }
-          g.each(rows, fn(r) { r }, fn(row, r) {
+          g.each(rows, fn(r) { ({ name: r.0, at: r.1 } : LoginRowKey) }, fn(row, r) {
             let (name, at) = r.untracked()
             if at < 0 {
               login_tool_row_node(row, station, name, fn() { tool_of(name) })

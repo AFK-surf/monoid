@@ -676,7 +676,7 @@ fn stories_wave3(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }
               let out = items.copy()
               match sort.get() {
                 Some(ts) => {
-                  let asc = ts.dir is Asc
+                  let asc = ts.dir is @sf.SortDir::Asc
                   out.sort_by(fn(x, y) {
                     let c = if ts.col == "quota" { x.2.compare(y.2) } else { x.1.compare(y.1) }
                     if asc { c } else { -c }
@@ -763,7 +763,7 @@ fn stories_wave3(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }
                 let out = rows.copy()
                 match sort.get() {
                   Some(ts) => {
-                    let asc = ts.dir is Asc
+                    let asc = ts.dir is @sf.SortDir::Asc
                     out.sort_by(fn(x, y) {
                       let c = if ts.col == "rtt" { x.2.compare(y.2) } else { x.1.compare(y.1) }
                       if asc { c } else { -c }

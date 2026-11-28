@@ -366,6 +366,14 @@ priv struct ReceiptLine {
 }
 
 ///|
+/// Named key for a `ReceiptLine` row (its kind and its model).
+#derive(Eq, Hash)
+priv struct ReceiptLineKey {
+  kind : Int
+  model : Int
+}
+
+///|
 /// 小票: a till's receipt of the agents' week, on its paper. Read down: still.fail and when, in its middle; each day a
 /// line, its chats archived at its end (today's date in the orange); the chats archived and the tokens read as its
 /// subtotals; each kind of account a line (its accounts), its models under it (each its tokens and cost); between
@@ -430,7 +438,7 @@ fn receipt_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
       }
       c.each(
         lines,
-        fn(l) { (l.kind, l.model) },
+        fn(l) { ({ kind: l.kind, model: l.model } : ReceiptLineKey) },
         style_of=fn(l) {
           if l.model >= 0 {
             receipt_model
