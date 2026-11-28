@@ -1160,6 +1160,17 @@ pub fn Slice1Router::invalidate_kept_where(self : Slice1Router, pred : (Topic) -
   }
 }
 
+/// Clear `last_value` and `last_token` on one subscription by `id`.
+pub fn Slice1Router::invalidate_sub_cache_by_id(self : Slice1Router, id : Int64) -> Unit {
+  match self.subs.get(id) {
+    Some(sub) => {
+      sub.last_value = None
+      sub.last_token = None
+    }
+    None => ()
+  }
+}
+
 /// Clear `last_value` and `last_token` on active subscriptions matching `pred` so boundary
 /// re-anchoring emits a full fresh `Value` (or `Waiting`) under the new generation.
 pub fn Slice1Router::invalidate_sub_cache_where(self : Slice1Router, pred : (Topic) -> Bool) -> Unit {

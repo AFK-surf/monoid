@@ -11,7 +11,85 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include "core_api.h"
+
+// Cross-process & cross-fd non-blocking exclusive file lock on `<dir>/.accounts.lock`
+// serializing `accounts` CAS across multiple OS processes and runtime instances:
+// - returns handle/fd >= 0 on success
+// - returns -1 if currently held by another process or open file description (contended)
+// - returns -2 on I/O or invalid path error
+int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len > 3800) {
+        return -2;
+    }
+    char path[4096];
+    memcpy(path, dir, (size_t)dir_len);
+    size_t pos = (size_t)dir_len;
+    if (pos > 0 && path[pos - 1] != '/' && path[pos - 1] != '\\') {
+        path[pos++] = '/';
+    }
+    static const char suffix[] = ".accounts.lock";
+    memcpy(path + pos, suffix, sizeof(suffix));
+#ifdef _WIN32
+    HANDLE h = CreateFileA(
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -2;
+    }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &ov)) {
+        DWORD err = GetLastError();
+        CloseHandle(h);
+        return (err == ERROR_LOCK_VIOLATION) ? -1 : -2;
+    }
+    return (int64_t)(intptr_t)h;
+#else
+    int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -2;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        int e = errno;
+        close(fd);
+        return (e == EWOULDBLOCK || e == EAGAIN) ? -1 : -2;
+    }
+    return (int64_t)fd;
+#endif
+}
+
+void pion_core_dir_lock_release(int64_t handle) {
+    if (handle < 0) {
+        return;
+    }
+#ifdef _WIN32
+    HANDLE h = (HANDLE)(intptr_t)handle;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
+    (void)CloseHandle(h);
+#else
+    int fd = (int)handle;
+    (void)flock(fd, LOCK_UN);
+    (void)close(fd);
+#endif
+}
 
 void pion_core_log_warn(const char *msg, int64_t len) {
     if (msg != NULL && len > 0) {

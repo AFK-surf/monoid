@@ -58,6 +58,10 @@ pub fn DoingTracker::new() -> DoingTracker {
   DoingTracker::{ next_id: 0, entries: [] }
 }
 
+pub fn DoingTracker::clear(self : DoingTracker) -> Unit {
+  self.entries.clear()
+}
+
 pub fn DoingTracker::count(self : DoingTracker) -> Int {
   self.entries.length()
 }

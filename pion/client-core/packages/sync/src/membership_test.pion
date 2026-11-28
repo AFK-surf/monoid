@@ -1344,3 +1344,181 @@ test "Slice 2B-1 R2: fresh me visibility, bidirectional me->ws merge, bind_accou
   debug_assert(!fail_core.can_read_workspace(ULID_WS2), "WS2 must fail closed (revoked) when sqlite_master probe fails")
   debug_assert(fail_core.membership.has_pending_purge(ULID_WS2), "WS2 must have pending_purge latched on probe failure")
 }
+
+// ── Test 10 (R3 Items 2, 5, 6): Outbound frame + registry scrub on 401/switch, member demotion scrubs admin fields, opened moved chatRow target-ws invalidation ──
+
+test "Slice 2B-1 R3: outbound outbox & registry scrub on 401/switch, member demotion scrubs admin fields, opened moved chatRow target-ws dependency" {
+  let rt = effect::Runtime::new()
+  let (sim_a, db_a) = make_sim_db(rt)
+  let core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db_a, core_offline_transport(), fn() -> Unit {})
+  let _ = core.set_db_account_sub("u-alice")
+  core.set_viewer("alice@still.fail", sub="u-alice", role="admin")
+
+  // 1. Item 2: Outbound frame queue + account-scoped registries scrubbed on 401 (EVEN WITH SIBLING) and on switch_to_unauthenticated_db -> switch_account_db(Bob)!
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "u-alice", email: "alice@still.fail", name: "Alice", picture: "", access: "a1", refresh: "r1", access_expires: 1900000000L,
+  })
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "u-sib", email: "sib@still.fail", name: "Sib", picture: "", access: "a2", refresh: "r2", access_expires: 1900000000L,
+  })
+  core.account_sessions.set("u-alice", "s-alice")
+  core.account_sessions.set("u-sib", "s-sib")
+  let ep_before = core.account_epoch
+  core.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    42,
+    store::Entry::{
+      n: 1,
+      kind: "message",
+      author_kind: "person",
+      author: "alice",
+      text: "alice-secret-entry-payload",
+      notice: None,
+      files: 0,
+      letter: false,
+    },
+    None,
+  ))
+  let _ = mt_expect_ok_json(
+    mt_call(core, 1L, "download.join", base_codec::json_obj([
+      ("reader", base_codec::json_str("dl-alice-1")),
+      ("fileKey", base_codec::json_str("alice-secret.pdf")),
+      ("name", base_codec::json_str("alice-secret.pdf")),
+      ("start", base_codec::json_int(0)),
+      ("end", base_codec::json_int(1024)),
+    ])),
+    "alice download.join",
+  )
+  debug_assert(core.outbox.waiting() == 1 && core.downloads_held.length() == 1, "alice queued frame & download")
+
+  // 401 active account invalidation WITH sibling remaining MUST still clear outbox & all account registries!
+  let inv = core.invalidate_session("u-alice", expected_session=Some("s-alice"), expected_refresh=Some("r1"), persist_accounts=false)
+  debug_assert(inv, "alice invalidated")
+  debug_assert(core.account_epoch > ep_before, "account_epoch advanced on 401")
+  debug_assert(core.outbox.waiting() == 0, "outbound outbox cleared on 401 with sibling")
+  debug_assert(core.drain_frame().length() == 0, "drain_frame empty on 401")
+  debug_assert(core.downloads_held.length() == 0, "downloads_held cleared on 401 with sibling")
+
+  // Re-seed Alice frame & download, switch to unauth :memory:, then same-process switch to Bob:
+  let (_, mem_db) = make_sim_db(rt)
+  let (_, db_b) = make_sim_db(rt)
+  core.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    42,
+    store::Entry::{
+      n: 2,
+      kind: "message",
+      author_kind: "person",
+      author: "alice",
+      text: "alice-secret-entry-2",
+      notice: None,
+      files: 0,
+      letter: false,
+    },
+    None,
+  ))
+  core.downloads_held.push(views::DownloadEntry::{
+    id: "dl-alice-2",
+    station: ULID_WS1 + "/st-1",
+    name: "alice-secret-2.pdf",
+    size: 2048L,
+    loaded: 0L,
+    state: "going",
+    error: None,
+    started_at: 1000L,
+  })
+  core.switch_to_unauthenticated_db(mem_db)
+  debug_assert(core.outbox.waiting() == 0 && core.downloads_held.length() == 0, "unauth switch clears outbox & downloads")
+  match core.switch_account_db(db_b, "u-bob") {
+    Ok(_) => ()
+    Err(e) => panic("switch_account_db(u-bob) failed: " + e)
+  }
+  debug_assert(core.drain_frame().length() == 0, "0 Alice frames drained after Bob login")
+  let bob_dls = mt_expect_val_json(mt_sub(core, 2L, "downloads", []), "bob downloads sub")
+  let bob_dls_s = base_codec::json_stringify(bob_dls)
+  debug_assert(!bob_dls_s.contains("alice-secret"), "0 Alice downloads leaked to Bob")
+
+  // 2. Item 5: `/v1/me` demoting role from `admin` -> `member` scrubs `invitations`, `added`, `lock_requests` in same tx!
+  let (sim_m, db_m) = make_sim_db(rt)
+  let mcore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db_m, core_offline_transport(), fn() -> Unit {})
+  let _ = mcore.set_db_account_sub("u-alice")
+  mcore.set_viewer("alice@still.fail", sub="u-alice", role="admin")
+  mt_put_workspace(
+    db_m,
+    ULID_WS1,
+    "{\"id\":\"" + ULID_WS1 + "\",\"name\":\"Admin WS\",\"role\":\"admin\",\"rev\":5,\"invitations\":[{\"id\":\"inv-secret-1\"}],\"added\":[{\"id\":\"add-secret-1\"}],\"lock_requests\":3,\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true}],\"members\":[{\"sub\":\"u-alice\",\"email\":\"alice@still.fail\",\"role\":\"admin\"}]}",
+  )
+  match mcore.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "Admin WS", "member")]), req_seq=1L) {
+    Ok(true) => ()
+    _ => panic("commit_cloud_me demotion failed")
+  }
+  let ws_got = mt_expect_ok_json(
+    mt_call(mcore, 10L, "workspace.get", base_codec::json_obj([("workspace", base_codec::json_str(ULID_WS1))])),
+    "workspace.get after member demotion",
+  )
+  let ws_got_s = base_codec::json_stringify(ws_got)
+  debug_assert(ws_got_s.contains("\"role\":\"member\""), "demoted role updated to member")
+  debug_assert(!ws_got_s.contains("inv-secret-1") && !ws_got_s.contains("add-secret-1"), "manager-only invitations/added scrubbed on demotion")
+  debug_assert(ws_got_s.contains("\"invitations\":[]") && ws_got_s.contains("\"added\":[]") && ws_got_s.contains("\"lock_requests\":0"), "scrubbed fields set to empty/0")
+  let ws_list = mt_expect_ok_json(mt_call(mcore, 11L, "workspaces.list", base_codec::json_obj([])), "workspaces.list after demotion")
+  let ws_list_s = base_codec::json_stringify(ws_list)
+  debug_assert(!ws_list_s.contains("inv-secret-1") && !ws_list_s.contains("add-secret-1") && ws_list_s.contains("\"lock_requests\":0"), "workspaces.list reflects scrubbed admin fields")
+
+  // 3. Item 6: Already-opened `chatRow` on readable `W1/st-1` pointing via `moved` to `W2/st-2` automatically
+  //    re-projects to `Waiting` when `W2` is revoked (even though `W1` remains untouched)!
+  let _ = mcore.commit_cloud_me(
+    mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "owner")]),
+    req_seq=2L,
+  )
+  let _ = mcore.membership.bind_station_checked(ULID_WS1, "st-1")
+  let _ = mcore.membership.bind_station_checked(ULID_WS2, "st-2")
+  sim_m.moved_rows.set(
+    ULID_WS1 + "/st-1:sess-mv-live",
+    (ULID_WS1 + "/st-1", "sess-mv-live", ULID_WS2 + "/st-2", Some(12), Some(24), Some(2000L), 0),
+  )
+  sim_m.chats.set(ULID_WS2 + "/st-2:0:sess-mv-live", SimChatRow::{
+    station: ULID_WS2 + "/st-2",
+    archived: 0,
+    id: "sess-mv-live",
+    ord: 1.0,
+    thread: Some(24),
+    session: Some("sess-mv-live"),
+    pinned_at: None,
+    last_active: 2000L,
+    unread: 0,
+    tone: None,
+    asks: 0,
+    json: "{\"id\":\"sess-mv-live\",\"title\":\"Moved Target Title\",\"thread\":24,\"session\":\"sess-mv-live\"}",
+  })
+  sim_m.chat_order.push(ULID_WS2 + "/st-2:0:sess-mv-live")
+
+  // Open `chatRow` sub id=77 on W1/st-1 while W2 is still readable:
+  let cr_val = mt_expect_val_json(
+    mt_sub(mcore, 77L, "chatRow", [("station", base_codec::json_str(ULID_WS1 + "/st-1")), ("session", base_codec::json_str("sess-mv-live"))]),
+    "initial moved chatRow sub",
+  )
+  debug_assert(base_codec::json_stringify(cr_val).contains("Moved Target Title"), "initial moved chatRow projects target W2 row")
+
+  // Attach wire sink and revoke W2 via `/v1/me` (W1 stays active!):
+  let emitted : Array[String] = []
+  mcore.set_wire_sink(fn(j : String, _b : Option[Bytes]) -> Unit { emitted.push(j) })
+  match mcore.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=3L) {
+    Ok(true) => ()
+    _ => panic("revoke W2 via commit_cloud_me failed")
+  }
+  let mut saw_sub77_waiting = false
+  let mut saw_sub77_leak = false
+  for i in 0..<emitted.length() {
+    let s = emitted[i]
+    if s.contains("\"id\":77") {
+      if s.contains("\"waiting\":true") {
+        saw_sub77_waiting = true
+      }
+      if s.contains("Moved Target Title") {
+        saw_sub77_leak = true
+      }
+    }
+  }
+  debug_assert(saw_sub77_waiting && !saw_sub77_leak, "opened moved chatRow sub MUST auto-reproject to waiting on target ws revocation")
+  let _ = sim_a
+}

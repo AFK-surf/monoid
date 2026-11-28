@@ -117,10 +117,12 @@ pub struct ClientCore {
   pub mut device_phone : Bool
   pub mut utc_offset_min : Int
   pub mut db_account_sub : Option[String]
+  pub mut account_epoch : Int64
   chat_windows : Map[String, Int]
   chat_places : Map[String, Option[(Int, Option[Double])]]
   chat_place_order : Array[String]
   chat_sub_snapshots : Map[Int64, ChatSubSnapshot]
+  chat_row_dest_ws : Map[Int64, String]
   mut on_prefs_saved : Option[(base_codec::Json) -> Result[Unit, String]]
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
@@ -238,10 +240,12 @@ pub fn ClientCore::new(
     device_phone: false,
     utc_offset_min: 0,
     db_account_sub: None,
+    account_epoch: 1L,
     chat_windows: Map::new(),
     chat_places: Map::new(),
     chat_place_order: [],
     chat_sub_snapshots: Map::new(),
+    chat_row_dest_ws: Map::new(),
     on_prefs_saved: None,
     auth_seq: 0,
     lock_state: None,
@@ -1502,9 +1506,62 @@ pub fn ClientCore::set_db_account_sub(
   }
 }
 
+/// Discard all pending outbound frames and clear EVERY account-scoped in-memory registry
+/// (`outbox`, `pending_wire_events`, `downloads_held`, `presets_held`, `notices_held`,
+/// `lock_pairing_prompts`, `vault_key_asks`, `rows_memo`, `sub_cache`, `chat_sub_snapshots`,
+/// `chat_row_dest_ws`, `doing`, `md_store`, etc.) and advance `account_epoch`.
+pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit {
+  self.account_epoch += 1L
+  self.outbox.clear()
+  self.pending_wire_events.clear()
+  self.rows_memo = views::RowsMemo::new()
+  self.pending_dirty_rows.clear()
+  self.viewer_marks = views::ViewerMarks::new("")
+  self.chat_windows.clear()
+  self.chat_places.clear()
+  self.chat_place_order.clear()
+  self.chat_sub_snapshots.clear()
+  self.chat_row_dest_ws.clear()
+  self.marks_wanted.clear()
+  self.extra_locks.clear()
+  self.lock_digest_by_ws.clear()
+  self.lock_sec_digest_by_ws.clear()
+  self.lock_state = None
+  self.lock_root = None
+  self.lock_kept_entries = []
+  self.lock_kept_aside = []
+  self.person_lock_entries = []
+  self.lock_seen = None
+  self.lock_corrupt = false
+  self.lock_read_pending = false
+  self.lock_effective = None
+  self.downloads_held.clear()
+  self.presets_held.clear()
+  self.other_presets_held.clear()
+  self.stars_held.clear()
+  self.board_drafts_held.clear()
+  self.status_waits.clear()
+  self.status_downs.clear()
+  self.status_db_notes.clear()
+  self.notices_held.clear()
+  self.lock_pairing_prompts.clear()
+  self.vault_key_asks.clear()
+  self.lock_pending.items.clear()
+  self.vault_approvals.requests.clear()
+  self.file_reads.kept.clear()
+  self.file_reads.in_flight.clear()
+  self.file_reads.dispatched.clear()
+  self.doing.clear()
+  self.md_store.clear()
+  self.router.invalidate_kept_where(fn(_ : protocol::Topic) -> Bool { true })
+  self.router.invalidate_sub_cache_where(fn(_ : protocol::Topic) -> Bool { true })
+}
+
 /// Atomically switch ALL DB holders (`self.db`, `md_store`, `router`, `events`, `local_outbox`,
 /// `composers`, `membership`) from unauthenticated startup (`:memory:`) to `sub`'s dedicated SQLite DB.
 /// Refuses switching if already bound to a different account (`account_sub_mismatch`).
+/// Pass `emit_auth_boundary=false` when the host needs to install `sess.db`, `sess.cloud`, `auth_store`,
+/// and `viewer` before firing `auth.bump_all()` as the final step!
 pub fn ClientCore::switch_account_db(
   self : ClientCore,
   new_db : sql::Sql,
@@ -1512,6 +1569,7 @@ pub fn ClientCore::switch_account_db(
   host_purges_doc : Option[base_codec::Json] = None,
   host_purges_shared : Bool = false,
   host_purges_read : Option[HostStorageRead] = None,
+  emit_auth_boundary : Bool = true,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1557,29 +1615,9 @@ pub fn ClientCore::switch_account_db(
   self.local_outbox.switch_db(new_db)
   self.composers.switch_db(new_db)
 
-  // Reset all in-memory view & lock caches from the unauthenticated context.
-  self.rows_memo = views::RowsMemo::new()
-  self.pending_dirty_rows.clear()
-  self.viewer_marks = views::ViewerMarks::new("")
-  self.chat_windows.clear()
-  self.chat_places.clear()
-  self.chat_place_order.clear()
-  self.chat_sub_snapshots.clear()
-  self.marks_wanted.clear()
-  self.extra_locks.clear()
-  self.lock_digest_by_ws.clear()
-  self.lock_sec_digest_by_ws.clear()
-  self.lock_state = None
-  self.lock_root = None
-  self.lock_kept_entries = []
-  self.lock_kept_aside = []
-  self.lock_seen = None
-  self.lock_corrupt = false
-  self.lock_read_pending = false
-  self.lock_effective = None
-  self.notices_held.clear()
-  self.lock_pairing_prompts.clear()
-  self.vault_key_asks.clear()
+  // Clear ALL outbound queues (including any `Disconnected` frame from `events.switch_db`)
+  // and every account-scoped in-memory registry AFTER swapping DB handles.
+  self.clear_account_scoped_runtime_state()
 
   // Hydrate `MembershipAuthority` from `new_db` + per-account host pending purges, then retry pending purges.
   self.db_account_sub = None
@@ -1596,14 +1634,16 @@ pub fn ClientCore::switch_account_db(
   let _ = self.retry_pending_purges()
   self.restore_lock_state()
   self.restore_notify_state()
-  let _ = self.auth.bump_all()
+  if emit_auth_boundary {
+    let _ = self.auth.bump_all()
+  }
   Ok(())
 }
 
 /// Atomically transition ALL DB holders back to a clean unauthenticated `:memory:` DB
 /// (e.g. when the last signed-in account is permanently removed on 401 refresh failure).
-/// Clears `db_account_sub`, stops all station streams, resets all cached state, and leaves
-/// the runtime ready for a subsequent same-process sign-in with any account!
+/// Clears `db_account_sub`, stops all station streams, discards all outbound frames and
+/// account-scoped registries, and leaves the runtime ready for a fresh same-process sign-in!
 pub fn ClientCore::switch_to_unauthenticated_db(self : ClientCore, new_mem_db : sql::Sql) -> Unit {
   self.events.stop()
   self.events.reset_state()
@@ -1638,32 +1678,10 @@ pub fn ClientCore::switch_to_unauthenticated_db(self : ClientCore, new_mem_db : 
   self.local_outbox.switch_db(new_mem_db)
   self.composers.switch_db(new_mem_db)
 
-  self.rows_memo = views::RowsMemo::new()
-  self.pending_dirty_rows.clear()
-  self.viewer_marks = views::ViewerMarks::new("")
+  self.clear_account_scoped_runtime_state()
   self.viewer_sub = ""
   self.viewer_role = "member"
   self.workspace = "ws-default"
-  self.chat_windows.clear()
-  self.chat_places.clear()
-  self.chat_place_order.clear()
-  self.chat_sub_snapshots.clear()
-  self.marks_wanted.clear()
-  self.extra_locks.clear()
-  self.lock_digest_by_ws.clear()
-  self.lock_sec_digest_by_ws.clear()
-  self.lock_state = None
-  self.lock_root = None
-  self.lock_kept_entries = []
-  self.lock_kept_aside = []
-  self.person_lock_entries = []
-  self.lock_seen = None
-  self.lock_corrupt = false
-  self.lock_read_pending = false
-  self.lock_effective = None
-  self.notices_held.clear()
-  self.lock_pairing_prompts.clear()
-  self.vault_key_asks.clear()
 
   self.db_account_sub = None
   self.membership.reset_for_db_switch()
@@ -2821,6 +2839,17 @@ pub fn ClientCore::invalidate_session(
       self.membership.set_unauthenticated(true)
     }
     self.stop()
+    self.events.reset_state()
+    let eks = self.extra_events.keys()
+    for i in 0..<eks.length() {
+      match self.extra_events.get(eks[i]) {
+        Some(ev) => ev.reset_state()
+        None => ()
+      }
+    }
+    // Always scrub outbound frames and account-scoped registries on active account 401
+    // (whether sibling accounts remain or not!).
+    self.clear_account_scoped_runtime_state()
     let _ = self.auth.bump_all()
   }
   if persist_accounts {
@@ -2944,6 +2973,7 @@ struct ChatSubSnapshot {
 /// Drop any stale per-subscription chat window snapshot when starting a fresh subscription on `id`.
 pub fn ClientCore::drop_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
   self.chat_sub_snapshots.remove(id)
+  self.chat_row_dest_ws.remove(id)
 }
 
 /// Snapshot `rows` (`chat.window`) once when a `chat` subscription opens and reuse it for every
@@ -2974,6 +3004,7 @@ pub fn ClientCore::chat_sub_window_rows_for(
 /// Drop a `chat` subscription's open snapshot on `Unsubscribe` and reclaim its `chat_windows` entry
 /// when no other live subscription targets the same chat (`views.ts:1453`).
 pub fn ClientCore::close_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
+  self.chat_row_dest_ws.remove(id)
   match self.chat_sub_snapshots.get(id) {
     None => ()
     Some(snap) => {
@@ -3994,12 +4025,18 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       }
       _ => ()
     }
+    let src_ws = self.membership.station_workspace(st, fallback_ws=self.workspace)
+    let dest_ws = self.membership.station_workspace(final_st, fallback_ws=self.workspace)
+    if dest_ws.length() > 0 && dest_ws != src_ws {
+      self.chat_row_dest_ws.set(id, dest_ws)
+    } else {
+      self.chat_row_dest_ws.remove(id)
+    }
     // Authorize BOTH source station AND moved destination station!
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
       return Some(protocol::CoreEvent::Waiting(id))
     }
-    let ws_of_st = self.membership.station_workspace(final_st, fallback_ws=self.workspace)
-    let briefs = self.station_briefs_for_scope(ws_of_st)
+    let briefs = self.station_briefs_for_scope(dest_ws)
     match views::project_chat_row(
       self.db,
       st,
@@ -4179,10 +4216,26 @@ pub fn ClientCore::wire_out_gen_for_raw_subscribe(
   protocol::WireOutGen::{ conn: self.auth.conn_seq(), auth_gen: None, vault_gen: None }
 }
 
+fn ClientCore::sub_matches_auth_boundary(self : ClientCore, sid : Int64, topic : protocol::Topic, ev : AuthBoundaryEvent) -> Bool {
+  if self.auth.matches_topic(topic, ev) {
+    return true
+  }
+  match self.chat_row_dest_ws.get(sid) {
+    Some(dest_ws) => match ev {
+      AuthBoundaryEvent::Global(_, _) => true
+      AuthBoundaryEvent::Workspace(ws, _) => ws == dest_ws
+      AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) => ws == dest_ws
+      _ => false
+    }
+    None => false
+  }
+}
+
 fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
   // 1. Always emit the authoritative `{id: 0, auth: ...}` boundary snapshot first.
   let _ = self.emit_auth_handshake()
-  // 2. Purge affected `kept` cache & reset cached `last_value` on active subs strictly per `auth.matches_topic`.
+  // 2. Purge affected `kept` cache & reset cached `last_value` on active subs strictly per `auth.matches_topic`
+  //    PLUS any opened `chatRow` subscription dynamically depending on a moved destination workspace!
   let matches = fn(t : protocol::Topic) -> Bool {
     self.auth.matches_topic(t, ev)
   }
@@ -4192,7 +4245,8 @@ fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -
   let subs = self.router.active_subs_snapshot()
   for i in 0..<subs.length() {
     let (sid, st) = subs[i]
-    if matches(st) {
+    if self.sub_matches_auth_boundary(sid, st, ev) {
+      self.router.invalidate_sub_cache_by_id(sid)
       match self.router.refresh_sub_force(sid) {
         Some((topic, sev)) => {
           let (j, b) = self.encode_sub_event(topic, sev)
@@ -5131,7 +5185,12 @@ fn ClientCore::handle_lock_event_for_workspace(
 }
 
 /// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).
+/// Never emits queued events while unauthenticated or session-invalidated.
 pub fn ClientCore::drain_frame(self : ClientCore, most : Option[Int] = None) -> Array[CoreEvent] {
+  if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+    self.outbox.clear()
+    return []
+  }
   self.outbox.take(most=most)
 }
 

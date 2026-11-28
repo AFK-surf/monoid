@@ -71,6 +71,12 @@ pub fn FrameOutbox::take[T](self : FrameOutbox[T], most : Option[Int] = None) ->
   }
 }
 
+/// Discard all queued changes without waking or delivering them (used on logout / account switch).
+pub fn FrameOutbox::clear[T](self : FrameOutbox[T]) -> Unit {
+  self.queue = []
+  self.asked = false
+}
+
 /// Number of changes waiting to be taken.
 pub fn FrameOutbox::waiting[T](self : FrameOutbox[T]) -> Int {
   self.queue.length()

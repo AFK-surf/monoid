@@ -10,11 +10,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
+extern int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len);
+extern void pion_core_dir_lock_release(int64_t handle);
 extern int mb_core_deliver_media(
     uint64_t call,
     int kind,
@@ -556,7 +560,7 @@ int main(void) {
     }
 
     atomic_store(&g_ctx.stopped, 0);
-    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
     // Restart handshake MUST strictly increment device-level `connSeq` (`conn2 > conn1`)!
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] restart auth handshake -> %s\n", m->json);
@@ -597,8 +601,10 @@ int main(void) {
     assert(strstr(m->json, "\"id\":42") != NULL && strstr(m->json, conn2_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
     send_json("{\"id\":42,\"unsubscribe\":true}");
 
-    // Offline OAuth begin / pre-exchanged complete / error-query non-leakage checks
-    // (real pure-`query` `/v1/auth/token` exchange + full DB switch is exercised in `core_runtime_live_net_e2e.c`).
+    // Offline OAuth begin / direct-param bypass rejection / error-query non-leakage checks:
+    // Production native ABI ALWAYS requires real Cloud `/v1/auth/token` exchange and MUST reject
+    // caller-supplied `sub`/`email`/`access` when Cloud is unreachable without leaking code/verifier
+    // or opening an account DB! (Real `/v1/auth/token` exchange is exercised in `core_runtime_live_net_e2e.c`.)
     send_json("{\"id\":57,\"call\":\"auth.begin\",\"params\":{}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #57 auth.begin -> %s\n", m->json);
@@ -614,15 +620,22 @@ int main(void) {
     }
     auth_state[si] = '\0';
     assert(si > 0);
+    char evil_db_path[256];
+    snprintf(evil_db_path, sizeof(evil_db_path), "%s/databases/account-u-evil.db", data_dir);
     char auth_complete_req[512];
     snprintf(auth_complete_req, sizeof(auth_complete_req),
-             "{\"id\":58,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=e2e_secret_code_99\",\"sub\":\"u-e2e\",\"email\":\"alice@still.fail\"}}",
+             "{\"id\":58,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=e2e_secret_code_99\",\"sub\":\"u-evil\",\"email\":\"evil@still.fail\",\"access\":\"forged-tok\"}}",
              auth_state);
     send_json(auth_complete_req);
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #58 auth.complete {query} -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":58") != NULL && strstr(m->json, "\"ok\":true") != NULL);
-    assert(strstr(m->json, "e2e_secret_code_99") == NULL && strstr(m->json, "verifier") == NULL);
+    printf("[core_runtime_e2e] #58 auth.complete without Cloud rejected -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":58") != NULL && strstr(m->json, "\"error\"") != NULL);
+    assert(strstr(m->json, "\"ok\":true") == NULL);
+    assert(strstr(m->json, "e2e_secret_code_99") == NULL && strstr(m->json, "verifier") == NULL && strstr(m->json, "forged-tok") == NULL);
+    {
+        struct stat st_evil;
+        assert(stat(evil_db_path, &st_evil) != 0);
+    }
 
     send_json("{\"id\":59,\"call\":\"auth.complete\",\"params\":{\"query\":\"?error=access_denied&error_description=UNVERIFIED_XSS_LEAK\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -631,6 +644,39 @@ int main(void) {
     assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
 
     mb_core_stop();
+
+    // 7b. Cross-process `fork()` + dual-fd mutual exclusion check on `pion_core_dir_lock_try` / `release`!
+    {
+        int64_t dlen = (int64_t)strlen(data_dir);
+        int64_t fd1 = pion_core_dir_lock_try(data_dir, dlen);
+        assert(fd1 >= 0);
+        // Same-process second open file description MUST be contended (`-1`).
+        assert(pion_core_dir_lock_try(data_dir, dlen) == -1);
+        // Forked child process MUST observe contention (`-1`).
+        pid_t c1 = fork();
+        assert(c1 >= 0);
+        if (c1 == 0) {
+            int64_t child_fd = pion_core_dir_lock_try(data_dir, dlen);
+            _exit(child_fd == -1 ? 0 : 1);
+        }
+        int st1 = 0;
+        assert(waitpid(c1, &st1, 0) == c1 && WIFEXITED(st1) && WEXITSTATUS(st1) == 0);
+        pion_core_dir_lock_release(fd1);
+        // After release, forked child MUST immediately acquire (`>= 0`) and release!
+        pid_t c2 = fork();
+        assert(c2 >= 0);
+        if (c2 == 0) {
+            int64_t child_fd = pion_core_dir_lock_try(data_dir, dlen);
+            if (child_fd >= 0) {
+                pion_core_dir_lock_release(child_fd);
+                _exit(0);
+            }
+            _exit(1);
+        }
+        int st2 = 0;
+        assert(waitpid(c2, &st2, 0) == c2 && WIFEXITED(st2) && WEXITSTATUS(st2) == 0);
+        printf("[core_runtime_e2e] cross-process flock mutex check OK\n");
+    }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),
     //    and `connSeq` MUST persist to `device/conn_seq_floor` and stay strictly monotonic across restarts!
@@ -641,7 +687,7 @@ int main(void) {
         fclose(f);
     }
     atomic_store(&g_ctx.stopped, 0);
-    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] restart #3 (corrupt device/auth) handshake -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
@@ -673,7 +719,7 @@ int main(void) {
 
     // Restart #4 while `device/auth` is still corrupt -> reads `device/conn_seq_floor` and increments `conn4 > conn3`!
     atomic_store(&g_ctx.stopped, 0);
-    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] restart #4 (floor recovery) handshake -> %s\n", m->json);
     long long conn4 = extract_conn_seq(m->json);

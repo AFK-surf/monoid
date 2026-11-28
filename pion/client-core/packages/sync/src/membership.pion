@@ -397,12 +397,16 @@ pub fn shared_account_lock_for_dir(dir_key : String) -> effect::Semaphore {
 pub struct AccountRefreshCoordinator {
   lock : effect::Semaphore
   in_flight : Map[String, Array[(AccountRefreshOutcome) -> Unit]]
+  mut acquire_ext_lock_k : Option[((Result[Int64, String]) -> Unit) -> Unit]
+  mut release_ext_lock : Option[(Int64) -> Unit]
 }
 
 pub fn AccountRefreshCoordinator::new() -> AccountRefreshCoordinator {
   AccountRefreshCoordinator::{
     lock: effect::Semaphore::new(1),
     in_flight: Map::new(),
+    acquire_ext_lock_k: None,
+    release_ext_lock: None,
   }
 }
 
@@ -413,7 +417,51 @@ pub fn AccountRefreshCoordinator::for_storage_dir(dir_key : String) -> AccountRe
   AccountRefreshCoordinator::{
     lock: shared_account_lock_for_dir(dir_key),
     in_flight: Map::new(),
+    acquire_ext_lock_k: None,
+    release_ext_lock: None,
   }
+}
+
+/// Attach an optional cross-process file-lock pair (`flock` / `LockFileEx`) acquired inside the
+/// in-process semaphore around every `accounts` read-modify-write CAS critical section and
+/// unconditionally released on all exit paths.
+pub fn AccountRefreshCoordinator::set_external_file_lock(
+  self : AccountRefreshCoordinator,
+  acquire_k : ((Result[Int64, String]) -> Unit) -> Unit,
+  release : (Int64) -> Unit,
+) -> Unit {
+  self.acquire_ext_lock_k = Some(acquire_k)
+  self.release_ext_lock = Some(release)
+}
+
+fn AccountRefreshCoordinator::with_accounts_locks_k[T](
+  self : AccountRefreshCoordinator,
+  body : ((effect::Exit[T]) -> Unit) -> Unit,
+  on_lock_err : (String) -> T,
+  k : (effect::Exit[T]) -> Unit,
+) -> Unit {
+  let acq_opt = self.acquire_ext_lock_k
+  let rel_opt = self.release_ext_lock
+  self.lock.with_permit_k(
+    fn(lk : (effect::Exit[T]) -> Unit) -> Unit {
+      match acq_opt {
+        None => body(lk)
+        Some(acq) => acq(fn(lres : Result[Int64, String]) -> Unit {
+          match lres {
+            Err(msg) => lk(effect::Exit::Succeeded(on_lock_err(msg)))
+            Ok(fd) => body(fn(ex : effect::Exit[T]) -> Unit {
+              match rel_opt {
+                Some(rel) => rel(fd)
+                None => ()
+              }
+              lk(ex)
+            })
+          }
+        })
+      }
+    },
+    k,
+  )
 }
 
 fn ma_effect_err_msg(e : effect::EffectError) -> String {
@@ -433,7 +481,9 @@ fn find_stored_idx(xs : Array[views::StoredAccount], sub : String) -> Int {
 }
 
 /// Serialize a read-modify-write upsert of `account` (`session_id`) into host `accounts`,
-/// preserving all sibling accounts on disk and aborting on `ReadError`.
+/// preserving all sibling accounts on disk, holding both in-process semaphore and cross-process
+/// file lock, running an optional `pre_write_check` inside the lock BEFORE touching disk, and
+/// aborting on `ReadError`.
 pub fn AccountRefreshCoordinator::upsert_account_cas_k(
   self : AccountRefreshCoordinator,
   read_accounts_k : ((HostStorageRead) -> Unit) -> Unit,
@@ -441,10 +491,31 @@ pub fn AccountRefreshCoordinator::upsert_account_cas_k(
   account : views::StoredAccount,
   session_id : String,
   k : (Result[(Array[views::StoredAccount], Map[String, String]), String]) -> Unit,
+  pre_write_check : Option[() -> Result[Unit, String]] = None,
 ) -> Unit {
-  self.lock.with_permit_k(
+  self.with_accounts_locks_k(
     fn(lk : (effect::Exit[Result[(Array[views::StoredAccount], Map[String, String]), String]]) -> Unit) -> Unit {
+      match pre_write_check {
+        Some(chk) => match chk() {
+          Err(msg) => {
+            lk(effect::Exit::Succeeded(Err(msg)))
+            return
+          }
+          Ok(_) => ()
+        }
+        None => ()
+      }
       read_accounts_k(fn(rd : HostStorageRead) -> Unit {
+        match pre_write_check {
+          Some(chk) => match chk() {
+            Err(msg) => {
+              lk(effect::Exit::Succeeded(Err(msg)))
+              return
+            }
+            Ok(_) => ()
+          }
+          None => ()
+        }
         let (disk_list, disk_sessions) : (Array[views::StoredAccount], Map[String, String]) = match rd {
           HostStorageRead::ReadError(reason) => {
             lk(effect::Exit::Succeeded(Err("accounts disk read failed: " + reason)))
@@ -483,6 +554,9 @@ pub fn AccountRefreshCoordinator::upsert_account_cas_k(
           }
         })
       })
+    },
+    fn(lock_err : String) -> Result[(Array[views::StoredAccount], Map[String, String]), String] {
+      Err(lock_err)
     },
     fn(ex : effect::Exit[Result[(Array[views::StoredAccount], Map[String, String]), String]]) -> Unit {
       match ex {
@@ -538,8 +612,8 @@ pub fn AccountRefreshCoordinator::refresh_k(
   let on_inval = host.on_invalidated
   let now_fn = host.now_ms
 
-  // Phase 1: Pre-request `#adoptStored` (`accounts.ts:397-422`) under serialized lock.
-  self.lock.with_permit_k(
+  // Phase 1: Pre-request `#adoptStored` (`accounts.ts:397-422`) under serialized lock + cross-process flock.
+  self.with_accounts_locks_k(
     fn(lk : (effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit) -> Unit {
       match get_mem(sub) {
         None => {
@@ -609,6 +683,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
         }
       })
     },
+    fn(lock_err : String) -> Result[(Bool, String), AccountRefreshOutcome] {
+      Err(AccountRefreshOutcome::Transient(lock_err))
+    },
     fn(pex : effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit {
       match pex {
         effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
@@ -627,8 +704,8 @@ pub fn AccountRefreshCoordinator::refresh_k(
                 finish_all(AccountRefreshOutcome::Transient(msg))
               }
               effect::Exit::Succeeded(Ok(tokens)) => {
-                // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) under serialized lock.
-                self.lock.with_permit_k(
+                // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) under serialized lock + cross-process flock.
+                self.with_accounts_locks_k(
                   fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
                     match get_mem(sub) {
                       None => {
@@ -707,6 +784,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
                       }
                     })
                   },
+                  fn(lock_err : String) -> AccountRefreshOutcome {
+                    AccountRefreshOutcome::Transient(lock_err)
+                  },
                   fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
                     match cex {
                       effect::Exit::Succeeded(o) => finish_all(o)
@@ -717,8 +797,8 @@ pub fn AccountRefreshCoordinator::refresh_k(
                 )
               }
               effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(status, msg))) => {
-                // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`) under serialized lock.
-                self.lock.with_permit_k(
+                // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`) under serialized lock + cross-process flock.
+                self.with_accounts_locks_k(
                   fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
                     match get_mem(sub) {
                       None => {
@@ -786,6 +866,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
                         }
                       }
                     })
+                  },
+                  fn(lock_err : String) -> AccountRefreshOutcome {
+                    AccountRefreshOutcome::Transient(lock_err)
                   },
                   fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
                     match cex {
@@ -1401,6 +1484,8 @@ fn synthesize_workspace_summary_from_detail(
 /// Merge a `/v1/me` workspace summary object into an existing `workspace` SQLite row (or return the
 /// summary object itself when no detail row exists yet). Preserves existing detail arrays (`stations`
 /// / `members` arrays and `rev`) while updating `name`, `role`, `emoji`, `icon`, `relays`, `ways_off`.
+/// When demoted to non-manager (`role == "member"`), scrubs manager-only cached fields
+/// (`invitations: []`, `added: []`, `lock_requests: 0`) aligned 1:1 with `cloud/src/directory/workspaces.ts:428-429`.
 pub fn merge_me_summary_into_workspace_row(
   existing_ws_row : Option[base_codec::Json],
   me_ws_item : base_codec::Json,
@@ -1411,6 +1496,7 @@ pub fn merge_me_summary_into_workspace_row(
   }
   let me_name = j_str(me_ws_item, "name")
   let me_role = j_str(me_ws_item, "role")
+  let is_demoted_member = me_role == "member"
   let me_emoji = base_codec::json_get(me_ws_item, "emoji")
   let me_icon = base_codec::json_get(me_ws_item, "icon")
   let me_relays = base_codec::json_get(me_ws_item, "relays")
@@ -1425,6 +1511,12 @@ pub fn merge_me_summary_into_workspace_row(
       out.push((k, base_codec::json_str(me_name)))
     } else if k == "role" && is_valid_workspace_role(me_role) {
       out.push((k, base_codec::json_str(me_role)))
+    } else if is_demoted_member && k == "invitations" {
+      out.push((k, base_codec::json_arr([])))
+    } else if is_demoted_member && k == "added" {
+      out.push((k, base_codec::json_arr([])))
+    } else if is_demoted_member && k == "lock_requests" {
+      out.push((k, base_codec::json_int(0)))
     } else if k == "emoji" {
       match me_emoji {
         Some(base_codec::Json::Str(e)) => out.push((k, base_codec::json_str(e)))
@@ -1449,6 +1541,17 @@ pub fn merge_me_summary_into_workspace_row(
       }
     } else {
       out.push((k, v))
+    }
+  }
+  if is_demoted_member {
+    if seen.get("invitations").is_none() {
+      out.push(("invitations", base_codec::json_arr([])))
+    }
+    if seen.get("added").is_none() {
+      out.push(("added", base_codec::json_arr([])))
+    }
+    if seen.get("lock_requests").is_none() {
+      out.push(("lock_requests", base_codec::json_int(0)))
     }
   }
   if seen.get("role").is_none() && is_valid_workspace_role(me_role) {

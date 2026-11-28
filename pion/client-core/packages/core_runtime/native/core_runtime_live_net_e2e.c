@@ -595,6 +595,10 @@ int main(void) {
     char *m_thread_back = wait_for_matching_msg(&g_host, "\"id\":204,", "hello over real rust shell", 10);
     printf("[live_net_e2e] Phase 4 persisted chat -> %s\n", m_thread_back);
 
+    // Register a private download for Alice before Phase 5 401 logout to verify 0 download registry leakage to Bob!
+    send_json("{\"id\":2041,\"call\":\"download.join\",\"params\":{\"reader\":\"dl-alice-live\",\"fileKey\":\"alice-private-doc.pdf\",\"name\":\"alice-private-doc.pdf\",\"start\":0,\"end\":4096}}");
+    wait_for_matching_msg(&g_host, "\"id\":2041,", "\"ok\"", 10);
+
     // ── PHASE 5: Permanent 401 refresh removes the last account — immediate unauth `:memory:` switch BEFORE restart! ──
     printf("[live_net_e2e] Phase 5: triggering permanent 401 auth.refresh\n");
     send_json("{\"id\":205,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-live\"}}");
@@ -602,7 +606,7 @@ int main(void) {
     printf("[live_net_e2e] Phase 5 auth.refresh 401 -> %s\n", m_ref_401);
     assert(atomic_load(&g_srv.got_auth_refresh) == 1);
 
-    // IMMEDIATELY (WITHOUT restarting!): sessions.list, jobs.open, account.doc(me), workspaces.list MUST all be empty/null!
+    // IMMEDIATELY (WITHOUT restarting!): sessions.list, jobs.open, account.doc(me), workspaces.list, downloads MUST all be empty/null!
     send_json("{\"id\":206,\"call\":\"sessions.list\",\"params\":{}}");
     wait_for_matching_msg(&g_host, "\"id\":206,", "\"sessions\":[]", 10);
     send_json("{\"id\":207,\"call\":\"jobs.open\",\"params\":{}}");
@@ -614,6 +618,36 @@ int main(void) {
     assert(strstr(m_immed_ws, WS1_ID) == NULL);
     send_json("{\"id\":210,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
     wait_for_matching_msg(&g_host, "\"id\":210,", "unauthenticated", 10);
+    send_json("{\"id\":211,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}");
+    char *m_immed_dl = wait_for_matching_msg(&g_host, "\"id\":211,", "\"value\"", 10);
+    assert(strstr(m_immed_dl, "alice-private-doc.pdf") == NULL);
+
+    // Same-process direct switch to Bob right after Alice's 401 logout (WITHOUT restarting):
+    // Verify 0 Alice downloads and 0 Alice outbound entry frames leak to Bob!
+    send_json("{\"id\":212,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+    char *m_bob_direct_b = wait_for_matching_msg(&g_host, "\"id\":212,", "\"state\":\"", 10);
+    const char *bdp = strstr(m_bob_direct_b, "\"state\":\"");
+    assert(bdp != NULL);
+    bdp += 9;
+    char bob_d_state[128];
+    size_t bdi = 0;
+    while (bdp[bdi] != '\0' && bdp[bdi] != '"' && bdi + 1 < sizeof(bob_d_state)) {
+        bob_d_state[bdi] = bdp[bdi];
+        bdi++;
+    }
+    bob_d_state[bdi] = '\0';
+    char bob_d_complete[512];
+    snprintf(bob_d_complete, sizeof(bob_d_complete),
+             "{\"id\":213,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_bob\"}}",
+             bob_d_state);
+    send_json(bob_d_complete);
+    wait_for_matching_msg(&g_host, "\"id\":213,", "\"email\":\"bob@still.fail\"", 10);
+    send_json("{\"id\":214,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}");
+    char *m_bob_dl = wait_for_matching_msg(&g_host, "\"id\":214,", "\"value\"", 10);
+    assert(strstr(m_bob_dl, "alice-private-doc.pdf") == NULL);
+    // Log Bob back out with 401 before Phase 6 unauthenticated restart!
+    send_json("{\"id\":215,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-bob\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":215,", "\"error\"", 10);
 
     atomic_store(&g_host.stopped, 1);
     mb_core_stop();
