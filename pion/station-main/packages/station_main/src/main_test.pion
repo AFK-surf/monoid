@@ -2466,19 +2466,19 @@ test "W17C-1 R24: ProcStdoutEof without OS exit preserves spawn marker, timeout 
   )
 }
 
-test "W17C-1 R25: single stop-owner handover via AdoptRunnerResult & strict OS-exit shutdown verdict" {
-  // 1. P1-1: Delayed-connect & single stop-owner event sequence
-  let mgr = LiveRunnerManager::new()
-  let rid = "r-r25-single"
-  let spawn_k = match encode_spawn_stop_key_pure(rid, 4501, 1700000010000L, Some("boot-r25"), Some(777L)) {
-    Some(k) => k
-    None => panic("expected spawn key")
-  }
-  mgr.record_draining_stop_marker(spawn_k, "s-r25")
-  let make_sess = fn(cid : Int, phase : LiveRunnerPhase) -> LiveRunnerSession {
+test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connecting) & real register_adopted_runner_with single stop-owner" {
+  // Helper to build a real `LiveRunnerSession`
+  let make_sess = fn(
+    cid : Int,
+    skey : String,
+    rid : String,
+    pid : Int,
+    phase : LiveRunnerPhase,
+    has_linux_id : Bool,
+  ) -> LiveRunnerSession {
     LiveRunnerSession::{
       conn_id: cid,
-      session_key: "s-r25",
+      session_key: skey,
       ws: "ws-a",
       profile_id: "default",
       model_opt: None,
@@ -2487,10 +2487,10 @@ test "W17C-1 R25: single stop-owner handover via AdoptRunnerResult & strict OS-e
       runtime_kind: station_drivers::RuntimeKind::Claude,
       runtime_str: "claude",
       runner_id: rid,
-      spawn_pid: 4501,
+      spawn_pid: pid,
       spawn_os_start_ms: 1700000010000L,
-      spawn_boot_id: Some("boot-r25"),
-      spawn_start_ticks: Some(777L),
+      spawn_boot_id: if has_linux_id { Some("boot-r26") } else { None },
+      spawn_start_ticks: if has_linux_id { Some(777L) } else { None },
       is_acp: false,
       is_codex: false,
       is_adopted: false,
@@ -2532,7 +2532,7 @@ test "W17C-1 R25: single stop-owner handover via AdoptRunnerResult & strict OS-e
       write_queue_bytes: 0,
       codex_active_turn_id: None,
       dropping_oversized_out_line: false,
-      stopping: true,
+      stopping: false,
       spawn_proc_exited: false,
       runner_exited: false,
       identity_verified: false,
@@ -2542,72 +2542,232 @@ test "W17C-1 R25: single stop-owner handover via AdoptRunnerResult & strict OS-e
       adopted_db_out: 0L,
     }
   }
-  let rinfo = station_drivers::RunnerInfo::{
-    id: rid,
-    runner_pid: 4501,
-    pid: 4502,
-    pgid: 4502,
+
+  // ---- Test 1A: REAL `EdgeMuxHub::from_transport` + REAL `stop_all_on_shutdown_with` for Spawning + Connecting (happy path -> true) ----
+  let mem_a = station_ops::MemFs::new()
+  let ops_a = mem_a.ops()
+  let events_a : Array[host_shim::HostEvent] = []
+  let mut ev_idx_a = 0
+  let mut now_a = 1000L
+  let mut next_sid_a = 500L
+  let mut open_calls_a = 0
+  let mut write_calls_a = 0
+  let mut close_calls_a = 0
+  let written_payloads_a : Array[String] = []
+  let mut spawn_dead_a = false
+  let mut conn_dead_a = false
+  let sid_is_spawn : Map[Int64, Bool] = Map::new()
+  let tr_a = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_a = now_a + 25L
+      if ev_idx_a < events_a.length() {
+        let ev = events_a[ev_idx_a]
+        ev_idx_a = ev_idx_a + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, json_str : String, payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" {
+        open_calls_a = open_calls_a + 1
+        let sid = next_sid_a
+        next_sid_a = next_sid_a + 1L
+        sid_is_spawn.set(sid, json_str.contains("r-sp-a.sock"))
+        let res_json = "{\"id\":" + sid.to_string() + "}"
+        events_a.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: res_json, bytes: None }))
+      } else if op == "tcp.write" {
+        write_calls_a = write_calls_a + 1
+        match payload {
+          Some(b) => {
+            let txt = b.to_string()
+            written_payloads_a.push(txt)
+            // Verify real attach + signal TERM group:true + done framing!
+            assert_true(txt.contains("\"op\":\"attach\""), "shutdown tcp.write must include attach")
+            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "shutdown tcp.write must include TERM group:true")
+            assert_true(txt.contains("\"op\":\"done\""), "shutdown tcp.write must include done for pre-delivery runner")
+          }
+          None => panic("expected tcp.write payload")
+        }
+        // Mark corresponding runner dead upon receiving TERM+done!
+        if json_str.contains("500") {
+          match sid_is_spawn.get(500L) {
+            Some(true) => spawn_dead_a = true
+            _ => conn_dead_a = true
+          }
+        }
+        if json_str.contains("501") {
+          match sid_is_spawn.get(501L) {
+            Some(true) => spawn_dead_a = true
+            _ => conn_dead_a = true
+          }
+        }
+        events_a.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
+      } else if op == "tcp.close" {
+        close_calls_a = close_calls_a + 1
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_a },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_a = station_whole::EdgeMuxHub::from_transport(tr_a)
+  let mgr_a = LiveRunnerManager::new()
+  mgr_a.set_handover_state_path("/data/run/whole-live-runners.json")
+  let sp_rinfo_a = station_drivers::RunnerInfo::{
+    id: "r-sp-a",
+    runner_pid: 4601,
+    pid: 4602,
+    pgid: 4602,
     started_at: 1700000010100L,
     program: "/bin/sleep",
     args: ["30"],
-    socket: "/tmp/r-r25-single.sock",
+    socket: "/tmp/r-sp-a.sock",
     keeps: true,
     pty: false,
     cwd: Some("/tmp"),
   }
-  // Start with a timed-out `Spawning(deadline=0)` placeholder in `draining` (simulated via Exited before Connecting)
-  let old_spawning = make_sess(301, LiveRunnerPhase::Exited)
-  mgr.draining.set(301, old_spawning)
-  assert_true(!mgr.has_non_spawning_runner_id_tracked(rid), "no non-Spawning owner before adoption")
-  // Step A: DB unavailable -> `AdoptRunnerResult::Rejected` keeps old draining entry intact (`draining.length() == 1`)
-  let mut unix_open_count = 0
-  let step_rejected = AdoptRunnerResult::Rejected
-  match step_rejected {
-    AdoptRunnerResult::AdoptedForStop | AdoptRunnerResult::AdoptedActive => mgr.finish_draining(301, confirmed_exited=false)
-    AdoptRunnerResult::Rejected => ()
+  let cn_rinfo_a = station_drivers::RunnerInfo::{
+    id: "r-cn-a",
+    runner_pid: 4603,
+    pid: 4604,
+    pgid: 4604,
+    started_at: 1700000010200L,
+    program: "/bin/sleep",
+    args: ["30"],
+    socket: "/tmp/r-cn-a.sock",
+    keeps: true,
+    pty: false,
+    cwd: Some("/tmp"),
   }
-  assert_true(mgr.draining.length() == 1 && mgr.draining.contains(301), "Rejected keeps old draining entry for retry")
-  assert_true(unix_open_count == 0, "Rejected queues 0 unix.open calls")
-  // Step B: DB recovers -> `adopt_live_runner_outcome` inserts single `Connecting` stop owner (cid=302),
-  // queues 1 `unix.open`, returns `AdoptedForStop` -> old cid=301 immediately removed!
-  let try_adopt_stop = fn() -> AdoptRunnerResult {
-    if mgr.has_non_spawning_runner_id_tracked(rid) {
-      return AdoptRunnerResult::Rejected
-    }
-    let stop_owner = make_sess(302, LiveRunnerPhase::Connecting(rinfo))
-    mgr.draining.set(302, stop_owner)
-    unix_open_count = unix_open_count + 1
-    AdoptRunnerResult::AdoptedForStop
-  }
-  match try_adopt_stop() {
-    AdoptRunnerResult::AdoptedForStop | AdoptRunnerResult::AdoptedActive => {
-      mgr.finish_draining(301, confirmed_exited=false)
-    }
-    AdoptRunnerResult::Rejected => panic("expected AdoptedForStop")
-  }
-  assert_true(mgr.draining.length() == 1, "exactly 1 draining stop owner after AdoptedForStop")
-  assert_true(!mgr.draining.contains(301) && mgr.draining.contains(302), "old Spawning removed, new Connecting owns stop")
-  assert_true(unix_open_count == 1, "exactly 1 unix.open issued")
-  assert_true(mgr.draining_stopping_ids.contains(spawn_k), "spawn: marker preserved until confirmed OS exit")
-  assert_true(mgr.has_non_spawning_runner_id_tracked(rid), "Connecting owner blocks duplicate adoption")
-  // Step C: Multiple subsequent ticks while `unix.open` has not completed MUST NOT create a 2nd owner or 2nd unix.open!
-  for _ in 0..<5 {
-    assert_true(try_adopt_stop() is AdoptRunnerResult::Rejected, "subsequent ticks while Connecting must return Rejected")
-  }
-  assert_true(mgr.draining.length() == 1 && unix_open_count == 1, "still exactly 1 draining owner and 1 unix.open across 5 ticks")
+  let child_a = station_sys::ChildProcess::{ handle: 0L, pid: 4601 }
+  let sp_sess_a = make_sess(401, "s-sp-a", "r-sp-a", 4601, LiveRunnerPhase::Spawning(8001L, child_a, Bytes::new(0), Bytes::new(0), 99999L), true)
+  let cn_sess_a = make_sess(402, "s-cn-a", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), false)
+  mgr_a.sessions.set("s-sp-a", sp_sess_a)
+  mgr_a.sessions.set("s-cn-a", cn_sess_a)
+  let mut closed_child_count_a = 0
+  let ok_a = mgr_a.stop_all_on_shutdown_with(
+    hub_a,
+    ops_a,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_a },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if spawn_dead_a { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    },
+    check_pid_dead=fn(_p, _st) -> Bool { conn_dead_a },
+    probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
+      if rid == "r-sp-a" { RunnerFileProbe::Live(sp_rinfo_a) } else { RunnerFileProbe::ConfirmedAbsent }
+    },
+    close_child_fn=fn(_c) { closed_child_count_a = closed_child_count_a + 1 },
+    max_wait_ms=500L,
+    flush_ms=50L,
+  )
+  assert_true(ok_a, "R26 1A: real EdgeMuxHub stop_all_on_shutdown_with succeeds when Spawning+Connecting open, write TERM+done, and exit")
+  assert_true(open_calls_a == 2, "R26 1A: issued 2 unix.open calls (Spawning + Connecting)")
+  assert_true(write_calls_a == 2, "R26 1A: issued 2 tcp.write calls via EdgeMuxHub after ShellDone")
+  assert_true(close_calls_a == 2, "R26 1A: closed both sockets via EdgeMuxHub")
+  assert_true(closed_child_count_a == 1, "R26 1A: closed Spawning child handle")
+  assert_true(mgr_a.draining_stopping_ids.length() == 0, "R26 1A: both stop markers cleared after OS exit")
 
-  // 2. P1-2: Shutdown verdict requires OS `ConfirmedDeadOrReused` (`unresolved_spawns == 0`), NEVER just write-acked or saved_ok!
-  let write_acked_but_alive_unresolved = 1
-  assert_true(
-    !evaluate_shutdown_spawning_ok(write_acked_but_alive_unresolved, true, true),
-    "R25 P1-2: write acked + saved_ok=true but process still alive MUST return false (exit code 1)",
+  // ---- Test 1B: REAL `EdgeMuxHub` where `Connecting` stays alive despite `tcp.write` ack -> MUST return false & keep marker ----
+  let mem_b = station_ops::MemFs::new()
+  let ops_b = mem_b.ops()
+  let events_b : Array[host_shim::HostEvent] = []
+  let mut ev_idx_b = 0
+  let mut now_b = 1000L
+  let tr_b = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_b = now_b + 50L
+      if ev_idx_b < events_b.length() {
+        let ev = events_b[ev_idx_b]
+        ev_idx_b = ev_idx_b + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" {
+        events_b.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":600}", bytes: None }))
+      } else if op == "tcp.write" {
+        events_b.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_b },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_b = station_whole::EdgeMuxHub::from_transport(tr_b)
+  let mgr_b = LiveRunnerManager::new()
+  mgr_b.set_handover_state_path("/data/run/whole-live-runners.json")
+  let cn_sess_b = make_sess(403, "s-cn-b", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), false)
+  mgr_b.sessions.set("s-cn-b", cn_sess_b)
+  let ok_b = mgr_b.stop_all_on_shutdown_with(
+    hub_b,
+    ops_b,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_b },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
+    check_pid_dead=fn(_p, _st) -> Bool { false },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::ConfirmedAbsent },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+    flush_ms=50L,
   )
+  assert_true(!ok_b, "R26 1B: Connecting runner still alive after tcp.write ack MUST return false (exit code 1)")
+  assert_true(mgr_b.draining_stopping_ids.length() == 1, "R26 1B: unconfirmed Connecting stop marker preserved")
+  assert_true(ops_b.read_text("/data/run/whole-live-runners.json").is_ok(), "R26 1B: unconfirmed marker persisted to disk")
+
+  // ---- Test 2: REAL `register_adopted_runner_with` + REAL `ShellMux` single stop-owner guard ----
+  let mut adopt_opens = 0
+  let tr_c = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+    call_async: fn(_id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" {
+        adopt_opens = adopt_opens + 1
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000L },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_c = station_whole::EdgeMuxHub::from_transport(tr_c)
+  let mux_c = builders_core::ShellMux::new(hub_c.as_mux_transport(), start_stdin=false)
+  let mgr_c = LiveRunnerManager::new()
+  let spawn_k = match encode_spawn_stop_key_pure("r-sp-a", 4601, 1700000010000L, Some("boot-r26"), Some(777L)) {
+    Some(k) => k
+    None => panic("expected spawn key")
+  }
+  mgr_c.record_draining_stop_marker(spawn_k, "s-r26")
+  let iid_c = station_whole::WholeAgents::runner_instance_id(sp_rinfo_a.id, sp_rinfo_a.runner_pid, sp_rinfo_a.started_at)
   assert_true(
-    !evaluate_shutdown_spawning_ok(1, false, true),
-    "R25 P1-2: tcp.write failed / unconfirmed exit MUST return false (exit code 1)",
+    mgr_c.is_draining_stop_target(
+      iid_c,
+      sp_rinfo_a.id,
+      sp_rinfo_a.runner_pid,
+      sp_rinfo_a.started_at,
+      verify_spawn_id=fn(_p, _ms, _b, _t) { SpawnIdentityVerdict::ConfirmedSame },
+    ),
+    "R26 2: spawn: marker matches via ConfirmedSame",
   )
-  assert_true(
-    evaluate_shutdown_spawning_ok(0, false, true),
-    "R25 P1-2: all Spawning ConfirmedDeadOrReused => returns true (exit code 0)",
-  )
+  let stop_sess_1 = make_sess(501, "s-r26", "r-sp-a", 4601, LiveRunnerPhase::Connecting(sp_rinfo_a), true)
+  let res1 = mgr_c.register_adopted_runner_with(mux_c, sp_rinfo_a, stop_sess_1, true)
+  assert_true(res1 is AdoptRunnerResult::AdoptedForStop, "R26 2: first adopt returns AdoptedForStop")
+  assert_true(mgr_c.draining.length() == 1 && adopt_opens == 1, "R26 2: exactly 1 draining owner and 1 unix.open")
+  let stop_sess_2 = make_sess(502, "s-r26", "r-sp-a", 4601, LiveRunnerPhase::Connecting(sp_rinfo_a), true)
+  let res2 = mgr_c.register_adopted_runner_with(mux_c, sp_rinfo_a, stop_sess_2, true)
+  assert_true(res2 is AdoptRunnerResult::Rejected, "R26 2: duplicate adopt on same runner_id returns Rejected")
+  assert_true(mgr_c.draining.length() == 1 && adopt_opens == 1, "R26 2: still exactly 1 draining owner and 1 unix.open")
 }
