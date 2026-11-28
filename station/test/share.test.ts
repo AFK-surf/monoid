@@ -7,9 +7,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { ConfigFile } from "../src/ops/config.ts";
+import type { profileFetch } from "../src/ops/agent-env.ts";
+import { BorrowedCopilotLeases, CopilotLeases, readCopilotLease } from "../src/share/copilot.ts";
 import { Sharing, shareRefusal } from "../src/share/index.ts";
 import { agyAccountFile, agyToken } from "../src/agents/agy.ts";
-import { Refused } from "../src/mesh/bus.ts";
+import { NoLink, Refused } from "../src/mesh/bus.ts";
 import { memory } from "./reference/memory.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { allowedIn } from "../src/sessions/config.ts";
@@ -61,7 +63,7 @@ type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: strin
 const made: Sharing[] = [];
 after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void; accountKey?: (id: string) => string; accountCap?: (id: string) => number | undefined; accountProtection?: (id: string) => boolean; localActiveForAccount?: (key: string) => number; onSlotFreed?: () => void } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { copilotExchange?: typeof profileFetch; profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void; accountKey?: (id: string) => string; accountCap?: (id: string) => number | undefined; accountProtection?: (id: string) => boolean; localActiveForAccount?: (key: string) => number; onSlotFreed?: () => void } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -1570,4 +1572,90 @@ test("cross-station concurrency slots: older host refusing share.slotClaim falls
 
   await a.sharing.close();
   await b.sharing.close();
+});
+
+test("Copilot reuses its in-memory grant while the host is offline and evicts it on unsharing", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  let exchanges = 0;
+  const api = "https://api.individual.githubcopilot.com";
+  const host = station(cloud, A, () => all, [{ ...SUB, runtime: "copilot", env: { COPILOT_GITHUB_TOKEN: "gho_host", GH_TOKEN: "other" } }], undefined, {
+    copilotExchange: async (url, init) => {
+      exchanges++;
+      assert.equal(url, "https://api.github.com/copilot_internal/v2/token");
+      assert.equal(init?.headers?.authorization, "Bearer gho_host");
+      return Response.json({ token: "expiring", expires_at: Math.floor(Date.now() / 1000) + 1200, endpoints: { api } });
+    },
+  });
+  const borrower = station(cloud, B, () => all);
+  all.set(A, host).set(B, borrower);
+  await host.sharing.shareProfile("max", true, [B]);
+  await settle(host, borrower);
+  const copy = borrower.config.raw().profiles[0];
+  assert.equal(copy.share.borrowed, true);
+  assert.deepEqual(copy.env, {});
+  const [one, two] = await Promise.all([borrower.sharing.lendCopilot(copy), borrower.sharing.lendCopilot(copy)]);
+  assert.deepEqual(one, two);
+  assert.equal(one.token, "expiring");
+  assert.equal(exchanges, 1);
+  all.delete(A);
+  assert.deepEqual(await borrower.sharing.lendCopilot(copy), one, "a normal request makes no host RPC");
+  all.set(A, host);
+  await host.sharing.shareProfile("max", false, null);
+  await settle(host, borrower);
+  await assert.rejects(borrower.sharing.lendCopilot(copy));
+  assert.equal(exchanges, 1);
+});
+
+test("Copilot renews before expiry and never reuses a lease after an account change", async () => {
+  const api = "https://api.githubcopilot.com";
+  let count = 0;
+  const exchange = async () => Response.json({ token: "lease-" + ++count, endpoints: { api }, expires_at: 900 + count * 100 });
+  const leases = new CopilotLeases();
+  assert.equal((await leases.get("p", "first", 0, exchange)).token, "lease-1");
+  assert.equal((await leases.get("p", "first", 940_000, exchange)).token, "lease-2");
+  assert.equal((await leases.get("p", "second", 940_000, exchange)).token, "lease-3");
+  assert.throws(() => readCopilotLease({ api: "https://notgithubcopilot.com", token: "x", expiresAt: 100 }, 0));
+  assert.throws(() => readCopilotLease({ api, token: "x", expiresAt: 100 }, 100));
+});
+
+test("Copilot expiry, transport loss, host denial, and invalidation during renewal", async () => {
+  const cache = new BorrowedCopilotLeases();
+  let at = 0;
+  const now = () => at;
+  const lease = { token: "one", expiresAt: 80_000, api: "https://api.githubcopilot.com" };
+  const offline = async () => { throw new NoLink("offline"); };
+  assert.equal(await cache.get("s", now, async () => lease), lease);
+  at = 30_000;
+  assert.equal(await cache.get("s", now, offline), lease);
+  at = lease.expiresAt;
+  await assert.rejects(cache.get("s", now, offline), /offline/);
+  at = 0;
+  await cache.get("s", now, async () => lease);
+  await assert.rejects(cache.get("s", now, offline, lease.token), /offline/);
+  // A delayed 401 for an older request must not replace the most recently refused token.
+  await assert.rejects(cache.get("s", now, async (rejected) => {
+    assert.equal(rejected, lease.token);
+    return lease;
+  }, "older"), /refused/);
+  const next = { ...lease, token: "two" };
+  await cache.get("s", now, async () => next);
+  at = 30_000;
+  await assert.rejects(cache.get("s", now, async () => { throw new Refused("revoked"); }), /revoked/);
+  await assert.rejects(cache.get("s", now, offline), /offline/);
+  const pending = Promise.withResolvers<typeof lease>();
+  const renewal = cache.get("s", now, () => pending.promise);
+  cache.forget("s");
+  pending.resolve(next);
+  await assert.rejects(renewal, /no longer available/);
+});
+
+test("the Copilot host replaces a rejected token even when it has time left", async () => {
+  const leases = new CopilotLeases();
+  let count = 0;
+  const exchange = async () => Response.json({ token: "lease-" + ++count, endpoints: { api: "https://api.githubcopilot.com" }, expires_at: 1000 });
+  const first = await leases.get("p", "login", 0, exchange);
+  const second = await leases.get("p", "login", 0, exchange, first.token);
+  assert.notEqual(second.token, first.token);
+  assert.deepEqual(await leases.get("p", "login", 0, exchange, first.token), second);
 });

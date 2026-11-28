@@ -28,6 +28,10 @@
 - A shared profile with `allowAuto` reaches its host and every station that says it takes automatically assigned chats (`acceptAutoChats`, not task-only). Stations push that as it changes (`share.autoChats`, sent on config and cloud changes); a host asks one it has not heard from this run with `describe`, never on a timer. A station never heard from is left out (no credentials go out on a guess); one that does not answer keeps what it said last and is refused for now, never with `NOT_FOR_IT`, so its copy is not dropped.
 - What goes out (`share.changed`, `share.get`, the overview's `allow`) is always the station list it makes now, so older stations and apps read a plain list; `allow` in config then holds only stations a move lent it to besides (`lendTo`).
 
+## Borrowed Copilot subscriptions
+
+- The host exchanges its GitHub sign-in for an expiring Copilot API credential. Borrowers cache the API credential in memory until renewal, rejection, or a share change. Each renewal checks the host’s current authorization. An unreachable host permits reuse only until expiry. Keep GitHub credentials out of portable profiles. The local SDK reaches the existing loopback agents door with a profile-bound session credential so long-running turns can renew without restarting.
+
 ## Cross-station account concurrency limits
 
 - A shared subscription profile's `maxConcurrentSessions` applies across every station sharing that account, coordinated solely by its host station over `share.*` mesh RPCs (never through cloud, never by polling when idle).

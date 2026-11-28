@@ -115,7 +115,7 @@ export const secretValue = (key: string, value: string) =>
 const agents = new Map<string, https.Agent>();
 
 /// The agent for requests through the proxy `agentEnv` names (Node's own proxying, NO_PROXY honoured); none without one.
-function proxyAgent(env: Record<string, string>): https.Agent | null {
+export function proxyAgent(env: Record<string, string> = keepLocal(agentEnv())): https.Agent | null {
   const proxyEnv: Record<string, string> = {};
   for (const name of [...PROXIES, "NO_PROXY"]) {
     const v = either(env, name);
