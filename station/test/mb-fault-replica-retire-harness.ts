@@ -5,7 +5,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createSocket } from "node:dgram";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as httpServer, request } from "node:http";
 import { type AddressInfo, createServer as netServer, type Server, type Socket } from "node:net";
@@ -101,14 +100,6 @@ export const readJson = (p: string) => {
 };
 export const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 
-export async function freeUdpPort(): Promise<number> {
-  const socket = createSocket("udp4");
-  await new Promise<void>((r) => socket.bind(0, "127.0.0.1", () => r()));
-  const port = socket.address().port;
-  await new Promise<void>((r) => socket.close(() => r()));
-  return port;
-}
-
 export const TOOLS = ["sh", "ps", "mv", "cat", "curl", "sleep", "echo", "printf", "env", "git", "ls", "find", "sort", "rm", "mkdir", "cp", "dirname", "basename", "sed", "tr", "head", "wc", "uname", "lsof"];
 
 /// A PATH of the tools a station runs, Node not among them, with a fake Claude Code whose every prompt posts
@@ -175,7 +166,10 @@ export const cloudJson = (data: string, o: { origin: string; id: string; name: s
 
 /// The control plane of the test's: its HTTP answered `{}`, its presence socket given each station its state.
 export async function plane(stateOf: (station: string) => object) {
-  const sockets: WebSocket[] = [];
+  const sockets = new Map<WebSocket, string>();
+  const sendState = (ws: WebSocket, station: string) => {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "state", relay_urls: [], revocations: [], ...stateOf(station) }));
+  };
   const server = httpServer((req, res) => {
     req.resume();
     req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end("{}"));
@@ -183,25 +177,40 @@ export async function plane(stateOf: (station: string) => object) {
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     if (!req.url?.startsWith("/v1/stations/connect")) return void socket.destroy();
+    const station = String(req.headers["x-stillfail-station"] ?? "");
     wss.handleUpgrade(req, socket, head, (ws) => {
-      sockets.push(ws);
+      sockets.set(ws, station);
+      ws.on("close", () => sockets.delete(ws));
+      ws.on("error", () => sockets.delete(ws));
       ws.on("message", (m) => {
         if (String(m) === "ping") ws.send("pong");
       });
-      ws.send(JSON.stringify({ type: "state", relay_urls: [], revocations: [], ...stateOf(String(req.headers["x-stillfail-station"] ?? "")) }));
+      sendState(ws, station);
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   closers.push(() => {
-    for (const s of sockets) s.terminate();
+    for (const s of sockets.keys()) s.terminate();
+    sockets.clear();
     wss.close();
     server.closeAllConnections();
     server.close();
   });
-  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const push = () => {
+    for (const [ws, station] of sockets) sendState(ws, station);
+  };
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, push };
 }
 
-export type Launched = { child: ChildProcess; door: number; stop: () => Promise<void>; kill: () => Promise<void>; err: () => string; alive: () => boolean };
+export type Launched = {
+  child: ChildProcess;
+  door: number;
+  stop: () => Promise<void>;
+  kill: () => Promise<void>;
+  err: () => string;
+  alive: () => boolean;
+  meshPort: () => number | null;
+};
 
 /// `stillfail-reader run` under a launcher of the test's (its descriptors: the agents' door, the loopback port and its
 /// channel), ready and its door open.
@@ -246,7 +255,14 @@ export async function launch(data: string, app: string, env: Record<string, stri
     child.kill("SIGKILL");
     await ended;
   };
-  return { child, door, stop, kill, err: tail, alive };
+  const meshPort = () => {
+    let port: number | null = null;
+    for (const m of err.matchAll(/mesh listening\b[^\n]*\bsockets=\[[^\]]*"127\.0\.0\.1:(\d+)"/g)) {
+      port = Number(m[1]);
+    }
+    return port;
+  };
+  return { child, door, stop, kill, err: tail, alive, meshPort };
 }
 
 export type Answer = { status: number; text: string; json: any };
@@ -319,14 +335,67 @@ export const handedTo = (data: string, key: string) => rows<{ station: string }>
 /// config given; the fakes of both writing their notes in one place.
 export async function pair(names: [string, string], configs: [object, object], env: [Record<string, string>, Record<string, string>] = [{}, {}]) {
   const [a, b] = [stationDir(configs[0]), stationDir(configs[1])];
-  const ports = [await freeUdpPort(), await freeUdpPort()];
-  const peers = [{ id: a.id, name: names[0], ips: [`127.0.0.1:${ports[0]}`] }, { id: b.id, name: names[1], ips: [`127.0.0.1:${ports[1]}`] }];
+  const peers: [{ id: string; name: string; ips: string[] }, { id: string; name: string; ips: string[] }] = [
+    { id: a.id, name: names[0], ips: [] },
+    { id: b.id, name: names[1], ips: [] },
+  ];
   const p = await plane((station) => ({ workspace: "w1", workspace_name: "团队", name: station === a.id ? names[0] : names[1], peers }));
   cloudJson(a.data, { origin: p.origin, id: a.id, name: names[0], peers });
   cloudJson(b.data, { origin: p.origin, id: b.id, name: names[1], peers });
   const out = fresh("out");
   const bins = [binOf(`${names[0]}-reply`), binOf(`${names[1]}-reply`)];
-  const start = (i: 0 | 1) => launch(i === 0 ? a.data : b.data, i === 0 ? a.app : b.app, { PATH: bins[i]!, FAKE_OUT: out, FAKE_STATION: names[i]!, STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${ports[i]}`, ...env[i] });
+  const datas = [a.data, b.data] as const;
+  const live: [Launched | null, Launched | null] = [null, null];
+  const hasPeerIp = (data: string, peerId: string, ip: string) => {
+    const saved = readJson(join(data, "mesh", "cloud.json"));
+    const entry = Array.isArray(saved?.peers) ? saved.peers.find((x: any) => x?.id === peerId) : null;
+    return Array.isArray(entry?.ips) && entry.ips.includes(ip);
+  };
+  const start = async (i: 0 | 1) => {
+    // Bind UDP port 0 directly so the kernel assigns a free port atomically (no pre-probe TOCTOU against other test workers).
+    const launched = await launch(i === 0 ? a.data : b.data, i === 0 ? a.app : b.app, {
+      PATH: bins[i]!,
+      FAKE_OUT: out,
+      FAKE_STATION: names[i]!,
+      STILLFAIL_MESH_BIND_ADDR: "127.0.0.1:0",
+      ...env[i],
+    });
+    live[i] = launched;
+    const got = await given(
+      `${names[i]} mesh listening`,
+      () => {
+        const port = launched.meshPort();
+        if (port !== null) return { port };
+        if (!launched.alive()) return { dead: true as const };
+        return null;
+      },
+      launched.err,
+    );
+    if ("dead" in got) throw new Error(`${names[i]} exited before mesh listening:\n${launched.err()}`);
+    const ip = `127.0.0.1:${got.port}`;
+    peers[i].ips = [ip];
+    p.push();
+    const other = (1 - i) as 0 | 1;
+    const otherIp = peers[other].ips[0];
+    if (otherIp !== undefined) {
+      await given(
+        `${names[i]} sees ${names[other]} at ${otherIp}`,
+        () => !launched.alive() || hasPeerIp(datas[i], peers[other].id, otherIp),
+        launched.err,
+      );
+      if (!launched.alive()) throw new Error(`${names[i]} exited before seeing ${names[other]} at ${otherIp}:\n${launched.err()}`);
+    }
+    const peerLive = live[other];
+    if (peerLive !== null && peerLive.alive()) {
+      await given(
+        `${names[other]} sees ${names[i]} at ${ip}`,
+        () => !peerLive.alive() || hasPeerIp(datas[other], peers[i].id, ip),
+        () => `${launched.err()}\n${peerLive.err()}`,
+      );
+      if (!peerLive.alive()) throw new Error(`${names[other]} exited before seeing ${names[i]} at ${ip}:\n${peerLive.err()}`);
+    }
+    return launched;
+  };
   const first = await start(0);
   const second = await start(1);
   for (const d of [a.data, b.data]) await given("online at the plane", () => readJson(join(d, "run", "presence.json"))?.online === true, () => `${first.err()}\n${second.err()}`);
