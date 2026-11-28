@@ -17,7 +17,6 @@
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
-extern int64_t pion_core_accounts_tx_begin(const char *dir, int64_t dir_len);
 extern int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len);
 extern int32_t pion_core_accounts_tx_status(int64_t tx_id);
 extern const uint8_t *pion_core_accounts_tx_data(int64_t tx_id);
@@ -142,7 +141,32 @@ static void *foreign_screen_thread(void *arg) {
     return NULL;
 }
 
-int main(void) {
+static int run_exec_lock_probe(const char *self_exe, const char *dir) {
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        execl(self_exe, self_exe, "--lock-probe", dir, (char *)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    assert(waitpid(pid, &st, 0) == pid && WIFEXITED(st));
+    return WEXITSTATUS(st);
+}
+
+int main(int argc, char **argv) {
+    // Self-exec child mode for genuine cross-process OS `flock` testing (clean unlocked mutex!).
+    if (argc >= 3 && strcmp(argv[1], "--lock-probe") == 0) {
+        const char *probe_dir = argv[2];
+        int64_t tx = pion_core_accounts_tx_try_begin(probe_dir, (int64_t)strlen(probe_dir));
+        if (tx == 0) {
+            return 2; // contended on OS `flock`
+        }
+        if (tx >= 1) {
+            pion_core_accounts_tx_end(tx);
+            return 0; // acquired & released cleanly
+        }
+        return 3; // I/O error
+    }
     memset(&g_ctx, 0, sizeof(g_ctx));
     pthread_mutex_init(&g_ctx.mu, NULL);
     pthread_cond_init(&g_ctx.cv, NULL);
@@ -679,54 +703,30 @@ int main(void) {
         printf("[core_runtime_e2e] post-stop restart non-deadlock + accounts preservation OK\n");
     }
 
-    // 7b. Cross-process `fork()` mutual exclusion + monotonic logical `tx_id` stale-end immunity!
+    // 7b. Genuine separate-process (`fork` + `execl`) OS `flock` mutual exclusion + monotonic
+    //     logical `tx_id` stale-end immunity (child runs fresh image with unlocked process mutex)!
     {
         int64_t dlen = (int64_t)strlen(data_dir);
         int64_t tx1 = pion_core_accounts_tx_try_begin(data_dir, dlen);
         assert(tx1 >= 1);
         assert(pion_core_accounts_tx_status(tx1) == 1);
         assert(pion_core_accounts_tx_len(tx1) > 0 && pion_core_accounts_tx_data(tx1) != NULL);
-        // Same-process second acquire MUST be contended (`-1`).
-        assert(pion_core_accounts_tx_try_begin(data_dir, dlen) == -1);
-        // Forked child process MUST observe contention (`-1`).
-        pid_t c1 = fork();
-        assert(c1 >= 0);
-        if (c1 == 0) {
-            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
-            _exit(child_tx == -1 ? 0 : 1);
-        }
-        int st1 = 0;
-        assert(waitpid(c1, &st1, 0) == c1 && WIFEXITED(st1) && WEXITSTATUS(st1) == 0);
+        // Same-process second acquire MUST be contended (`0`).
+        assert(pion_core_accounts_tx_try_begin(data_dir, dlen) == 0);
+        // Independent exec'd child process (fresh unlocked mutex!) MUST observe OS `flock` contention (`exit 2`).
+        assert(run_exec_lock_probe(argv[0], data_dir) == 2);
         pion_core_accounts_tx_end(tx1);
 
         // Acquire new `tx2 > tx1` and invoke STALE `tx_end(tx1)`: MUST be a no-op and MUST NOT release `tx2`!
         int64_t tx2 = pion_core_accounts_tx_try_begin(data_dir, dlen);
         assert(tx2 > tx1);
         pion_core_accounts_tx_end(tx1); // stale tx_id: MUST NOT release tx2!
-        pid_t c_stale = fork();
-        assert(c_stale >= 0);
-        if (c_stale == 0) {
-            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
-            _exit(child_tx == -1 ? 0 : 1);
-        }
-        int st_stale = 0;
-        assert(waitpid(c_stale, &st_stale, 0) == c_stale && WIFEXITED(st_stale) && WEXITSTATUS(st_stale) == 0);
+        assert(run_exec_lock_probe(argv[0], data_dir) == 2);
         pion_core_accounts_tx_end(tx2);
 
-        // After ending `tx2`, forked child MUST immediately acquire (`>= 1`) and end cleanly!
-        pid_t c2 = fork();
-        assert(c2 >= 0);
-        if (c2 == 0) {
-            int64_t child_tx = pion_core_accounts_tx_try_begin(data_dir, dlen);
-            if (child_tx >= 1) {
-                pion_core_accounts_tx_end(child_tx);
-                _exit(0);
-            }
-            _exit(1);
-        }
-        int st2 = 0;
-        assert(waitpid(c2, &st2, 0) == c2 && WIFEXITED(st2) && WEXITSTATUS(st2) == 0);
-        printf("[core_runtime_e2e] accounts_tx cross-process mutex + stale tx_id immunity OK\n");
+        // After ending `tx2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
+        assert(run_exec_lock_probe(argv[0], data_dir) == 0);
+        printf("[core_runtime_e2e] accounts_tx exec cross-process flock + stale tx_id immunity OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),

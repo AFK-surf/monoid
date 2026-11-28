@@ -1963,25 +1963,68 @@ test "Slice 2B-1 R5: restore_prev rollback, active account ordering/grouping, sa
       _ => ()
     }
   }
-  // Depth-in-defense: even if an outbox frame survived an authGen bump without `retain_where`, `ws_auth_gen` stamp drops it!
+  // Depth-in-defense (R6 Item 2):
+  // (a) Normal lock/role `auth.bump_workspace(ULID_WS1)` (WITHOUT purge!) MUST NOT drop already-queued
+  //     `EntryAdded` or `ConnectionChanged(Connected)` frames!
+  rcore.outbox.tell(CoreEvent::ConnectionChanged(ULID_WS1 + "/st-1", ConnectionState::Connected))
   rcore.outbox.tell(CoreEvent::EntryAdded(
     ULID_WS1 + "/st-1",
     11,
     store::Entry::{
       n: 2, kind: "message", author_kind: "person", author: "alice",
-      text: "STALE_GEN_SECRET_TEXT", notice: None, files: 0, letter: false,
+      text: "SURVIVES_NORMAL_LOCK_AUTH_BUMP", notice: None, files: 0, letter: false,
     },
     None,
   ))
   let _ = rcore.auth.bump_workspace(ULID_WS1)
-  let drained2 = rcore.drain_frame()
-  debug_assert(drained2.length() == 0, "ws_auth_gen stamp rejects stale-generation queued frame")
-  // Fresh frame enqueued AFTER rejoin / authGen bump IS delivered normally!
+  let drained_normal = rcore.drain_frame()
+  debug_assert(drained_normal.length() == 2, "normal lock authGen bump MUST NOT drop queued EntryAdded or Connected frames")
+
+  // (b) Explicit workspace-scoped `LockUpdated(WS2)` / `LockRejected(WS2)` queued while `self.workspace == WS1`
+  //     MUST be evicted by `WS2` revocation and NEVER delivered by `drain_frame`!
+  rcore.outbox.tell(CoreEvent::LockUpdated(ULID_WS2, "head-ws2", 1000.0, 1))
+  rcore.outbox.tell(CoreEvent::LockRejected(ULID_WS2, "secret-ws2-lock-reason"))
   rcore.outbox.tell(CoreEvent::EntryAdded(
     ULID_WS1 + "/st-1",
     12,
     store::Entry::{
       n: 3, kind: "message", author_kind: "person", author: "alice",
+      text: "WS1_SURVIVES_WS2_REVOKE", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let _ = rcore.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=4L)
+  let drained_ws2_rev = rcore.drain_frame()
+  let mut saw_ws2_lock = false
+  let mut saw_ws1_ok = false
+  for i in 0..<drained_ws2_rev.length() {
+    match drained_ws2_rev[i] {
+      CoreEvent::LockUpdated(ws, _, _, _) => if ws == ULID_WS2 { saw_ws2_lock = true }
+      CoreEvent::LockRejected(ws, _) => if ws == ULID_WS2 { saw_ws2_lock = true }
+      CoreEvent::EntryAdded(_, _, ent, _) => if ent.text == "WS1_SURVIVES_WS2_REVOKE" { saw_ws1_ok = true }
+      _ => ()
+    }
+  }
+  debug_assert(!saw_ws2_lock && saw_ws1_ok, "revoking WS2 evicts WS2 LockUpdated/LockRejected while keeping WS1 frames")
+
+  // (c) Depth-in-defense: bumping `workspace_purge_gen(ULID_WS1)` rejects pre-purge frames even without `retain_where`,
+  //     while fresh frames enqueued AFTER purge/rejoin deliver normally!
+  rcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    13,
+    store::Entry::{
+      n: 4, kind: "message", author_kind: "person", author: "alice",
+      text: "STALE_PURGE_GEN_TEXT", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let _ = rcore.membership.bump_workspace_purge_gen(ULID_WS1)
+  debug_assert(rcore.drain_frame().length() == 0, "workspace_purge_gen mismatch rejects stale pre-purge frame")
+  rcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    14,
+    store::Entry::{
+      n: 5, kind: "message", author_kind: "person", author: "alice",
       text: "FRESH_POST_REJOIN_TEXT", notice: None, files: 0, letter: false,
     },
     None,

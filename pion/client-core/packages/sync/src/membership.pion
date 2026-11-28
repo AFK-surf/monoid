@@ -659,7 +659,15 @@ pub fn AccountRefreshCoordinator::rollback_account_cas_k(
   )
 }
 
+enum RefreshPostLockAction {
+  None
+  Adopt(views::StoredAccount, String, Array[views::StoredAccount], Map[String, String])
+  Invalidate(String, String, String, Array[views::StoredAccount], Map[String, String])
+}
+
 /// Run the complete TS `accounts.ts`-aligned refresh flow for `(sub, expected_session, expected_refresh)`.
+/// Strictly releases the accounts lock / file transaction BEFORE invoking `on_adopt_or_update` or
+/// `on_invalidated` (which may run SQLite writes, `:memory:` DB switches, and topic refreshes).
 pub fn AccountRefreshCoordinator::refresh_k(
   self : AccountRefreshCoordinator,
   host : AccountRefreshHost,
@@ -703,17 +711,26 @@ pub fn AccountRefreshCoordinator::refresh_k(
   let on_inval = host.on_invalidated
   let now_fn = host.now_ms
 
+  let run_post_lock = fn(act : RefreshPostLockAction) -> Unit {
+    match act {
+      RefreshPostLockAction::None => ()
+      RefreshPostLockAction::Adopt(acct, sid, all_accts, all_sids) => on_adopt(acct, sid, all_accts, all_sids)
+      RefreshPostLockAction::Invalidate(isub, isid, iref, rem_accts, rem_sids) => on_inval(isub, isid, iref, rem_accts, rem_sids)
+    }
+  }
+
   // Phase 1: Pre-request `#adoptStored` (`accounts.ts:397-422`) under serialized lock + cross-process flock.
+  // Lock is strictly released BEFORE `on_adopt` runs!
   self.with_accounts_locks_k(
-    fn(lk : (effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit) -> Unit {
+    fn(lk : (effect::Exit[(Result[(Bool, String), AccountRefreshOutcome], RefreshPostLockAction)]) -> Unit) -> Unit {
       match get_mem(sub) {
         None => {
-          lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+          lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("signed_out")), RefreshPostLockAction::None)))
           return
         }
         Some((mem_sid, mem_ref)) => {
           if mem_sid != expected_session || mem_ref != expected_refresh {
-            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+            lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("stale_session")), RefreshPostLockAction::None)))
             return
           }
         }
@@ -721,52 +738,52 @@ pub fn AccountRefreshCoordinator::refresh_k(
       read_disk(fn(rd : HostStorageRead) -> Unit {
         match get_mem(sub) {
           None => {
-            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+            lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("signed_out")), RefreshPostLockAction::None)))
             return
           }
           Some((mem_sid, mem_ref)) => {
             if mem_sid != expected_session || mem_ref != expected_refresh {
-              lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+              lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("stale_session")), RefreshPostLockAction::None)))
               return
             }
           }
         }
         match rd {
           HostStorageRead::ReadError(reason) => {
-            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason))))
+            lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)), RefreshPostLockAction::None)))
           }
           HostStorageRead::Absent => {
-            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+            lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("signed_out")), RefreshPostLockAction::None)))
           }
           HostStorageRead::Found(doc) => {
             let disk_sessions = parse_stored_account_sessions(doc)
             match parse_stored_accounts_strict(doc) {
               None => {
-                lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Transient("accounts disk invalid json"))))
+                lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Transient("accounts disk invalid json")), RefreshPostLockAction::None)))
               }
               Some(disk_list) => {
                 let idx = find_stored_idx(disk_list, sub)
                 if idx < 0 {
-                  lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+                  lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("signed_out")), RefreshPostLockAction::None)))
                   return
                 }
                 let theirs = disk_list[idx]
                 let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
                 if disk_sid != expected_session {
-                  lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+                  lk(effect::Exit::Succeeded((Err(AccountRefreshOutcome::Stale("stale_session")), RefreshPostLockAction::None)))
                   return
                 }
                 if theirs.refresh != expected_refresh {
-                  // Another core rotated tokens for the exact same session: adopt immediately!
-                  on_adopt(theirs, disk_sid, disk_list, disk_sessions)
+                  // Another core rotated tokens for the exact same session: defer `on_adopt` until AFTER lock release!
+                  let act = RefreshPostLockAction::Adopt(theirs, disk_sid, disk_list, disk_sessions)
                   let now_sec = now_fn() / 1000L
                   if theirs.access_expires - 60L > now_sec && theirs.access.length() > 0 {
-                    lk(effect::Exit::Succeeded(Ok((true, theirs.access))))
+                    lk(effect::Exit::Succeeded((Ok((true, theirs.access)), act)))
                   } else {
-                    lk(effect::Exit::Succeeded(Ok((false, theirs.refresh))))
+                    lk(effect::Exit::Succeeded((Ok((false, theirs.refresh)), act)))
                   }
                 } else {
-                  lk(effect::Exit::Succeeded(Ok((false, expected_refresh))))
+                  lk(effect::Exit::Succeeded((Ok((false, expected_refresh)), RefreshPostLockAction::None)))
                 }
               }
             }
@@ -774,204 +791,209 @@ pub fn AccountRefreshCoordinator::refresh_k(
         }
       })
     },
-    fn(lock_err : String) -> Result[(Bool, String), AccountRefreshOutcome] {
-      Err(AccountRefreshOutcome::Transient(lock_err))
+    fn(lock_err : String) -> (Result[(Bool, String), AccountRefreshOutcome], RefreshPostLockAction) {
+      (Err(AccountRefreshOutcome::Transient(lock_err)), RefreshPostLockAction::None)
     },
-    fn(pex : effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit {
+    fn(pex : effect::Exit[(Result[(Bool, String), AccountRefreshOutcome], RefreshPostLockAction)]) -> Unit {
       match pex {
         effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
         effect::Exit::Failed(e) => { finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e))) }
-        effect::Exit::Succeeded(Err(out)) => { finish_all(out) }
-        effect::Exit::Succeeded(Ok((true, adopted_access))) => {
-          finish_all(AccountRefreshOutcome::Ok(adopted_access, true))
-        }
-        effect::Exit::Succeeded(Ok((false, eff_refresh))) => {
-          // Phase 2: Send `POST /v1/auth/refresh` OUTSIDE the disk lock.
-          do_http(eff_refresh, now_fn(), fn(hex : effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit {
-            match hex {
-              effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
-              effect::Exit::Failed(e) => { finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e))) }
-              effect::Exit::Succeeded(Err(RefreshTokenError::Transient(msg))) => {
-                finish_all(AccountRefreshOutcome::Transient(msg))
-              }
-              effect::Exit::Succeeded(Ok(tokens)) => {
-                // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) under serialized lock + cross-process flock.
-                self.with_accounts_locks_k(
-                  fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
-                    match get_mem(sub) {
-                      None => {
-                        clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
-                        return
-                      }
-                      Some((mem_sid, mem_ref)) => {
-                        if mem_sid != expected_session || mem_ref != eff_refresh {
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_session")))
-                          return
-                        }
-                      }
-                    }
-                    read_disk(fn(rd : HostStorageRead) -> Unit {
-                      match rd {
-                        HostStorageRead::ReadError(reason) => {
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)))
-                        }
-                        HostStorageRead::Absent => {
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
-                        }
-                        HostStorageRead::Found(doc) => {
-                          let disk_sessions = parse_stored_account_sessions(doc)
-                          match parse_stored_accounts_strict(doc) {
-                            None => {
-                              clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk invalid json")))
-                            }
-                            Some(disk_list) => {
-                              let idx = find_stored_idx(disk_list, sub)
-                              if idx < 0 {
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
-                                return
-                              }
-                              let cur = disk_list[idx]
-                              let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
-                              if disk_sid != expected_session {
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_session")))
-                                return
-                              }
-                              if cur.refresh != eff_refresh {
-                                // Another instance rotated while our HTTP was in flight: adopt without regressing disk!
-                                on_adopt(cur, disk_sid, disk_list, disk_sessions)
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Ok(cur.access, true)))
-                                return
-                              }
-                              let next_name = match tokens.name {
-                                Some(nm) => if nm.length() > 0 { nm } else { cur.name }
-                                None => cur.name
-                              }
-                              let updated = views::StoredAccount::{
-                                sub: cur.sub,
-                                email: cur.email,
-                                name: next_name,
-                                picture: cur.picture,
-                                access: tokens.access,
-                                refresh: tokens.refresh,
-                                access_expires: tokens.access_expires,
-                              }
-                              let next_list : Array[views::StoredAccount] = []
-                              for i in 0..<disk_list.length() {
-                                if i == idx {
-                                  next_list.push(updated)
-                                } else {
-                                  next_list.push(disk_list[i])
-                                }
-                              }
-                              let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
-                              write_disk(encoded, fn(_wres : Result[Unit, String]) -> Unit {
-                                // New tokens are already valid in memory even if disk write warned (`accounts.ts:617`).
-                                on_adopt(updated, disk_sid, next_list, disk_sessions)
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Ok(updated.access, false)))
-                              })
-                            }
-                          }
-                        }
-                      }
-                    })
-                  },
-                  fn(lock_err : String) -> AccountRefreshOutcome {
-                    AccountRefreshOutcome::Transient(lock_err)
-                  },
-                  fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
-                    match cex {
-                      effect::Exit::Succeeded(o) => finish_all(o)
-                      effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
-                      effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
-                    }
-                  },
-                )
-              }
-              effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(status, msg))) => {
-                // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`) under serialized lock + cross-process flock.
-                self.with_accounts_locks_k(
-                  fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
-                    match get_mem(sub) {
-                      None => {
-                        clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
-                        return
-                      }
-                      Some((mem_sid, mem_ref)) => {
-                        if mem_sid != expected_session || mem_ref != eff_refresh {
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
-                          return
-                        }
-                      }
-                    }
-                    read_disk(fn(rd : HostStorageRead) -> Unit {
-                      match rd {
-                        HostStorageRead::ReadError(reason) => {
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)))
-                        }
-                        HostStorageRead::Absent => {
-                          // Align with TS `#forgetIfMatches`: absent file on disk is treated as stale,
-                          // NEVER passing `[]` to `on_inval` or clearing in-memory sibling accounts!
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
-                        }
-                        HostStorageRead::Found(doc) => {
-                          let disk_sessions = parse_stored_account_sessions(doc)
-                          match parse_stored_accounts_strict(doc) {
-                            None => {
-                              clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk invalid json")))
-                            }
-                            Some(disk_list) => {
-                              let idx = find_stored_idx(disk_list, sub)
-                              if idx < 0 {
-                                // Already removed on disk by another instance: invalidate locally without touching disk.
-                                disk_sessions.remove(sub)
-                                on_inval(sub, expected_session, eff_refresh, disk_list, disk_sessions)
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
-                                return
-                              }
-                              let cur = disk_list[idx]
-                              let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
-                              if disk_sid != expected_session || cur.refresh != eff_refresh {
-                                // Disk already rotated or re-logged in: do NOT remove `sub` or clobber disk!
-                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
-                                return
-                              }
-                              let next_list : Array[views::StoredAccount] = []
-                              for i in 0..<disk_list.length() {
-                                if i != idx {
-                                  next_list.push(disk_list[i])
-                                }
-                              }
-                              disk_sessions.remove(sub)
-                              let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
-                              write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
-                                match wres {
-                                  Err(we) => clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient(we)))
-                                  Ok(_) => {
-                                    on_inval(sub, expected_session, eff_refresh, next_list, disk_sessions)
-                                    clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
-                                  }
-                                }
-                              })
-                            }
-                          }
-                        }
-                      }
-                    })
-                  },
-                  fn(lock_err : String) -> AccountRefreshOutcome {
-                    AccountRefreshOutcome::Transient(lock_err)
-                  },
-                  fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
-                    match cex {
-                      effect::Exit::Succeeded(o) => finish_all(o)
-                      effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
-                      effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
-                    }
-                  },
-                )
-              }
+        effect::Exit::Succeeded((phase1_res, act)) => {
+          run_post_lock(act)
+          match phase1_res {
+            Err(out) => { finish_all(out) }
+            Ok((true, adopted_access)) => {
+              finish_all(AccountRefreshOutcome::Ok(adopted_access, true))
             }
-          })
+            Ok((false, eff_refresh)) => {
+              // Phase 2: Send `POST /v1/auth/refresh` OUTSIDE the disk lock.
+              do_http(eff_refresh, now_fn(), fn(hex : effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit {
+                match hex {
+                  effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
+                  effect::Exit::Failed(e) => { finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e))) }
+                  effect::Exit::Succeeded(Err(RefreshTokenError::Transient(msg))) => {
+                    finish_all(AccountRefreshOutcome::Transient(msg))
+                  }
+                  effect::Exit::Succeeded(Ok(tokens)) => {
+                    // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`); release lock BEFORE `on_adopt`!
+                    self.with_accounts_locks_k(
+                      fn(clk : (effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit) -> Unit {
+                        match get_mem(sub) {
+                          None => {
+                            clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("signed_out"), RefreshPostLockAction::None)))
+                            return
+                          }
+                          Some((mem_sid, mem_ref)) => {
+                            if mem_sid != expected_session || mem_ref != eff_refresh {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_session"), RefreshPostLockAction::None)))
+                              return
+                            }
+                          }
+                        }
+                        read_disk(fn(rd : HostStorageRead) -> Unit {
+                          match rd {
+                            HostStorageRead::ReadError(reason) => {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient("accounts disk read failed: " + reason), RefreshPostLockAction::None)))
+                            }
+                            HostStorageRead::Absent => {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("signed_out"), RefreshPostLockAction::None)))
+                            }
+                            HostStorageRead::Found(doc) => {
+                              let disk_sessions = parse_stored_account_sessions(doc)
+                              match parse_stored_accounts_strict(doc) {
+                                None => {
+                                  clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient("accounts disk invalid json"), RefreshPostLockAction::None)))
+                                }
+                                Some(disk_list) => {
+                                  let idx = find_stored_idx(disk_list, sub)
+                                  if idx < 0 {
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("signed_out"), RefreshPostLockAction::None)))
+                                    return
+                                  }
+                                  let cur = disk_list[idx]
+                                  let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                                  if disk_sid != expected_session {
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_session"), RefreshPostLockAction::None)))
+                                    return
+                                  }
+                                  if cur.refresh != eff_refresh {
+                                    let act = RefreshPostLockAction::Adopt(cur, disk_sid, disk_list, disk_sessions)
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Ok(cur.access, true), act)))
+                                    return
+                                  }
+                                  let next_name = match tokens.name {
+                                    Some(nm) => if nm.length() > 0 { nm } else { cur.name }
+                                    None => cur.name
+                                  }
+                                  let updated = views::StoredAccount::{
+                                    sub: cur.sub,
+                                    email: cur.email,
+                                    name: next_name,
+                                    picture: cur.picture,
+                                    access: tokens.access,
+                                    refresh: tokens.refresh,
+                                    access_expires: tokens.access_expires,
+                                  }
+                                  let next_list : Array[views::StoredAccount] = []
+                                  for i in 0..<disk_list.length() {
+                                    if i == idx {
+                                      next_list.push(updated)
+                                    } else {
+                                      next_list.push(disk_list[i])
+                                    }
+                                  }
+                                  let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+                                  write_disk(encoded, fn(_wres : Result[Unit, String]) -> Unit {
+                                    let act = RefreshPostLockAction::Adopt(updated, disk_sid, next_list, disk_sessions)
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Ok(updated.access, false), act)))
+                                  })
+                                }
+                              }
+                            }
+                          }
+                        })
+                      },
+                      fn(lock_err : String) -> (AccountRefreshOutcome, RefreshPostLockAction) {
+                        (AccountRefreshOutcome::Transient(lock_err), RefreshPostLockAction::None)
+                      },
+                      fn(cex : effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit {
+                        match cex {
+                          effect::Exit::Succeeded((o, act)) => {
+                            run_post_lock(act)
+                            finish_all(o)
+                          }
+                          effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
+                          effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
+                        }
+                      },
+                    )
+                  }
+                  effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(status, msg))) => {
+                    // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`); release lock BEFORE `on_inval`!
+                    self.with_accounts_locks_k(
+                      fn(clk : (effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit) -> Unit {
+                        match get_mem(sub) {
+                          None => {
+                            clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
+                            return
+                          }
+                          Some((mem_sid, mem_ref)) => {
+                            if mem_sid != expected_session || mem_ref != eff_refresh {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
+                              return
+                            }
+                          }
+                        }
+                        read_disk(fn(rd : HostStorageRead) -> Unit {
+                          match rd {
+                            HostStorageRead::ReadError(reason) => {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient("accounts disk read failed: " + reason), RefreshPostLockAction::None)))
+                            }
+                            HostStorageRead::Absent => {
+                              clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
+                            }
+                            HostStorageRead::Found(doc) => {
+                              let disk_sessions = parse_stored_account_sessions(doc)
+                              match parse_stored_accounts_strict(doc) {
+                                None => {
+                                  clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient("accounts disk invalid json"), RefreshPostLockAction::None)))
+                                }
+                                Some(disk_list) => {
+                                  let idx = find_stored_idx(disk_list, sub)
+                                  if idx < 0 {
+                                    disk_sessions.remove(sub)
+                                    let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, disk_list, disk_sessions)
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, true), act)))
+                                    return
+                                  }
+                                  let cur = disk_list[idx]
+                                  let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                                  if disk_sid != expected_session || cur.refresh != eff_refresh {
+                                    clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
+                                    return
+                                  }
+                                  let next_list : Array[views::StoredAccount] = []
+                                  for i in 0..<disk_list.length() {
+                                    if i != idx {
+                                      next_list.push(disk_list[i])
+                                    }
+                                  }
+                                  disk_sessions.remove(sub)
+                                  let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+                                  write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
+                                    match wres {
+                                      Err(we) => clk(effect::Exit::Succeeded((AccountRefreshOutcome::Transient(we), RefreshPostLockAction::None)))
+                                      Ok(_) => {
+                                        let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, next_list, disk_sessions)
+                                        clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, true), act)))
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            }
+                          }
+                        })
+                      },
+                      fn(lock_err : String) -> (AccountRefreshOutcome, RefreshPostLockAction) {
+                        (AccountRefreshOutcome::Transient(lock_err), RefreshPostLockAction::None)
+                      },
+                      fn(cex : effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit {
+                        match cex {
+                          effect::Exit::Succeeded((o, act)) => {
+                            run_post_lock(act)
+                            finish_all(o)
+                          }
+                          effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
+                          effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
+                        }
+                      },
+                    )
+                  }
+                }
+              })
+            }
+          }
         }
       }
     },
@@ -1824,6 +1846,7 @@ pub struct MembershipAuthority {
   revoked : Map[String, Bool]
   pending_purges : Map[String, PendingPurgeEntry]
   completed_purge_gen : Map[String, Int64]
+  workspace_purge_gen : Map[String, Int64]
   station_ws : Map[String, String]
   ws_stations : Map[String, Array[String]]
   ws_bare_stations : Map[String, Array[String]]
@@ -1853,6 +1876,7 @@ pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthorit
     revoked: Map::new(),
     pending_purges: Map::new(),
     completed_purge_gen: Map::new(),
+    workspace_purge_gen: Map::new(),
     station_ws: Map::new(),
     ws_stations: Map::new(),
     ws_bare_stations: Map::new(),
@@ -1901,6 +1925,7 @@ pub fn MembershipAuthority::reset_for_db_switch(self : MembershipAuthority) -> U
   self.revoked.clear()
   self.pending_purges.clear()
   self.completed_purge_gen.clear()
+  self.workspace_purge_gen.clear()
   self.station_ws.clear()
   self.ws_stations.clear()
   self.ws_bare_stations.clear()
@@ -3159,6 +3184,26 @@ pub fn MembershipAuthority::cred_epoch_of(self : MembershipAuthority, ws : Strin
     Some(v) => v
     None => 1L
   }
+}
+
+/// Purge-only monotonic generation counter per workspace: advances ONLY on workspace revocation /
+/// `purge_workspace_memory` (NEVER on normal lock updates or role changes!), so outbound frames
+/// enqueued before a purge are rejected even after same-turn rejoin while normal lock updates
+/// never falsely drop already-committed frames.
+pub fn MembershipAuthority::workspace_purge_gen_of(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.workspace_purge_gen.get(ws) {
+    Some(v) => v
+    None => 0L
+  }
+}
+
+pub fn MembershipAuthority::bump_workspace_purge_gen(self : MembershipAuthority, ws : String) -> Int64 {
+  if ws.length() == 0 {
+    return 0L
+  }
+  let next = self.workspace_purge_gen_of(ws) + 1L
+  self.workspace_purge_gen.set(ws, next)
+  next
 }
 
 /// Advance `cred_epoch[ws]` and purge any static mesh credential captured under an older epoch.

@@ -49,10 +49,6 @@ static BOOL CALLBACK init_accts_tx_cs_cb(PINIT_ONCE once, PVOID param, PVOID *ct
     InitializeCriticalSection(&g_accts_tx_cs);
     return TRUE;
 }
-static void accts_mu_lock(void) {
-    InitOnceExecuteOnce(&g_accts_tx_once, init_accts_tx_cs_cb, NULL, NULL);
-    EnterCriticalSection(&g_accts_tx_cs);
-}
 static int accts_mu_trylock(void) {
     InitOnceExecuteOnce(&g_accts_tx_once, init_accts_tx_cs_cb, NULL, NULL);
     return TryEnterCriticalSection(&g_accts_tx_cs) ? 0 : -1;
@@ -62,9 +58,6 @@ static void accts_mu_unlock(void) {
 }
 #else
 static pthread_mutex_t g_accts_tx_mu = PTHREAD_MUTEX_INITIALIZER;
-static void accts_mu_lock(void) {
-    pthread_mutex_lock(&g_accts_tx_mu);
-}
 static int accts_mu_trylock(void) {
     return pthread_mutex_trylock(&g_accts_tx_mu) == 0 ? 0 : -1;
 }
@@ -93,9 +86,15 @@ static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, c
         return;
     }
     memcpy(out, dir, pos);
+#ifdef _WIN32
     if (pos > 0 && out[pos - 1] != '/' && out[pos - 1] != '\\') {
         out[pos++] = '/';
     }
+#else
+    if (pos > 0 && out[pos - 1] != '/') {
+        out[pos++] = '/';
+    }
+#endif
     size_t nlen = strlen(name);
     memcpy(out + pos, name, nlen + 1);
 }
@@ -234,16 +233,16 @@ static void accts_tx_read_file_locked(const char *accts_path) {
 #endif
 }
 
-static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonblocking) {
+// Non-blocking attempt to start an atomic `<dir>/accounts` transaction:
+// - returns tx_id >= 1 on success (holds process mutex + exclusive OS file lock)
+// - returns 0 if currently contended (process mutex or OS file lock held elsewhere)
+// - returns -1 on I/O or invalid path error
+int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len) {
     if (dir == NULL || dir_len <= 0 || dir_len >= (int64_t)sizeof(g_accts_tx_dir)) {
-        return -2;
+        return -1;
     }
-    if (nonblocking) {
-        if (accts_mu_trylock() != 0) {
-            return -1;
-        }
-    } else {
-        accts_mu_lock();
+    if (accts_mu_trylock() != 0) {
+        return 0;
     }
     char dir_copy[3840];
     memcpy(dir_copy, dir, (size_t)dir_len);
@@ -253,7 +252,7 @@ static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonbloc
     join_dir_file(lock_path, sizeof(lock_path), dir_copy, (size_t)dir_len, ".accounts.lock");
     if (lock_path[0] == '\0') {
         accts_mu_unlock();
-        return -2;
+        return -1;
     }
 
 #ifdef _WIN32
@@ -264,7 +263,7 @@ static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonbloc
     wchar_t wlock[4096];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, lock_path, -1, wlock, 4096) <= 0) {
         accts_mu_unlock();
-        return -2;
+        return -1;
     }
     HANDLE h = CreateFileW(
         wlock,
@@ -276,16 +275,15 @@ static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonbloc
         NULL);
     if (h == INVALID_HANDLE_VALUE) {
         accts_mu_unlock();
-        return -2;
+        return -1;
     }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof(ov));
-    DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | (nonblocking ? LOCKFILE_FAIL_IMMEDIATELY : 0);
-    if (!LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov)) {
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &ov)) {
         DWORD err = GetLastError();
         CloseHandle(h);
         accts_mu_unlock();
-        return (nonblocking && err == ERROR_LOCK_VIOLATION) ? -1 : -2;
+        return (err == ERROR_LOCK_VIOLATION) ? 0 : -1;
     }
     g_accts_tx_lock_handle = h;
 #else
@@ -293,17 +291,13 @@ static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonbloc
     int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (fd < 0) {
         accts_mu_unlock();
-        return -2;
+        return -1;
     }
-    int op = LOCK_EX | (nonblocking ? LOCK_NB : 0);
-    while (flock(fd, op) != 0) {
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
         int e = errno;
-        if (!nonblocking && e == EINTR) {
-            continue;
-        }
         close(fd);
         accts_mu_unlock();
-        return (nonblocking && (e == EWOULDBLOCK || e == EAGAIN)) ? -1 : -2;
+        return (e == EWOULDBLOCK || e == EAGAIN) ? 0 : -1;
     }
     g_accts_tx_lock_fd = fd;
 #endif
@@ -320,12 +314,39 @@ static int64_t accts_tx_begin_impl(const char *dir, int64_t dir_len, int nonbloc
     return tx_id;
 }
 
-int64_t pion_core_accounts_tx_begin(const char *dir, int64_t dir_len) {
-    return accts_tx_begin_impl(dir, dir_len, 0);
-}
-
-int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len) {
-    return accts_tx_begin_impl(dir, dir_len, 1);
+// Bounded short-backoff wrapper ONLY for synchronous startup reads (<= 500ms total; NEVER blocks forever):
+// - returns tx_id >= 1 on success, 0 on busy timeout, -1 on I/O error
+int64_t pion_core_accounts_tx_begin_bounded(const char *dir, int64_t dir_len, int32_t max_wait_ms) {
+    if (max_wait_ms < 0) {
+        max_wait_ms = 0;
+    }
+    if (max_wait_ms > 500) {
+        max_wait_ms = 500;
+    }
+    int32_t waited = 0;
+    int32_t step = 10;
+    for (;;) {
+        int64_t tx_id = pion_core_accounts_tx_try_begin(dir, dir_len);
+        if (tx_id != 0 || waited >= max_wait_ms) {
+            return tx_id;
+        }
+        int32_t sleep_ms = step;
+        if (waited + sleep_ms > max_wait_ms) {
+            sleep_ms = max_wait_ms - waited;
+        }
+#ifdef _WIN32
+        Sleep((DWORD)sleep_ms);
+#else
+        struct timespec req;
+        req.tv_sec = 0;
+        req.tv_nsec = (long)sleep_ms * 1000000L;
+        (void)nanosleep(&req, NULL);
+#endif
+        waited += sleep_ms;
+        if (step < 80) {
+            step *= 2;
+        }
+    }
 }
 
 int32_t pion_core_accounts_tx_status(int64_t tx_id) {

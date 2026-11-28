@@ -37,24 +37,31 @@ pub enum CoreEvent {
   LockRejected(String, String)
 }
 
-/// Extract the owning station address carried by every `sync::CoreEvent` variant so outbound
-/// delivery (`drain_frame` & `drain_and_emit`) can enforce per-station/workspace authorization
-/// right before emitting any frame to the host.
-pub fn core_event_station(ev : CoreEvent) -> String {
+/// Extract `(explicit_ws, station)` scope for every `sync::CoreEvent` variant:
+/// - `LockUpdated(ws, ...)` and `LockRejected(ws, ...)` carry a workspace ID directly (`(ws, "")`),
+///   NEVER a bare station address that would fall back to `self.workspace`!
+/// - All other variants carry a station address (`("", station)`).
+pub fn core_event_scope(ev : CoreEvent) -> (String, String) {
   match ev {
-    CoreEvent::ChatsChanged(st, _) => st
-    CoreEvent::EntryAdded(st, _, _, _) => st
-    CoreEvent::ThreadReadChanged(st, _, _, _) => st
-    CoreEvent::SessionChanged(st, _, _) => st
-    CoreEvent::JobChanged(st, _, _) => st
-    CoreEvent::ConnectionChanged(st, _) => st
-    CoreEvent::OutboxQueued(st, _, _, _) => st
-    CoreEvent::OutboxResolved(st, _, _, _) => st
-    CoreEvent::OverlayApplied(st, _, _) => st
-    CoreEvent::OverlayRolledBack(st, _, _, _, _) => st
-    CoreEvent::LockUpdated(st, _, _, _) => st
-    CoreEvent::LockRejected(st, _) => st
+    CoreEvent::LockUpdated(ws, _, _, _) => (ws, "")
+    CoreEvent::LockRejected(ws, _) => (ws, "")
+    CoreEvent::ChatsChanged(st, _) => ("", st)
+    CoreEvent::EntryAdded(st, _, _, _) => ("", st)
+    CoreEvent::ThreadReadChanged(st, _, _, _) => ("", st)
+    CoreEvent::SessionChanged(st, _, _) => ("", st)
+    CoreEvent::JobChanged(st, _, _) => ("", st)
+    CoreEvent::ConnectionChanged(st, _) => ("", st)
+    CoreEvent::OutboxQueued(st, _, _, _) => ("", st)
+    CoreEvent::OutboxResolved(st, _, _, _) => ("", st)
+    CoreEvent::OverlayApplied(st, _, _) => ("", st)
+    CoreEvent::OverlayRolledBack(st, _, _, _, _) => ("", st)
   }
+}
+
+/// Extract the owning station address carried by station-scoped `sync::CoreEvent` variants
+/// (returns `""` for workspace-scoped `LockUpdated`/`LockRejected`).
+pub fn core_event_station(ev : CoreEvent) -> String {
+  core_event_scope(ev).1
 }
 
 pub struct HttpReply {
