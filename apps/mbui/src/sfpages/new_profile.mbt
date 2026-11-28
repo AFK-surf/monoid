@@ -634,7 +634,15 @@ fn new_profile_form_node(
         @sf.page_choice_node(
           c,
           fn() { regions().map(fn(r) { text(Some(r), "label") }) },
-          fn() { regions().search_by(fn(r) { text(Some(r), "id") == region_opt.get() }).unwrap_or(0) },
+          fn() {
+            let rs = regions()
+            if rs.is_empty() {
+              0
+            } else {
+              let cur = region_opt.get()
+              rs.search_by(fn(r) { text(Some(r), "id") == cur }).unwrap_or(0)
+            }
+          },
           fn(i) {
             match @signals.untracked(regions).get(i) {
               Some(r) => {
@@ -653,7 +661,15 @@ fn new_profile_form_node(
         @sf.page_choice_node(
           c,
           fn() { protocols().map(fn(p) { text(Some(p), "label") }) },
-          fn() { protocols().search_by(fn(p) { text(Some(p), "id") == protocol_opt.get() }).unwrap_or(0) },
+          fn() {
+            let ps = protocols()
+            if ps.is_empty() {
+              0
+            } else {
+              let cur = protocol_opt.get()
+              ps.search_by(fn(p) { text(Some(p), "id") == cur }).unwrap_or(0)
+            }
+          },
           fn(i) {
             match @signals.untracked(protocols).get(i) {
               Some(p) => {

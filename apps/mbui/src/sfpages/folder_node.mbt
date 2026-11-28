@@ -247,10 +247,28 @@ pub fn folder_view_node(
       // (one up stays till its folder's own row of it comes: the one row in the other's place, dv_up_done)
       let ups_here = fn() {
         @sfbase.ups.uploads.filter(fn(u) {
-          u.station == at.station &&
-          u.root == root &&
-          u.dir == at.path &&
-          !(u.state.get() == "done" && entries().iter().any(fn(e) { e.name == u.name.get() }))
+          if u.station == at.station && u.root == root && u.dir == at.path {
+            if u.state.get() == "done" {
+              let es = entries()
+              if es.is_empty() {
+                true
+              } else {
+                let uname = u.name.get()
+                let mut found = false
+                for e in es {
+                  if e.name == uname {
+                    found = true
+                    break
+                  }
+                }
+                !found
+              }
+            } else {
+              true
+            }
+          } else {
+            false
+          }
         })
       }
       let empty = fn(v : @view.View) { folder_empty_node(v, fn() { if write() { Some(fn() { upload_into(src, at) }) } else { None } }) }

@@ -293,7 +293,8 @@ pub fn files_shell_node(
   let split_on = fn() { tab().panes.length() == 2 }
   let along = fn(step : Int) {
     let t = @signals.untracked(tabs)
-    let at = t.tabs.search_by(fn(x) { x.id == t.current }).unwrap_or(0)
+    let cur : String = t.current
+    let at = t.tabs.search_by(fn(x) { x.id == cur }).unwrap_or(0)
     let n = t.tabs.length()
     show("show", None, Some(t.tabs[(at + step + n) % n].id), None)
   }
@@ -747,7 +748,16 @@ fn roots_page_node(
           2 => empty(@sf.t("web-pages.drive.oldStation"), false)
           3 => {
             let s = @signals.untracked(st).unwrap()
-            empty(@sf.t("web-pages.drive.noneMember"), favorite_stations(src, ws).iter().any(fn(x) { x.station == s.station }))
+            let label = @sf.t("web-pages.drive.noneMember")
+            let want : String = s.station
+            let mut can_pick = false
+            for x in favorite_stations(src, ws) {
+              if x.station == want {
+                can_pick = true
+                break
+              }
+            }
+            empty(label, can_pick)
           }
           _ => roots_section_node(x, fn() { st().unwrap_or(@sfbase.dv_station({})) }, go)
         }

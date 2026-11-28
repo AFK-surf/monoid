@@ -790,9 +790,14 @@ fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?
       let name = fn() {
         let (list, key) = usage_pick.only.get()
         let parts = items(chart(), "series")
-        match parts.search_by(fn(p) { list == text(chart(), "split") && text(Some(p), "key") == key }) {
-          Some(i) => text(Some(parts[i]), "name")
-          None => text(field(v(), "only"), "title")
+        if parts.is_empty() {
+          text(field(v(), "only"), "title")
+        } else {
+          let split = text(chart(), "split")
+          match parts.search_by(fn(p) { list == split && text(Some(p), "key") == key }) {
+            Some(i) => text(Some(parts[i]), "name")
+            None => text(field(v(), "only"), "title")
+          }
         }
       }
       @sf.chip_node(
@@ -808,9 +813,14 @@ fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?
     chips.show(day, fn(s) {
       let name = fn() {
         let days = items(chart(), "daily")
-        match days.search_by(fn(d) { text(Some(d), "day") == usage_pick.day.get() }) {
-          Some(i) => text(Some(days[i]), "name")
-          None => text(v(), "period")
+        if days.is_empty() {
+          text(v(), "period")
+        } else {
+          let day = usage_pick.day.get()
+          match days.search_by(fn(d) { text(Some(d), "day") == day }) {
+            Some(i) => text(Some(days[i]), "name")
+            None => text(v(), "period")
+          }
         }
       }
       @sf.chip_node(

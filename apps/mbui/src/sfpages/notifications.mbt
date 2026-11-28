@@ -386,7 +386,8 @@ fn notify_preview_node(
     .iter()
     .find_first(fn(n) {
       let nk = text(Some(n), "kind")
-      (if nk == "block" { "wait" } else { nk }) == k
+      let eff = if nk == "block" { "wait" } else { nk }
+      eff == k
     })
   }
   let title = fn() {

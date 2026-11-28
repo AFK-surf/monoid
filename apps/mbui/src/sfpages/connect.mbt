@@ -749,15 +749,20 @@ fn cd_station_id(s : String) -> String {
 fn cd_station_name(core : Core, here : Here, id_or_addr : String) -> String {
   let want = cd_station_id(id_or_addr)
   match @settings.stations_of(core, here).value {
-    Some(Array(a)) =>
-      match a.iter().find_first(fn(s) {
+    Some(Array(a)) => {
+      for s in a {
         let by_id = cd_station_id(text(Some(s), "id"))
         let by_addr = cd_station_id(text(Some(s), "station"))
-        (by_id != "" && by_id == want) || (by_addr != "" && by_addr == want)
-      }) {
-        Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
-        _ => id_or_addr
+        if (by_id != "" && by_id == want) || (by_addr != "" && by_addr == want) {
+          let name = text(Some(s), "name")
+          if name != "" {
+            return name
+          }
+          break
+        }
       }
+      id_or_addr
+    }
     _ => id_or_addr
   }
 }
@@ -1372,13 +1377,14 @@ fn cd_owner_dialog(core : Core, here : Here, station : String, cv : Json?) -> Un
         v,
         fn() { @sf.t("common.save") },
         fn() {
-          let to = to()
-          let chosen = people().iter().find_first(fn(p) { text(Some(p), "email").to_lower() == to.to_lower() })
+          let to_val = to()
+          let want = to_val.to_lower()
+          let chosen = people().iter().find_first(fn(p) { text(Some(p), "email").to_lower() == want })
           let name = match chosen {
             Some(p) if text(Some(p), "name") != "" => text(Some(p), "name")
-            _ => to
+            _ => to_val
           }
-          cd_put(core, station, id, obj([("owner", obj([("id", str(to)), ("name", str(name))]))]), done=@sf.t("web-pages.connect.ownerChanged"))
+          cd_put(core, station, id, obj([("owner", obj([("id", str(to_val)), ("name", str(name))]))]), done=@sf.t("web-pages.connect.ownerChanged"))
           shut()
         },
         tone=Primary,

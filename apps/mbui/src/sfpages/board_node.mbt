@@ -2154,7 +2154,14 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
   let stations = fn() {
     let all = (own.stations)()
     let here = @sfbase.writing(src, @sfbase.board_file_key(ws, id)).files.get().map(fn(f) { text(Some(f), "id") })
-    if d0.files.iter().all(fn(f) { here.contains(f.id) }) {
+    let mut all_here = true
+    for f in d0.files {
+      if !here.contains(f.id) {
+        all_here = false
+        break
+      }
+    }
+    if all_here {
       all
     } else {
       all.filter(fn(s) { s.station == d0.station })

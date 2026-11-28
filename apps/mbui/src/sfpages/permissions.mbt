@@ -477,7 +477,15 @@ pub fn station_archiving_node(
       "mode" =>
         @sf.section_node(b, fn() { @sf.t("web-pages.archiving.mode") }, fn(sec) {
           let modes = fn() { items(view(), "modes") }
-          let at = fn() { modes().search_by(fn(m) { text(Some(m), "mode") == mode() }).unwrap_or(0) }
+          let at = fn() {
+            let ms = modes()
+            if ms.is_empty() {
+              0
+            } else {
+              let cur = mode()
+              ms.search_by(fn(m) { text(Some(m), "mode") == cur }).unwrap_or(0)
+            }
+          }
           let chosen = fn() {
             let eff = effective_state()
             modes().search_by(fn(m) { text(Some(m), "mode") == eff.0 }).unwrap_or(at())

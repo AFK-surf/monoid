@@ -33,7 +33,16 @@ pub fn profiles_list_node(
   // the station it is of, where it is one's (none while the stations are read)
   let one_now = @signals.computed(fn(_) {
     match stations_topic().value {
-      Some(Array(a)) if only != "" => a.iter().find_first(fn(x) { text(Some(x), "station") == only })
+      Some(Array(a)) if only != "" => {
+        let mut found : Json? = None
+        for x in a {
+          if text(Some(x), "station") == only {
+            found = Some(x)
+            break
+          }
+        }
+        found
+      }
       _ => None
     }
   }, same=json_opt_same)

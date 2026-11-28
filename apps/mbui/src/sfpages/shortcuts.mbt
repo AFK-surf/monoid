@@ -96,7 +96,15 @@ pub fn shortcuts_node(
       v,
       fn() { @sf.t("web-main.shortcuts.sending") },
       fn() { items(send(), "choices").map(fn(c) { text(Some(c), "name") }) },
-      fn() { items(send(), "choices").search_by(fn(c) { text(Some(c), "by") == text(send(), "by") }).unwrap_or(0) },
+      fn() {
+        let cs = items(send(), "choices")
+        if cs.is_empty() {
+          0
+        } else {
+          let cur = text(send(), "by")
+          cs.search_by(fn(c) { text(Some(c), "by") == cur }).unwrap_or(0)
+        }
+      },
       fn(i) {
         let by = text(@signals.untracked(fn() { items(send(), "choices") }).get(i), "by")
         @settings.set_pref(core, "sendKey", if by == "mod" { "mod" } else { "" })

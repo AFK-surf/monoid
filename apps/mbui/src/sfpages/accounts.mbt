@@ -2435,9 +2435,15 @@ fn profile_fusion_node(
   }
   let picked_lead = fn() -> Json? {
     let ls = leads()
-    match ls.search_by(fn(l) { fusion_lead.get() != "" && text(Some(l), "id") == fusion_lead.get() }) {
-      Some(i) => Some(ls[i])
-      None => ls.get(0)
+    if ls.is_empty() {
+      None
+    } else {
+      let lead = fusion_lead.get()
+      let found = if lead == "" { None } else { ls.search_by(fn(l) { text(Some(l), "id") == lead }) }
+      match found {
+        Some(i) => Some(ls[i])
+        None => ls.get(0)
+      }
     }
   }
   // (the pairs pinned: uid, what it is called, its lead's maker)

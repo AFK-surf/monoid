@@ -93,7 +93,10 @@ fn appearance_setting(
       v,
       fn() { @sf.t(title) },
       fn() { options.map(fn(o) { @sf.t(o.1) }) },
-      fn() { options.search_by(fn(o) { o.0 == now() }).unwrap_or(0) },
+      fn() {
+        let cur = now()
+        options.search_by(fn(o) { o.0 == cur }).unwrap_or(0)
+      },
       fn(i) {
         // another theme picked: it spreads from where it was picked (mbui reveal.mbt)
         if key == "theme" {

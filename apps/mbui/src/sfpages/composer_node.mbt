@@ -2405,10 +2405,14 @@ fn composer_warm(src : Source, r : ChatRef, at : Double) -> Unit {
 fn composer_node_submit(src : Source, w : Writing, station : String, locked : () -> Bool, send : (Writing) -> Unit) -> Unit {
   guard @signals.untracked(fn() { composer_ready(w, locked=locked()) }) else { return }
   let quote_had = @signals.untracked(fn() {
-    w.quotes
-    .get()
-    .iter()
-    .any(fn(q) { composing.comments.get(text(Some(q), "id")).map(fn(f) { f.focused() }).unwrap_or(false) })
+    let mut had = false
+    for q in w.quotes.get() {
+      if composing.comments.get(text(Some(q), "id")).map(fn(f) { f.focused() }).unwrap_or(false) {
+        had = true
+        break
+      }
+    }
+    had
   })
   if quote_had {
     w.field.focus()

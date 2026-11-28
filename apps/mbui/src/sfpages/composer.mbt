@@ -522,16 +522,19 @@ fn going_files(w : Writing) -> Array[Json] {
 /// The files of a draft that are up, as its message has them (its quotes' own pictures among them): one put up from
 /// here naming its upload (`upload`), as the core's row does (file_key).
 fn up_files(w : Writing) -> Array[Json] {
-  @sfbase.writing_files(w).filter_map(fn(f) {
+  let out : Array[Json] = []
+  for f in @sfbase.writing_files(w) {
     match field(Some(f), "done") {
       Some(Object(done)) if @sfbase.writing_put_here(text(Some(f), "id")) => {
         let a = done.copy()
         a["upload"] = Json::string(text(Some(f), "id"))
-        Some(Json::object(a))
+        out.push(Json::object(a))
       }
-      done => done
+      Some(done) => out.push(done)
+      None => ()
     }
-  })
+  }
+  out
 }
 
 ///|

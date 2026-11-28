@@ -951,7 +951,16 @@ fn chat_body_node(
   }
   let feedback_report = fn() -> Json? {
     match feedback_held {
-      Some(held) => items(held.get(), "reports").iter().find_first(fn(f) { !report_dismissed(f) })
+      Some(held) => {
+        let mut found : Json? = None
+        for f in items(held.get(), "reports") {
+          if !report_dismissed(f) {
+            found = Some(f)
+            break
+          }
+        }
+        found
+      }
       None => None
     }
   }

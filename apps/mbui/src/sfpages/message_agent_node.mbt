@@ -382,9 +382,9 @@ fn agent_prose_node(
         // (what it places as it is now: a file sent from here told its size, its upload taken over by the core's row,
         // the same nodes reading it; as it was made where it is placed no more)
         let current = fn(a : Attachment) { fn() { placed(name).unwrap_or(a) } }
-        let card = fn(a) {
+        let card = fn(a : Attachment) {
           let now = current(a)
-          fn(d) { message_files_node(d, src, here.tips, place, fn() { [now()] }, fn() { false }, by, at) }
+          fn(d : @view.View) { message_files_node(d, src, here.tips, place, fn() { [now()] }, fn() { false }, by, at) }
         }
         match placed(name) {
           // an HTML page: drawn as a page where it is placed (message_viz_node), its card where it cannot be read; in a
