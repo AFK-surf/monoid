@@ -10285,15 +10285,100 @@ int32_t sts_exec_replace(
 #endif
 }
 
-#ifdef _WIN32
-#define WIN_VS_INIT 0L
-#define WIN_VS_SUBMITTING 1L
-#define WIN_VS_CANCELLED 2L
+#define STS_VS_INIT 0
+#define STS_VS_SUBMITTING 1
+#define STS_VS_CANCELLED 2
 
+typedef struct sts_vs_state {
+    _Atomic int32_t state;
+    _Atomic int32_t any_submitted;
+} sts_vs_state_t;
+
+static inline void sts_vs_init(sts_vs_state_t *s) {
+    atomic_init(&s->state, STS_VS_INIT);
+    atomic_init(&s->any_submitted, 0);
+}
+
+static inline int sts_vs_begin_submit(sts_vs_state_t *s) {
+    int32_t expected = STS_VS_INIT;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s->state, &expected, STS_VS_SUBMITTING, memory_order_acq_rel, memory_order_acquire)) {
+        return 0;
+    }
+    atomic_store_explicit(&s->any_submitted, 1, memory_order_release);
+    return 1;
+}
+
+static inline int sts_vs_is_cancelled(sts_vs_state_t *s) {
+    return atomic_load_explicit(&s->state, memory_order_acquire) == STS_VS_CANCELLED ? 1 : 0;
+}
+
+static inline int32_t sts_vs_cancel_from_caller(sts_vs_state_t *s) {
+    int32_t prev = atomic_exchange_explicit(&s->state, STS_VS_CANCELLED, memory_order_acq_rel);
+    int32_t submitted = atomic_load_explicit(&s->any_submitted, memory_order_acquire);
+    return (prev == STS_VS_SUBMITTING || submitted != 0) ? -3 : -1;
+}
+
+static inline int32_t sts_vs_finish_sync_chunk(sts_vs_state_t *s, int64_t next_off, int64_t total_len) {
+    if (sts_vs_is_cancelled(s)) {
+        return -3;
+    }
+    if (next_off < total_len) {
+        int32_t expected = STS_VS_SUBMITTING;
+        if (!atomic_compare_exchange_strong_explicit(
+                &s->state, &expected, STS_VS_INIT, memory_order_acq_rel, memory_order_acquire)) {
+            return -3;
+        }
+    }
+    return 0;
+}
+
+int32_t sts_selftest_verified_send_cancel(void) {
+    /* 1. Cancel before first CAS (INIT, any_submitted=0) -> -1; worker begin_submit refused. */
+    {
+        sts_vs_state_t vs;
+        sts_vs_init(&vs);
+        if (sts_vs_cancel_from_caller(&vs) != -1) return 1;
+        if (!sts_vs_is_cancelled(&vs)) return 2;
+        if (sts_vs_begin_submit(&vs) != 0) return 3;
+    }
+    /* 2. Cancel after CAS (SUBMITTING), before/during sync WriteFile -> caller -3, sync finish -3 (never 0). */
+    {
+        sts_vs_state_t vs;
+        sts_vs_init(&vs);
+        if (sts_vs_begin_submit(&vs) != 1) return 4;
+        if (sts_vs_cancel_from_caller(&vs) != -3) return 5;
+        if (!sts_vs_is_cancelled(&vs)) return 6;
+        if (sts_vs_finish_sync_chunk(&vs, 64, 64) != -3) return 7;
+        if (sts_vs_finish_sync_chunk(&vs, 64, 128) != -3) return 8;
+    }
+    /* 3. Chunk 1 written & reset SUBMITTING->INIT (any_submitted=1), then cancelled -> -3 (never -1); chunk 2 refused. */
+    {
+        sts_vs_state_t vs;
+        sts_vs_init(&vs);
+        if (sts_vs_begin_submit(&vs) != 1) return 9;
+        if (sts_vs_finish_sync_chunk(&vs, 65536, 131072) != 0) return 10;
+        if (sts_vs_is_cancelled(&vs)) return 11;
+        if (sts_vs_cancel_from_caller(&vs) != -3) return 12;
+        if (sts_vs_begin_submit(&vs) != 0) return 13;
+    }
+    /* 4. Normal 2-chunk completion without cancellation -> 0. */
+    {
+        sts_vs_state_t vs;
+        sts_vs_init(&vs);
+        if (sts_vs_begin_submit(&vs) != 1) return 14;
+        if (sts_vs_finish_sync_chunk(&vs, 65536, 131072) != 0) return 15;
+        if (sts_vs_begin_submit(&vs) != 1) return 16;
+        if (sts_vs_finish_sync_chunk(&vs, 131072, 131072) != 0) return 17;
+        if (sts_vs_is_cancelled(&vs)) return 18;
+    }
+    return 0;
+}
+
+#ifdef _WIN32
 typedef struct win_verified_send_ctx {
     volatile LONG refs;
-    volatile LONG state;
-    volatile LONG any_submitted;
+    sts_vs_state_t vs;
     volatile LONG result;
     wchar_t *wpath;
     uint8_t *buf;
@@ -10331,8 +10416,7 @@ static void win_verified_send_ctx_release(win_verified_send_ctx_t *ctx) {
 static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
     win_verified_send_ctx_t *ctx = (win_verified_send_ctx_t *)arg;
     LONG rc = -1;
-    if (InterlockedCompareExchange(&ctx->state, WIN_VS_INIT, WIN_VS_INIT) == WIN_VS_CANCELLED
-        || GetTickCount64() >= ctx->deadline_ms) {
+    if (sts_vs_is_cancelled(&ctx->vs) || GetTickCount64() >= ctx->deadline_ms) {
         goto done;
     }
     HANDLE h = CreateFileW(
@@ -10357,11 +10441,10 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
 
     int64_t off = 0;
     while (off < ctx->len) {
-        if (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_INIT) != WIN_VS_INIT) {
+        if (!sts_vs_begin_submit(&ctx->vs)) {
             rc = (off > 0) ? -3 : -1;
             goto done;
         }
-        (void)InterlockedExchange(&ctx->any_submitted, 1L);
         ULONGLONG now_ms = GetTickCount64();
         if (now_ms >= ctx->deadline_ms) {
             rc = (off > 0) ? -3 : -1;
@@ -10382,8 +10465,7 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
             }
             HANDLE waits[2] = { ctx->io_ev, ctx->cancel_ev };
             DWORD wrc = WaitForMultipleObjects(2, waits, FALSE, rem);
-            if (wrc != WAIT_OBJECT_0
-                || InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) {
+            if (wrc != WAIT_OBJECT_0 || sts_vs_is_cancelled(&ctx->vs)) {
                 (void)CancelIoEx(h, &ctx->ov);
                 DWORD dummy = 0;
                 (void)GetOverlappedResult(h, &ctx->ov, &dummy, TRUE);
@@ -10397,20 +10479,14 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
         } else if (written == 0) {
             rc = (off > 0) ? -3 : -1;
             goto done;
-        } else if (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) {
-            /* Caller already timed out while sync WriteFile was in flight: never report 0. */
+        }
+        off += (int64_t)written;
+        if (sts_vs_finish_sync_chunk(&ctx->vs, off, ctx->len) != 0) {
             rc = -3;
             goto done;
         }
-        off += (int64_t)written;
-        if (off < ctx->len) {
-            if (InterlockedCompareExchange(&ctx->state, WIN_VS_INIT, WIN_VS_SUBMITTING) != WIN_VS_SUBMITTING) {
-                rc = -3;
-                goto done;
-            }
-        }
     }
-    rc = (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) ? -3 : 0;
+    rc = sts_vs_is_cancelled(&ctx->vs) ? -3 : 0;
 
 done:
     (void)InterlockedExchange(&ctx->result, rc);
@@ -10452,7 +10528,7 @@ int32_t sts_runner_sock_send_verified(
         return -1;
     }
     ctx->refs = 2; /* 1 for caller, 1 for worker */
-    ctx->state = WIN_VS_INIT;
+    sts_vs_init(&ctx->vs);
     ctx->result = -1;
     ctx->wpath = wpath;
     ctx->buf = buf;
@@ -10487,15 +10563,14 @@ int32_t sts_runner_sock_send_verified(
         return rc;
     }
     /* Wait-free timeout cancellation: distinguish definite not-submitted (-1) vs in-flight/unknown (-3). */
-    LONG prev_state = InterlockedExchange(&ctx->state, WIN_VS_CANCELLED);
-    LONG submitted = InterlockedCompareExchange(&ctx->any_submitted, 0L, 0L);
+    int32_t cancel_rc = sts_vs_cancel_from_caller(&ctx->vs);
     (void)SetEvent(ctx->cancel_ev);
     HANDLE ch = (HANDLE)InterlockedCompareExchangePointer(&ctx->h, NULL, NULL);
     if (ch != NULL && ch != INVALID_HANDLE_VALUE) {
         (void)CancelIoEx(ch, NULL);
     }
     win_verified_send_ctx_release(ctx);
-    return (prev_state == WIN_VS_SUBMITTING || submitted != 0L) ? -3 : -1;
+    return cancel_rc;
 #else
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));

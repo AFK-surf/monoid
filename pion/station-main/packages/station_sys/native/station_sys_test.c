@@ -675,6 +675,8 @@ int main(void) {
     test_win_drive_io_and_reparse();
     test_win_cli_prims();
     test_js_lower_utf8();
+    assert(sts_selftest_verified_send_cancel() == 0);
+    printf("  [PASS] verified_send cancel state machine selftest\n");
     assert(sts_wait_detached_for_test(5000) == 1);
     printf("station_sys_test (windows): ALL PASSED\n");
     return 0;
@@ -2455,6 +2457,9 @@ int main(void) {
         assert(unlink(sym) == 0 && unlink(dst) == 0 && unlink(src) == 0 && rmdir(cdir) == 0);
         printf("  [PASS] CoW clone primitives (clones_at=%d, clone_file, clone_tree, extent sharing)\n", can_clone);
     }
+
+    assert(sts_selftest_verified_send_cancel() == 0);
+    printf("  [PASS] verified_send cancel state machine selftest\n");
 
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();

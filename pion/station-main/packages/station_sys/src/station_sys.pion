@@ -116,6 +116,7 @@ extern "C" fn sts_clone_file(src : Ptr, dst : Ptr, excl : Int) -> Int
 extern "C" fn sts_clone_file_only(src : Ptr, dst : Ptr, excl : Int) -> Int
 extern "C" fn sts_clone_tree(src_dir : Ptr, dst_dir : Ptr) -> Int
 extern "C" fn sts_runner_sock_send_verified(sock_path : Ptr, expected_pid : Int, data : Ptr, len : Int64, timeout_ms : Int) -> Int
+extern "C" fn sts_selftest_verified_send_cancel() -> Int
 
 extern "C" fn sts_peer_process(fd : Int, out_len : Ptr) -> Ptr
 extern "C" fn sts_process_usage(pids : Ptr, count : Int, out_len : Ptr) -> Ptr
@@ -1769,4 +1770,10 @@ pub fn runner_sock_send_verified(sock_path : String, expected_pid : Int, payload
   let _ = sock_path.length()
   let _ = payload.length()
   rc
+}
+
+/// R34: Execute the production C lock-free `sts_vs_*` verified-send cancel/submit state-machine
+/// selftest (4 deterministic interleavings). Returns `0` on pass.
+pub fn selftest_verified_send_cancel() -> Int {
+  sts_selftest_verified_send_cancel()
 }

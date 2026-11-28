@@ -278,6 +278,11 @@ fn run_smoke_sys() -> Int {
       return 1
     }
   }
+  let vs_rc = station_sys::selftest_verified_send_cancel()
+  if vs_rc != 0 {
+    let _ = host_shim::write_stderr_line("smoke-sys: selftest_verified_send_cancel failed rc=" + vs_rc.to_string())
+    return 1
+  }
   let _ = host_shim::write_stdout_line(
     "{\"ok\":true,\"os\":\"" + os + "\",\"arch\":\"" + arch + "\",\"pid\":" + pid.to_string() + "}",
   )

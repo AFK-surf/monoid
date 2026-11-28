@@ -3189,42 +3189,10 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   assert_true(h_seen_sock == "/data/run/runners/r-sp-nodisk.sock", "R31 1H: uses deterministic POSIX socket path")
   assert_true(mgr_h.draining_stopping_ids.length() == 0, "R31 1H: stop marker cleared after OS exit")
 
-  // ---- Test 1I (R33): 4-state verified-send protocol (`0` / `-1` / `-2` / `-3`) + Win32 state-machine interleavings ----
-  // Pure state-machine verification of `WIN_VS_INIT (0) -> WIN_VS_SUBMITTING (1) -> WIN_VS_CANCELLED (2)` interleavings:
-  // (i) Cancel in INIT -> caller gets -1 (not submitted), worker CAS fails with 0 writes.
-  let mut sm_state_1 = 0
-  let mut sm_writes_1 = 0
-  let sm_prev_1 = sm_state_1
-  sm_state_1 = 2
-  let sm_caller_rc_1 = if sm_prev_1 == 1 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_NOT_SUBMITTED }
-  let sm_worker_rc_1 = if sm_state_1 == 0 {
-    sm_state_1 = 1
-    sm_writes_1 = sm_writes_1 + 1
-    station_sys::RUNNER_SEND_OK
-  } else {
-    station_sys::RUNNER_SEND_NOT_SUBMITTED
-  }
-  assert_true(
-    sm_caller_rc_1 == station_sys::RUNNER_SEND_NOT_SUBMITTED && sm_worker_rc_1 == station_sys::RUNNER_SEND_NOT_SUBMITTED && sm_writes_1 == 0,
-    "R33 SM-1: cancel in INIT returns -1 and worker CAS fails with 0 writes",
-  )
-  // (ii) Cancel after CAS(INIT -> SUBMITTING), before sync-ok WriteFile completes -> caller gets -3, worker also returns -3 (never 0).
-  let mut sm_state_2 = 0
-  assert_true(sm_state_2 == 0, "R33 SM-2: starts in INIT")
-  sm_state_2 = 1 // worker CAS succeeds
-  let sm_prev_2 = sm_state_2
-  sm_state_2 = 2 // caller timeout cancels while SUBMITTING
-  let sm_caller_rc_2 = if sm_prev_2 == 1 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_NOT_SUBMITTED }
-  // Even if WriteFile completed synchronously with written > 0, worker re-checks state == CANCELLED -> -3 (NEVER 0).
-  let sm_worker_sync_rc_2 = if sm_state_2 == 2 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_OK }
-  // Pending branch wakes on cancel_ev -> CancelIoEx + GetOverlappedResult(..., TRUE) -> -3.
-  let sm_worker_pend_rc_2 = if sm_state_2 == 2 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_OK }
-  assert_true(
-    sm_caller_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
-    && sm_worker_sync_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
-    && sm_worker_pend_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN,
-    "R33 SM-2: cancel during SUBMITTING returns -3 on caller and -3 (never 0) on both sync and pending worker branches",
-  )
+  // ---- Test 1I (R33/R34): 4-state verified-send protocol (`0` / `-1` / `-2` / `-3`) shutdown flows ----
+  // Note: the production C lock-free cancel/submit state machine (`sts_vs_*` in `station_sys.c`) is
+  // directly exercised across all 4 deterministic interleavings by `sts_selftest_verified_send_cancel()`
+  // in `--smoke-sys` and `station_sys_test.c` on Linux, macOS, and Windows.
 
   // 1I-a: `runner_sock_send_verified_fn` returns `-3` (outcome unknown) with ample remaining budget,
   // runner stays alive -> MUST be called strictly ONCE (never retried in parallel), preserves marker, returns false.
