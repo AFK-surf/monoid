@@ -730,6 +730,36 @@ pub fn run_w17d3_sqlite_selftest(root_tmp : String) -> Result[Unit, String] {
     Err(e) => return Err("feedback prepare failed: " + e.message)
   }
 
+  // 1b. Regression: a thread whose ONLY `thread_sessions` row belongs to another workspace with `left_at IS NOT NULL`
+  // (after `chat_leave`) MUST NOT be visible to home workspace viewers, and DB errors MUST fail-closed!
+  let _ = st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES ('s-other', 'chat', 'chat', '/tmp/w2', 'tok2', 'claude', 'default', 0, 100, 100, 'ws-other')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO threads (id, surface, channel, thread_ts, created_at, home, project) VALUES (2, 'stillfail', 'CHAT', '2', 100, 's-other', 'Beta')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO thread_sessions (thread, session, connect, joined_at, left_at) VALUES (2, 's-other', 'chat', 100, 150)",
+    [],
+  )
+  let real_seen = build_real_seen_store(store)
+  if station_api::thread_seen(real_seen, viewer, 2) {
+    return Err("home viewer must NOT see thread with only left_at!=NULL foreign workspace session")
+  }
+  let other_viewer = station_api::Viewer::{
+    email: "bob@example.com", sub: "u2", name: "Bob", workspace: "ws-other", home: false, role: "member", device: None, lock_base: None, lock_proof: None,
+  }
+  if !station_api::thread_seen(real_seen, other_viewer, 2) {
+    return Err("foreign workspace viewer should still see its own left_at!=NULL thread")
+  }
+  let closed_store = WholeStore::new_pre_handover_with_sep(d_root + "/unopened", "/")
+  let closed_seen = build_real_seen_store(closed_store)
+  if station_api::thread_seen(closed_seen, viewer, 1) {
+    return Err("thread_seen must fail-closed on store/DB error instead of falling back to home workspace")
+  }
+
   // 2. PR #9161 P2: `station_sys::utimes_now`, `utimes_dir_children_now`, and `cleanup_stale_tar_extracts_dir`
   let uf = d_root + "/utimes-probe"
   let tmpd = d_root + "/tmp"

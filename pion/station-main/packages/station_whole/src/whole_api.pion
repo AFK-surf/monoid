@@ -886,10 +886,15 @@ fn resolve_skills_context(
   )
 }
 
+let SEEN_FAIL_CLOSED_SENTINEL : String = "remote:\u{0000}fail-closed:0:0"
+
 /// Build a real `station_api::SeenStore` backed directly by `WholeStore`'s SQLite database.
 pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore {
   station_api::SeenStore::{
     session_exists: fn(key : String) -> Bool {
+      if key == SEEN_FAIL_CLOSED_SENTINEL {
+        return false
+      }
       match whole_store.require_open() {
         Ok(st) => match st.get_session(key) {
           Ok(Some(_)) => true
@@ -899,12 +904,16 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
       }
     },
     session_ws: fn(key : String) -> Option[Option[String]] {
+      if key == SEEN_FAIL_CLOSED_SENTINEL {
+        return Some(Some("\u{0000}fail-closed"))
+      }
       match whole_store.require_open() {
         Ok(st) => match st.get_session(key) {
           Ok(Some(row)) => Some(row.ws)
-          _ => None
+          Ok(None) => None
+          Err(_) => Some(Some("\u{0000}fail-closed"))
         }
-        Err(_) => None
+        Err(_) => Some(Some("\u{0000}fail-closed"))
       }
     },
     thread_exists: fn(id : Int) -> Bool {
@@ -917,9 +926,12 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
       }
     },
     thread_sessions: fn(id : Int) -> Array[String] {
+      // Include ALL historical `thread_sessions` rows (do NOT filter `left_at IS NULL`, 1:1 with
+      // `station/src/store/store.ts:3179-3181`) so `chat_leave` never reassigns a thread to home ws.
+      // Fail-closed on DB errors via `SEEN_FAIL_CLOSED_SENTINEL` (never fold errors to `[]`).
       match whole_store.require_open() {
         Ok(st) => match st.db.all(
-          "SELECT session FROM thread_sessions WHERE thread = ?1 AND left_at IS NULL",
+          "SELECT session FROM thread_sessions WHERE thread = ?1",
           [sql_db::int64_to_json(id.to_int64())],
         ) {
           Ok(rows) => {
@@ -932,9 +944,9 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
             }
             out
           }
-          Err(_) => []
+          Err(_) => [SEEN_FAIL_CLOSED_SENTINEL]
         }
-        Err(_) => []
+        Err(_) => [SEEN_FAIL_CLOSED_SENTINEL]
       }
     },
     job_session: fn(id : String) -> Option[String] {
