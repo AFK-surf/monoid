@@ -54,6 +54,7 @@ import "station_whole"
 import "websocket"
 
 let WHOLE_HANDOVER_FILE : String = "whole-handover.json"
+let WHOLE_LIVE_RUNNERS_HANDOVER_FILE : String = "whole-live-runners.json"
 let WHOLE_MAX_ADMIN_HEAD : Int = 65536
 let WHOLE_MAX_PROXY_HEAD : Int = 262144
 let WHOLE_MAX_HTTP_BODY : Int64 = 4194304L
@@ -6967,6 +6968,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               return false
             }
           }
+          let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
+          match ctx.ops_fs.read_text(lr_ho_path) {
+            Ok(lr_raw) => {
+              match base_codec::json_parse(lr_raw) {
+                base_codec::JsonParseResult::Ok(lr_j) => st.live_runners.import_handover_state_json(lr_j)
+                base_codec::JsonParseResult::Err(e) => ctx.log("[live-runner] failed to parse " + lr_ho_path + ": " + e)
+              }
+              let _ = (ctx.ops_fs.remove)(lr_ho_path)
+            }
+            Err(_) => ()
+          }
           let live_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
           let w_now = host_shim::wall_ms()
           let home_ws = st.core.config.home_workspace
@@ -8444,6 +8456,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     on_carried: fn(ctx : DaemonCtx, carried : base_codec::Json) -> Unit {
       match state_opt {
         Some(st) => {
+          match base_codec::json_get(carried, "liveRunnerHandover") {
+            Some(lr_j) => st.live_runners.import_handover_state_json(lr_j)
+            None => ()
+          }
           match base_codec::json_get(carried, "handoverFailed") {
             Some(base_codec::Json::Str(msg)) => {
               if msg.length() > 0 {
@@ -8468,20 +8484,27 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             return Ok(())
           }
           let ho_wall_ms = host_shim::wall_ms()
-          match st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms) {
-            Ok(_) => ()
-            Err(e) => return Err(e)
-          }
-          st.connects.stop()
-          if st.replica.kept_log.entries.length() > 0 {
-            let _ = st.replica.persist_kept_log()
-          }
+          // R11 P1-1: Freeze `pre_delivery` prompts immediately, best-effort commit all pending
+          // end-turns/draining entries, and hand over any uncommitted entries + in-flight
+          // `draining_stopping_ids` to the successor via `carry` + private handover file.
+          st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms)
           match st.core.export_handover(ho_wall_ms) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
               let body = base_codec::json_stringify(snap.to_json())
               match station_ops::write_private(ctx.ops_fs, ho_path, body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep) {
                 Ok(_) => {
+                  if st.live_runners.has_handover_carry_state() {
+                    let lr_j = st.live_runners.export_handover_state_json()
+                    ctx.carry(base_codec::json_obj([("liveRunnerHandover", lr_j)]))
+                    let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
+                    let lr_body = base_codec::json_stringify(lr_j)
+                    let _ = station_ops::write_private(ctx.ops_fs, lr_ho_path, lr_body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep)
+                  }
+                  st.connects.stop()
+                  if st.replica.kept_log.entries.length() > 0 {
+                    let _ = st.replica.persist_kept_log()
+                  }
                   st.handover_exported = true
                   st.core.agents.close_adopted_db()
                   Ok(())

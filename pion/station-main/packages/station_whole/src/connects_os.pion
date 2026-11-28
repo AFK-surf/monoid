@@ -1252,6 +1252,7 @@ pub struct ConnectsOsRuntime {
   pending_feishu_refresh : Map[Int64, String]
   pending_async_calls : Map[Int64, String]
   pending_feishu_catchup : Map[String, Bool]
+  feishu_catchup_retry_at : Map[String, Int64]
   feishu_status_lines : Map[String, station_connects::StatusLineState]
   mut feishu_threads_dir : Option[String]
   mut on_comma_read_file : Option[(String, station_connects::CommaReadFileReq) -> Result[base_codec::Json, String]]
@@ -1282,6 +1283,7 @@ pub fn ConnectsOsRuntime::new(
     pending_feishu_refresh: Map::new(),
     pending_async_calls: Map::new(),
     pending_feishu_catchup: Map::new(),
+    feishu_catchup_retry_at: Map::new(),
     feishu_status_lines: Map::new(),
     feishu_threads_dir: None,
     on_comma_read_file: None,
@@ -1760,6 +1762,7 @@ pub fn ConnectsOsRuntime::start_connect(
 
 pub fn ConnectsOsRuntime::stop_connect(self : ConnectsOsRuntime, connect_id : String) -> Unit {
   self.running_connects.remove(connect_id)
+  self.feishu_catchup_retry_at.remove(connect_id)
   let _ = self.reset_group_stream_state(connect_id)
   self.group_utf8_decoders.remove(connect_id)
   match self.group_sse_streams.get(connect_id) {
@@ -2398,27 +2401,40 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
         f.dedupe.prune(now_ms)
         f.parts.drop_before(now_ms - 60000L)
         if self.pending_feishu_catchup.contains(cid) && self.is_connect_running(cid) {
-          self.pending_feishu_catchup.remove(cid)
-          let tr = self.bridge.transport(async_ws_writes=true)
-          let plat = match f.domain {
-            station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
-            station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
+          let due_ok = match self.feishu_catchup_retry_at.get(cid) {
+            Some(due) => now_ms >= due
+            None => true
           }
-          let _ = f.catch_up_async(
-            cid,
-            tr,
-            fn(ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
-              (self.callbacks.on_event)(cid, plat, ev, fn(ok : Bool) -> Unit {
-                on_done(ok && self.is_connect_running(cid))
-              })
-            },
-            fn() -> Unit {
-              if self.is_connect_running(cid) {
-                self.save_feishu_threads_state(cid, f)
-              }
-            },
-          )
-          actions.push(cid + ":feishu_catch_up")
+          if due_ok {
+            self.pending_feishu_catchup.remove(cid)
+            self.feishu_catchup_retry_at.remove(cid)
+            let tr = self.bridge.transport(async_ws_writes=true)
+            let plat = match f.domain {
+              station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
+              station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
+            }
+            let _ = f.catch_up_async(
+              cid,
+              tr,
+              fn(ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+                (self.callbacks.on_event)(cid, plat, ev, fn(ok : Bool) -> Unit {
+                  on_done(ok && self.is_connect_running(cid))
+                })
+              },
+              fn() -> Unit {
+                if self.is_connect_running(cid) {
+                  self.save_feishu_threads_state(cid, f)
+                }
+              },
+              on_finished=fn(all_ok : Bool) -> Unit {
+                if !all_ok && self.is_connect_running(cid) {
+                  self.feishu_catchup_retry_at.set(cid, (self.bridge.now_fn)() + 5000L)
+                  self.pending_feishu_catchup.set(cid, true)
+                }
+              },
+            )
+            actions.push(cid + ":feishu_catch_up")
+          }
         }
         if f.tokens.cached(now_ms) is None && f.machine.is_connected() {
           let req = station_connects::feishu_tenant_token_request(

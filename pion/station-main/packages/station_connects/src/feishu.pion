@@ -2288,6 +2288,26 @@ pub fn FeishuThreadsState::catching_up(
   }
 }
 
+/// Returns true if any catch-up hold for `(connect, chat)` is currently marked `reading == true`.
+pub fn FeishuThreadsState::is_reading(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+) -> Bool {
+  let k = feishu_chat_key(connect, chat)
+  match self.receiving.get(k) {
+    None => false
+    Some(at) => {
+      for i in 0..<at.pending.length() {
+        if at.pending[i].is_catchup && at.pending[i].reading {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
 pub fn FeishuThreadsState::finish_catching_up(
   self : FeishuThreadsState,
   token : FeishuCatchUpToken,
@@ -2367,6 +2387,7 @@ pub fn FeishuConnector::catch_up_async(
   transport : ConnectTransport,
   on_message : (ChatEvent, (Bool) -> Unit) -> Unit,
   on_progress : () -> Unit,
+  on_finished~ : (Bool) -> Unit = fn(_ok : Bool) -> Unit {},
 ) -> Result[Int, String] {
   let convs = self.threads.conversations(connect_id)
   let runs : Array[(String, FeishuCatchUpCursor, FeishuCatchUpToken)] = []
@@ -2549,17 +2570,39 @@ pub fn FeishuConnector::catch_up_async(
       break
     }
   }
-  // R10 P1-5: Strictly 1-at-a-time ordered async delivery per conversation; only invoke
-  // `finish_catching_up` after pagination completed AND the last message succeeded (`on_done(true)`).
-  // Any `on_done(false)` aborts immediately without calling `finish_catching_up` so the next tick retries.
+  // R10/R11 P1-5: Strictly 1-at-a-time ordered async delivery per conversation:
+  // - Break closure self-reference (`step_fn[0] = fn() {}`) on BOTH completion and failure paths.
+  // - On `on_done(false)`, call `finish_catching_up(cu_tok, read.through, false)` so `reading`
+  //   is cleared while preserving the checkpoint watermark before the failed message.
+  // - Invoke `on_finished(true)` ONLY when every run completed with zero pagination/delivery errors;
+  //   otherwise invoke `on_finished(false)` so `ConnectsOsRuntime` schedules an online retry.
+  let pending_runs : Array[Int] = [0]
+  let any_failed : Array[Bool] = [err_out is Some(_)]
+  let finished_emitted : Array[Bool] = [false]
+  let emit_finished = fn(all_ok : Bool) -> Unit {
+    if !finished_emitted[0] {
+      finished_emitted[0] = true
+      on_finished(all_ok)
+    }
+  }
   for r_idx in 0..<runs.length() {
     let (_, read, cu_tok) = runs[r_idx]
     let msgs = queued_msgs[r_idx]
     let is_complete = completes[r_idx] && !page_failed[r_idx]
     if msgs.length() == 0 {
-      if is_complete {
-        self.threads.finish_catching_up(cu_tok, read.through, true)
+      self.threads.finish_catching_up(cu_tok, read.through, is_complete)
+      if !is_complete {
+        any_failed[0] = true
       }
+      continue
+    }
+    pending_runs[0] = pending_runs[0] + 1
+  }
+  for r_idx in 0..<runs.length() {
+    let (_, read, cu_tok) = runs[r_idx]
+    let msgs = queued_msgs[r_idx]
+    let is_complete = completes[r_idx] && !page_failed[r_idx]
+    if msgs.length() == 0 {
       continue
     }
     let idx_ref : Array[Int] = [0]
@@ -2567,10 +2610,16 @@ pub fn FeishuConnector::catch_up_async(
     step_fn[0] = fn() -> Unit {
       let idx = idx_ref[0]
       if idx >= msgs.length() {
-        if is_complete {
-          self.threads.finish_catching_up(cu_tok, read.through, true)
+        step_fn[0] = fn() -> Unit {}
+        self.threads.finish_catching_up(cu_tok, read.through, is_complete)
+        if !is_complete {
+          any_failed[0] = true
         }
         on_progress()
+        pending_runs[0] = pending_runs[0] - 1
+        if pending_runs[0] == 0 {
+          emit_finished(!any_failed[0])
+        }
         return
       }
       let (ev, hold, msg_ts) = msgs[idx]
@@ -2589,14 +2638,23 @@ pub fn FeishuConnector::catch_up_async(
           on_progress()
           (step_fn[0])()
         } else {
-          // Abort immediately without calling `finish_catching_up`; next tick retries.
+          step_fn[0] = fn() -> Unit {}
+          self.threads.finish_catching_up(cu_tok, read.through, false)
+          any_failed[0] = true
           on_progress()
+          pending_runs[0] = pending_runs[0] - 1
+          if pending_runs[0] == 0 {
+            emit_finished(false)
+          }
         }
       })
     }
     (step_fn[0])()
   }
   on_progress()
+  if pending_runs[0] == 0 {
+    emit_finished(!any_failed[0])
+  }
   match err_out {
     Some(e) => Err(e)
     None => Ok(delivered)

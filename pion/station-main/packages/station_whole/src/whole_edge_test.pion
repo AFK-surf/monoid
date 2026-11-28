@@ -1542,3 +1542,120 @@ test "W17B-5 Opus R2 P1-C & P1-D: ConnectsOsRuntime feishu_apply_status_line gat
   edge_assert(f.threads.seen_of("feishu-1", "oc_chat1") == create_ms)
   edge_assert(f.threads.seen_of("feishu-1", "oc_chat1") != 1700000099000L)
 }
+
+test "W17C-1 R11 Feishu catch_up_async clears reading lock on failure, stops watermark at msg1, schedules retry, and commits msg2 on retry" {
+  let f = match station_connects::FeishuConnector::new("cli_app_r11", "cli_sec_r11") {
+    Ok(c) => c
+    Err(e) => panic(e)
+  }
+  // Seed conversation watermark at t=1000 so catch-up queries messages > 1000.
+  let seed_hold = f.threads.taking("feishu-r11", "oc_r11", "om_seed", 1000L)
+  f.threads.commit_taking(seed_hold)
+  edge_assert(f.threads.seen_of("feishu-r11", "oc_r11") == 1000L)
+
+  let msg1_json = base_codec::json_obj([
+    ("message_id", base_codec::json_str("om_1")),
+    ("chat_id", base_codec::json_str("oc_r11")),
+    ("msg_type", base_codec::json_str("text")),
+    ("create_time", base_codec::json_str("2000")),
+    ("sender", base_codec::json_obj([("sender_type", base_codec::json_str("user")), ("id", base_codec::json_str("ou_u1"))])),
+    ("body", base_codec::json_obj([("content", base_codec::json_str("{\"text\":\"m1\"}"))])),
+  ])
+  let msg2_json = base_codec::json_obj([
+    ("message_id", base_codec::json_str("om_2")),
+    ("chat_id", base_codec::json_str("oc_r11")),
+    ("msg_type", base_codec::json_str("text")),
+    ("create_time", base_codec::json_str("3000")),
+    ("sender", base_codec::json_obj([("sender_type", base_codec::json_str("user")), ("id", base_codec::json_str("ou_u1"))])),
+    ("body", base_codec::json_obj([("content", base_codec::json_str("{\"text\":\"m2\"}"))])),
+  ])
+  let token_resp = base_codec::json_stringify(base_codec::json_obj([
+    ("code", base_codec::json_int(0)),
+    ("tenant_access_token", base_codec::json_str("t-r11")),
+    ("expire", base_codec::json_int(7200)),
+  ]))
+  let page_resp = base_codec::json_stringify(base_codec::json_obj([
+    ("code", base_codec::json_int(0)),
+    ("data", base_codec::json_obj([
+      ("has_more", base_codec::json_bool(false)),
+      ("items", base_codec::json_arr([msg1_json, msg2_json])),
+    ])),
+  ]))
+  let tr = station_connects::ConnectTransport::{
+    fetch: fn(req : station_connects::HttpRequest) -> station_connects::HttpResponse {
+      let body = if req.url.contains("tenant_access_token") { token_resp } else { page_resp }
+      station_connects::HttpResponse::{ status: 200, headers: [], body: body.to_bytes(), error: None, redirected: false }
+    },
+    ws_open: fn(_r) { Err("unused") },
+    ws_next: fn(_h) { Err("unused") },
+    ws_send: fn(_h, _f) { Err("unused") },
+    ws_ping: fn(_h) { Err("unused") },
+    ws_close: fn(_h) {},
+    now_ms: fn() { 10000L },
+  }
+
+  // Attempt 1: msg1 succeeds (on_done(true)), msg2 fails (on_done(false))!
+  let delivered1 : Array[String] = []
+  let finished1 : Array[Bool] = []
+  let _ = f.catch_up_async(
+    "feishu-r11",
+    tr,
+    fn(ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => {
+          delivered1.push(m.ts)
+          on_done(m.ts == "om_1")
+        }
+        _ => on_done(false)
+      }
+    },
+    fn() {},
+    on_finished=fn(ok : Bool) -> Unit { finished1.push(ok) },
+  )
+  if !(delivered1.length() == 2 && delivered1[0] == "om_1" && delivered1[1] == "om_2") {
+    panic("delivered1=" + delivered1.length().to_string())
+  }
+  if !(finished1.length() == 1 && !finished1[0]) {
+    panic("finished1=" + finished1.length().to_string())
+  }
+  // Reading lock MUST be cleared (not stuck) and watermark MUST hold before msg2 (1999L = msg1_ts - 1)!
+  if f.threads.is_reading("feishu-r11", "oc_r11") {
+    panic("still reading after attempt 1")
+  }
+  let seen1 = f.threads.seen_of("feishu-r11", "oc_r11")
+  if seen1 != 1999L {
+    panic("seen1=" + seen1.to_string())
+  }
+
+  // Attempt 2 (retry): msg2 is re-delivered and succeeds -> finishes cleanly at 3000L!
+  let delivered2 : Array[String] = []
+  let finished2 : Array[Bool] = []
+  let _ = f.catch_up_async(
+    "feishu-r11",
+    tr,
+    fn(ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => {
+          delivered2.push(m.ts)
+          on_done(true)
+        }
+        _ => on_done(true)
+      }
+    },
+    fn() {},
+    on_finished=fn(ok : Bool) -> Unit { finished2.push(ok) },
+  )
+  if !(delivered2.length() >= 1 && delivered2[delivered2.length() - 1] == "om_2") {
+    panic("delivered2=" + delivered2.length().to_string())
+  }
+  if !(finished2.length() == 1 && finished2[0]) {
+    panic("finished2=" + finished2.length().to_string())
+  }
+  if f.threads.is_reading("feishu-r11", "oc_r11") {
+    panic("still reading after attempt 2")
+  }
+  let seen2 = f.threads.seen_of("feishu-r11", "oc_r11")
+  if seen2 != 3000L {
+    panic("seen2=" + seen2.to_string())
+  }
+}

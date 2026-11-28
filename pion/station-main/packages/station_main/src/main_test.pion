@@ -1870,3 +1870,56 @@ test "W17C-1 R10 surface_for_described slack:<team> & symmetric is_runner_live_s
   assert_true(!station_drivers::is_runner_live_strict(rinfo, true, Some(94000L)), "-6s rejected")
   assert_true(!station_drivers::is_runner_live_strict(rinfo, true, None), "None rejected")
 }
+
+test "W17C-1 R11 LiveRunnerManager handover carry state round-trip (pending_end_turns + draining_stopping_ids)" {
+  let mgr1 = LiveRunnerManager::new()
+  let drain_iid = station_whole::WholeAgents::runner_instance_id("r-drain", 4242, 1700000001000L)
+  mgr1.draining_stopping_ids.set(drain_iid, true)
+  mgr1.pending_end_turns.set(
+    "s-r11",
+    ManagerPendingEndTurn::{
+      session_key: "s-r11",
+      ws: "ws-a",
+      runtime_str: "claude",
+      profile_id: "default",
+      person_opt: Some("u@example.com"),
+      thread_id_opt: Some(77L),
+      launch_instance_id: Some("r-pre:1001:1700000000000"),
+      pend: PendingEndTurn::{
+        turn_id: Some("turn-r11"),
+        outcome: "failed",
+        detail: Some("handover before prompt delivery"),
+        declared_str: None,
+        need_opt: None,
+        wait_secs_opt: None,
+        wait_for_opt: None,
+        wait_watch_opt: None,
+        wall_ms: 1700000005000L,
+        was_completed: false,
+        reprompt_reminder: None,
+      },
+    },
+  )
+  assert_true(mgr1.has_handover_carry_state(), "mgr1 has handover carry state")
+  let carried_json = mgr1.export_handover_state_json()
+  let mgr2 = LiveRunnerManager::new()
+  assert_true(!mgr2.has_handover_carry_state(), "fresh mgr2 starts empty")
+  mgr2.import_handover_state_json(carried_json)
+  assert_true(mgr2.has_handover_carry_state(), "mgr2 imported handover carry state")
+  assert_true(mgr2.draining_stopping_ids.contains(drain_iid), "draining_stopping_ids preserved")
+  match mgr2.pending_end_turns.get("s-r11") {
+    Some(mp) => {
+      assert_str_eq(mp.ws, "ws-a")
+      assert_str_eq(mp.pend.outcome, "failed")
+      match mp.pend.turn_id {
+        Some(tid) => assert_str_eq(tid, "turn-r11")
+        None => panic("expected turn_id")
+      }
+      match mp.pend.detail {
+        Some(det) => assert_str_eq(det, "handover before prompt delivery")
+        None => panic("expected detail")
+      }
+    }
+    None => panic("expected imported ManagerPendingEndTurn for s-r11")
+  }
+}

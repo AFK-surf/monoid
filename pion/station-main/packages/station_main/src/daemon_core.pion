@@ -815,6 +815,7 @@ pub struct DaemonCtx {
   mark_role_ready_fn : () -> Unit
   request_stop_fn : () -> Unit
   fail_and_stop_fn : (String) -> Unit
+  carry_fn : (base_codec::Json) -> Unit
   loopback_port_fn : () -> Int
   shown_loopback_port_fn : () -> Int
   announce_mcp_port_fn : (Int) -> Unit
@@ -905,6 +906,10 @@ pub fn DaemonCtx::request_stop(self : DaemonCtx) -> Unit {
 
 pub fn DaemonCtx::fail_and_stop(self : DaemonCtx, msg : String) -> Unit {
   (self.fail_and_stop_fn)(msg)
+}
+
+pub fn DaemonCtx::carry(self : DaemonCtx, v : base_codec::Json) -> Unit {
+  (self.carry_fn)(v)
 }
 
 /// Write `mcp.json` and report `control.serving("mcp", port)` to the launcher.
@@ -1976,6 +1981,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       handover_failed = true
       stopping = true
     },
+    carry_fn: fn(v : base_codec::Json) -> Unit {
+      let _ = control.carry(v)
+    },
     loopback_port_fn: fn() -> Int { loopback_bound_port },
     shown_loopback_port_fn: fn() -> Int { loopback_shown_port },
     announce_mcp_port_fn: fn(dport : Int) -> Unit {
@@ -2158,17 +2166,17 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     (hooks.on_carried)(ctx, v)
   })
   control.on("handover", fn() -> Unit {
+    handover_stopping = true
     match (hooks.on_handover_start)(ctx) {
-      Ok(_) => {
-        handover_stopping = true
-        stopping = true
-      }
+      Ok(_) => ()
       Err(msg) => {
         log("handover start failed: " + msg)
+        handover_failed = true
         let _ = control.carry(base_codec::json_obj([("handoverFailed", base_codec::json_str(msg))]))
         let _ = control.failed("handover start failed: " + msg)
       }
     }
+    stopping = true
   })
   control.on("hup", fn() -> Unit {
     log("received hup")

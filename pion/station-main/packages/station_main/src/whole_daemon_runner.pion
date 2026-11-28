@@ -1800,6 +1800,7 @@ pub struct LiveRunnerManager {
   by_conn_id : Map[Int, String]
   by_spawn_ev : Map[Int64, Int]
   pending_end_turns : Map[String, ManagerPendingEndTurn]
+  draining_stopping_ids : Map[String, Bool]
   reprompt_restarts : Map[String, Int]
   mut next_conn_id : Int
   mut next_ev_id : Int64
@@ -1813,6 +1814,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     by_conn_id: Map::new(),
     by_spawn_ev: Map::new(),
     pending_end_turns: Map::new(),
+    draining_stopping_ids: Map::new(),
     reprompt_restarts: Map::new(),
     next_conn_id: 1,
     next_ev_id: LIVE_RUNNER_EV_BASE,
@@ -3275,6 +3277,11 @@ pub fn LiveRunnerManager::adopt_live_runner(
     Err(_) => None
   }
   let mut unauthorized_stop = false
+  if self.draining_stopping_ids.contains(inst_id) {
+    self.draining_stopping_ids.remove(inst_id)
+    ctx.log("[live-runner] adopt runner " + inst_id + " was draining/stopping on predecessor; continuing stop via socket")
+    unauthorized_stop = true
+  }
   let mut identity_verified = false
   let mut eff_profile_id = row.profile
   let mut eff_runtime_str = row.runtime
@@ -5291,14 +5298,175 @@ pub fn LiveRunnerManager::tick(
 /// fail-close any `pre_delivery` turns (`Spawning`/`Connecting`/`AcpInit`/`AcpOpening`/
 /// `CodexInit`/`CodexOpening`, `pending_prompt is Some(_)`, or `prompt_write_pending`) durably in
 /// SQLite. If any pre-delivery SQLite commit fails, returns `Err(...)` to abort snapshot export!
+pub fn LiveRunnerManager::has_handover_carry_state(self : LiveRunnerManager) -> Bool {
+  self.pending_end_turns.length() > 0 || self.draining_stopping_ids.length() > 0
+}
+
+pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -> base_codec::Json {
+  let opt_str_j = fn(v : Option[String]) -> base_codec::Json {
+    match v {
+      Some(s) => base_codec::json_str(s)
+      None => base_codec::json_null()
+    }
+  }
+  let opt_i64_j = fn(v : Option[Int64]) -> base_codec::Json {
+    match v {
+      Some(n) => sql_db::int64_to_json(n)
+      None => base_codec::json_null()
+    }
+  }
+  let opt_int_j = fn(v : Option[Int]) -> base_codec::Json {
+    match v {
+      Some(n) => base_codec::json_int(n)
+      None => base_codec::json_null()
+    }
+  }
+  let opt_bool_j = fn(v : Option[Bool]) -> base_codec::Json {
+    match v {
+      Some(b) => base_codec::json_bool(b)
+      None => base_codec::json_null()
+    }
+  }
+  let pends : Array[base_codec::Json] = []
+  let mkeys = self.pending_end_turns.keys()
+  for i in 0..<mkeys.length() {
+    match self.pending_end_turns.get(mkeys[i]) {
+      Some(mp) => {
+        let p = mp.pend
+        pends.push(
+          base_codec::json_obj([
+            ("sessionKey", base_codec::json_str(mp.session_key)),
+            ("ws", base_codec::json_str(mp.ws)),
+            ("runtimeStr", base_codec::json_str(mp.runtime_str)),
+            ("profileId", base_codec::json_str(mp.profile_id)),
+            ("person", opt_str_j(mp.person_opt)),
+            ("threadId", opt_i64_j(mp.thread_id_opt)),
+            ("launchInstanceId", opt_str_j(mp.launch_instance_id)),
+            ("turnId", opt_str_j(p.turn_id)),
+            ("outcome", base_codec::json_str(p.outcome)),
+            ("detail", opt_str_j(p.detail)),
+            ("declared", opt_str_j(p.declared_str)),
+            ("need", opt_str_j(p.need_opt)),
+            ("waitSecs", opt_int_j(p.wait_secs_opt)),
+            ("waitFor", opt_str_j(p.wait_for_opt)),
+            ("waitWatch", opt_bool_j(p.wait_watch_opt)),
+            ("wallMs", sql_db::int64_to_json(p.wall_ms)),
+            ("wasCompleted", base_codec::json_bool(p.was_completed)),
+            ("repromptReminder", opt_str_j(p.reprompt_reminder)),
+          ]),
+        )
+      }
+      None => ()
+    }
+  }
+  let d_ids : Array[base_codec::Json] = []
+  let dkeys = self.draining_stopping_ids.keys()
+  for i in 0..<dkeys.length() {
+    d_ids.push(base_codec::json_str(dkeys[i]))
+  }
+  base_codec::json_obj([
+    ("pendingEndTurns", base_codec::json_arr(pends)),
+    ("drainingStoppingIds", base_codec::json_arr(d_ids)),
+  ])
+}
+
+pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j : base_codec::Json) -> Unit {
+  let get_str = fn(o : base_codec::Json, k : String) -> String {
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let get_opt_str = fn(o : base_codec::Json, k : String) -> Option[String] {
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Str(s)) => Some(s)
+      _ => None
+    }
+  }
+  let get_opt_i64 = fn(o : base_codec::Json, k : String) -> Option[Int64] {
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+      _ => None
+    }
+  }
+  let get_opt_int = fn(o : base_codec::Json, k : String) -> Option[Int] {
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+      _ => None
+    }
+  }
+  let get_opt_bool = fn(o : base_codec::Json, k : String) -> Option[Bool] {
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Bool(b)) => Some(b)
+      _ => None
+    }
+  }
+  match base_codec::json_get(j, "pendingEndTurns") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let item = arr[i]
+        let skey = get_str(item, "sessionKey")
+        if skey.length() == 0 {
+          continue
+        }
+        let mp = ManagerPendingEndTurn::{
+          session_key: skey,
+          ws: get_str(item, "ws"),
+          runtime_str: get_str(item, "runtimeStr"),
+          profile_id: get_str(item, "profileId"),
+          person_opt: get_opt_str(item, "person"),
+          thread_id_opt: get_opt_i64(item, "threadId"),
+          launch_instance_id: get_opt_str(item, "launchInstanceId"),
+          pend: PendingEndTurn::{
+            turn_id: get_opt_str(item, "turnId"),
+            outcome: {
+              let o = get_str(item, "outcome")
+              if o.length() > 0 { o } else { "failed" }
+            },
+            detail: get_opt_str(item, "detail"),
+            declared_str: get_opt_str(item, "declared"),
+            need_opt: get_opt_str(item, "need"),
+            wait_secs_opt: get_opt_int(item, "waitSecs"),
+            wait_for_opt: get_opt_str(item, "waitFor"),
+            wait_watch_opt: get_opt_bool(item, "waitWatch"),
+            wall_ms: match get_opt_i64(item, "wallMs") { Some(w) => w; None => 0L },
+            was_completed: match get_opt_bool(item, "wasCompleted") { Some(b) => b; None => false },
+            reprompt_reminder: get_opt_str(item, "repromptReminder"),
+          },
+        }
+        self.pending_end_turns.set(skey, mp)
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(j, "drainingStoppingIds") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(id) => if id.length() > 0 { self.draining_stopping_ids.set(id, true) }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+/// R11 P1-1: Prepare live runners for handover BEFORE snapshot export:
+/// 1. Freeze any `pre_delivery` session immediately (`pending_prompt = None`,
+///    `prompt_write_pending = false`, `detached_for_handover = true`) so no queued prompt can ever
+///    be delivered after handover begins.
+/// 2. Best-effort commit all `pending_end_turns`, `draining` `pending_end_turn`, active session
+///    `pending_end_turn`, and `pre_delivery` turns in SQLite.
+/// 3. Any entry whose SQLite commit fails is preserved in `self.pending_end_turns`, and any
+///    in-flight non-`Exited` `draining` runner instance ID is recorded in `self.draining_stopping_ids`
+///    for explicit carry/file transfer to the successor daemon (never blocking retiring exit).
 pub fn LiveRunnerManager::prepare_handover(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
   wall_ms : Int64,
-) -> Result[Unit, String] {
-  // R10 P1-4: First flush all manager-level `pending_end_turns`, `draining`, and active
-  // session `pending_end_turn` entries; fail handover immediately if any SQLite commit fails!
+) -> Unit {
   let mkeys = self.pending_end_turns.keys()
   for mi in 0..<mkeys.length() {
     match self.pending_end_turns.get(mkeys[mi]) {
@@ -5306,20 +5474,34 @@ pub fn LiveRunnerManager::prepare_handover(
       None => ()
     }
   }
-  if self.pending_end_turns.length() > 0 {
-    return Err("handover failed: pending_end_turns SQLite flush incomplete")
-  }
   let dcids = self.draining.keys()
   for di in 0..<dcids.length() {
     match self.draining.get(dcids[di]) {
-      Some(ds) => match ds.pending_end_turn {
-        Some(pend) => {
-          live_runner_commit_end_turn(self, ctx, core, ds, pend)
-          if ds.pending_end_turn is Some(_) {
-            return Err("handover failed: draining pending_end_turn SQLite commit failed for " + ds.session_key)
+      Some(ds) => {
+        match ds.pending_end_turn {
+          Some(pend) => {
+            live_runner_commit_end_turn(self, ctx, core, ds, pend)
+            if ds.pending_end_turn is Some(_) {
+              self.preserve_pending_end_turn(ds)
+            }
+          }
+          None => ()
+        }
+        match ds.phase {
+          LiveRunnerPhase::Exited => ()
+          _ => {
+            match live_runner_info_of(ds.phase) {
+              Some(info) => {
+                let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
+                self.draining_stopping_ids.set(iid, true)
+              }
+              None => match ds.adopted_instance_id {
+                Some(iid) => self.draining_stopping_ids.set(iid, true)
+                None => ()
+              }
+            }
           }
         }
-        None => ()
       }
       None => ()
     }
@@ -5333,7 +5515,7 @@ pub fn LiveRunnerManager::prepare_handover(
           Some(pend) => {
             live_runner_commit_end_turn(self, ctx, core, sess, pend)
             if sess.pending_end_turn is Some(_) {
-              return Err("handover failed: session pending_end_turn SQLite commit failed for " + skey)
+              self.preserve_pending_end_turn(sess)
             }
           }
           None => ()
@@ -5350,43 +5532,80 @@ pub fn LiveRunnerManager::prepare_handover(
               | LiveRunnerPhase::CodexOpening(_, _) => true
               _ => sess.pending_prompt is Some(_) || sess.prompt_write_pending
             }
+            if pre_delivery {
+              // Freeze immediately so no subsequent event-loop callback can ever deliver this prompt!
+              sess.pending_prompt = None
+              sess.prompt_write_pending = false
+              sess.detached_for_handover = true
+            }
             if pre_delivery && sess.current_turn_id is Some(tid) {
-              let st = match core.store.require_open() {
-                Ok(s) => s
+              let mut committed = false
+              match core.store.require_open() {
+                Ok(st) => {
+                  match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                    match t.run(
+                      "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
+                      [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
+                    ) {
+                      Err(e) => return Err(e)
+                      Ok(_) => ()
+                    }
+                    match t.run(
+                      "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+                      [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
+                    ) {
+                      Err(e) => return Err(e)
+                      Ok(_) => ()
+                    }
+                    Ok(())
+                  }) {
+                    Ok(_) => committed = true
+                    Err(e) => {
+                      ctx.log("[live-runner] handover pre-delivery SQLite close deferred to successor for " + skey + ": " + e.message)
+                    }
+                  }
+                }
                 Err(e) => {
-                  let msg = "handover pre-delivery store not open for " + skey + ": " + e
-                  ctx.log("[live-runner] " + msg)
-                  return Err(msg)
+                  ctx.log("[live-runner] handover pre-delivery store unavailable, deferring to successor for " + skey + ": " + e)
                 }
               }
-              match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-                match t.run(
-                  "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
-                  [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
-                ) {
-                  Err(e) => return Err(e)
-                  Ok(_) => ()
+              if committed {
+                sess.current_turn_id = None
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.phase = station_sessions::ActorPhase::Idle
+                actor.has_process = false
+              } else {
+                // Hand over uncommitted pre-delivery end-turn to successor via `pending_end_turns`!
+                let launch_inst = match live_runner_info_of(sess.phase) {
+                  Some(info) => Some(station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at))
+                  None => sess.adopted_instance_id
                 }
-                match t.run(
-                  "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
-                  [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
-                ) {
-                  Err(e) => return Err(e)
-                  Ok(_) => ()
-                }
-                Ok(())
-              }) {
-                Ok(_) => {
-                  sess.current_turn_id = None
-                  let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-                  actor.phase = station_sessions::ActorPhase::Idle
-                  actor.has_process = false
-                }
-                Err(e) => {
-                  let msg = "handover pre-delivery SQLite close failed for " + skey + ": " + e.message
-                  ctx.log("[live-runner] " + msg)
-                  return Err(msg)
-                }
+                self.pending_end_turns.set(
+                  skey,
+                  ManagerPendingEndTurn::{
+                    session_key: skey,
+                    ws: sess.ws,
+                    runtime_str: sess.runtime_str,
+                    profile_id: sess.profile_id,
+                    person_opt: sess.person_opt,
+                    thread_id_opt: sess.thread_id_opt,
+                    launch_instance_id: launch_inst,
+                    pend: PendingEndTurn::{
+                      turn_id: Some(tid),
+                      outcome: "failed",
+                      detail: Some("handover before prompt delivery"),
+                      declared_str: None,
+                      need_opt: None,
+                      wait_secs_opt: None,
+                      wait_for_opt: None,
+                      wait_watch_opt: None,
+                      wall_ms: wall_ms,
+                      was_completed: false,
+                      reprompt_reminder: None,
+                    },
+                  },
+                )
+                sess.current_turn_id = None
               }
             } else {
               let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -5398,7 +5617,6 @@ pub fn LiveRunnerManager::prepare_handover(
       None => ()
     }
   }
-  Ok(())
 }
 
 /// Graceful `SIGUSR2` handover detach: idempotently detaches Unix sockets & bootstrap handles
