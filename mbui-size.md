@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [063dabbb3](https://github.com/AFK-surf/monoid/commit/063dabbb3797b9316cac9754f27c8f27070ec32b) feat(station-pion): wire Wave 17D-1 all 11 Vault a | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
 | [27a53d081](https://github.com/AFK-surf/monoid/commit/27a53d08133b7af8b17d41ba87a702438f31b6e0) perf(ui): optimize bit-exact skia/svg rasterizatio | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
 | [32342a0a7](https://github.com/AFK-surf/monoid/commit/32342a0a73a0ed5cc0f278893c38ea669f96d735) fix(station): requeue unread steered inputs on tra | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
 | [6d17e28e2](https://github.com/AFK-surf/monoid/commit/6d17e28e27b1b2955d09c57cf9e05da77997c3d1) feat(station-main): wire 10 interactive call_ops a | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.66 | 131.94 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [b2d40a09f](https://github.com/AFK-surf/monoid/commit/b2d40a09f7b4bb380b9645e63756b38076953db7) feat(pion-station): port vault discovery/asks, saf | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
-| [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [063dabbb3](https://github.com/AFK-surf/monoid/commit/063dabbb3797b9316cac9754f27c8f27070ec32b) feat(station-pion): wire Wave 17D-1 all 11 Vault a | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [27a53d081](https://github.com/AFK-surf/monoid/commit/27a53d08133b7af8b17d41ba87a702438f31b6e0) perf(ui): optimize bit-exact skia/svg rasterizatio | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [32342a0a7](https://github.com/AFK-surf/monoid/commit/32342a0a73a0ed5cc0f278893c38ea669f96d735) fix(station): requeue unread steered inputs on tra | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [6d17e28e2](https://github.com/AFK-surf/monoid/commit/6d17e28e27b1b2955d09c57cf9e05da77997c3d1) feat(station-main): wire 10 interactive call_ops a | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.77 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
 | [b2d40a09f](https://github.com/AFK-surf/monoid/commit/b2d40a09f7b4bb380b9645e63756b38076953db7) feat(pion-station): port vault discovery/asks, saf | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
-| [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
