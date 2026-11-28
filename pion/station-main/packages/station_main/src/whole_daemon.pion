@@ -1473,6 +1473,7 @@ pub fn route_whole_config_fs_event(
 }
 
 struct WholeRuntimeState {
+  copilot : CopilotDoorState
   core : station_whole::WholeCore
   replica : station_whole::ReplicaOsRuntime
   devices : station_whole::DevicesOsRuntime
@@ -5967,10 +5968,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
+      let copilot_door = CopilotDoorState::new()
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
       let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
         if req.method == "GET" && req.path == "/healthz" {
           return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
+        }
+        if req.path.starts_with("/copilot-api/") {
+          return copilot_accept(ctx, core, mcp_srv, copilot_door, req)
         }
         if req.path == "/mcp" || req.path.starts_with("/mcp/") {
           let req_body = req.body_text()
@@ -6392,6 +6397,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
+        copilot: copilot_door,
         core: core,
         replica: replica,
         devices: devices,
@@ -6750,6 +6756,25 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             _ => ""
           }
           let ws = auth.env.workspace
+
+          if method == "share.changed" {
+            // The share protocol retains responsibility for accepting moves and updating profiles.
+            // Evict only entries issued by this authenticated peer. An old in-flight reply is discarded.
+            st.copilot.forget(auth.remote_id, json_str_field(req, "id"))
+          }
+          if method == "share.autoChats" || method == "share.copilotInvalidate" {
+            if method == "share.autoChats" {
+              st.copilot.auto_peers.set(auth.remote_id, json_bool_field(req, "acceptAutoChats") && !json_bool_field(req, "tasksOnly"))
+              copilot_recheck_recipients(ctx, st)
+            } else { st.copilot.forget(auth.remote_id, json_str_field(req, "id")) }
+            let answer = base_codec::json_obj([("heard", base_codec::json_bool(true))])
+            ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(answer, false, v2_bytes), None, v2_bytes, is_front)
+            return
+          }
+          if method == "share.copilotLease" {
+            copilot_host_lease(ctx, st, auth, sid, v2_bytes, is_front)
+            return
+          }
 
           // Roster station HTTP-over-RPC: strictly read-only `AuthenticatedStation` (`role: "viewer"`).
           // NEVER trusts self-asserted email/role headers; write routes (e.g. `POST /sessions`) MUST return `403`.
@@ -7566,6 +7591,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       match state_opt {
         Some(st) => {
           if route_whole_config_fs_event(st.core, ev_id, sev) {
+            copilot_recheck_recipients(ctx, st)
             return
           }
           match sev {
@@ -7644,7 +7670,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
             }
             DaemonExtraEvent::RoleDone(tok, d) => {
-              handle_proxy_role_done(ctx, st, tok, d)
+              if !copilot_stream_done(ctx, st, tok, d) { handle_proxy_role_done(ctx, st, tok, d) }
             }
           }
         }
@@ -7662,6 +7688,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             ctx.announce_mcp_port(mport)
             ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
           }
+          copilot_start_queued(ctx, st)
           let _ = st.mcp_srv.tick(st.mcp_cb)
         }
         None => ()
@@ -7817,6 +7844,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     on_cloud_changed: fn(ctx : DaemonCtx, w_s : Int64, w_ms : Int64, connected : Bool) -> Unit {
       match state_opt {
         Some(st) => {
+          copilot_recheck_recipients(ctx, st)
           // Immediately re-check every live `stillfail/admin/1` connection on cloud state/revocation/lock update!
           let now_s = w_s.to_double()
           let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)

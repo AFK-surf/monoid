@@ -49,6 +49,10 @@ Standalone sibling Pion workspace (`pion.toml`) for the full Pion station binary
 - `scripts/gen-i18n.mjs`: generates `packages/station_ops/src/i18n_catalog.pion` from `client/i18n/catalog/{zh,en}/station.json` and `client/i18n/brand.ts` (`--check` verifies zero drift in CI).
 - `scripts/build.sh`: builds `stillfail-station-pion` for `darwin-arm64`, `linux-x64`, `linux-arm64`, or `win32-x64`, linking `host_shim`'s `station_host.o`, `sqlite_ffi`'s `station_sqlite.o`, `station_sys`'s `station_sys.o` and `station_sqlite_ext.o`, and `libstillfail_shell.a`.
 
+## Borrowed Copilot subscriptions
+
+The host authorizes each credential exchange against the current workspace and share. Keep the GitHub sign-in on the host. Route borrowed SDK requests through the session-bound local agents endpoint. Keep expiring Copilot credentials in memory.
+
 ## Verification
 
 - `sh pion/station/scripts/ensure-pionc.sh`

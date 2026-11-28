@@ -164,6 +164,21 @@ describe("the Copilot driver", { concurrency: true }, () => {
     return d;
   }
 
+  test("a borrowed profile opens without a local sign-in and gives its bridge no GitHub token", async () => {
+    const o = options({}, null);
+    o.profile.share = { borrowed: true };
+    o.profile.env = { COPILOT_GITHUB_TOKEN: "gho_stale" };
+    const d = new CopilotDriver({ data, sdk: data, extra: { dump: o.dump }, bridge: envBridge,
+      lend: async () => ({ token: "short", api: "https://api.githubcopilot.com", expiresAt: 1e15 }) });
+    drivers.push(d);
+    const session = await d.open(o, listen().push);
+    const { env, open } = JSON.parse(readFileSync(o.dump, "utf8").trim());
+    assert.deepEqual(open.borrowed, { key: o.key, profile: o.profile.id });
+    assert.equal(env.STILLFAIL_COPILOT_TOKEN, undefined);
+    assert.equal(env.COPILOT_GITHUB_TOKEN, undefined);
+    await session.dispose();
+  });
+
   test("the bridge is given the profile's token, the station's tools' token and what a subagent may not call; nothing of the machine's", async () => {
     const o = options({ model: "gpt-5.5", effort: "high" });
     const d = driver({ dump: o.dump }, envBridge, data);

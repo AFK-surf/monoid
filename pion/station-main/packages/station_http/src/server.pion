@@ -253,6 +253,19 @@ pub fn HttpServer::listen_error(self : HttpServer) -> Option[String] {
   self.listen_error
 }
 
+/// Identify the accepted socket across asynchronous requests even when a handle is reused.
+pub fn HttpServer::connection_generation(self : HttpServer, conn_id : Int) -> Option[Int64] {
+  match self.conns.get(conn_id) {
+    Some(conn) => if conn.closed { None } else { Some(conn.gen) }
+    None => None
+  }
+}
+
+/// Close an incomplete streaming response without signaling successful completion.
+pub fn HttpServer::abort_response(self : HttpServer, conn_id : Int, gen : Int64, callbacks : ServerCallbacks) -> Unit {
+  if self.connection_generation(conn_id) == Some(gen) { self.close_conn_with_callbacks(conn_id, callbacks, false) }
+}
+
 pub fn HttpServer::active_connections(self : HttpServer) -> Int {
   self.conns.length()
 }
