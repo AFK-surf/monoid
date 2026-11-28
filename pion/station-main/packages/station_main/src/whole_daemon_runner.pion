@@ -2249,14 +2249,16 @@ fn LiveRunnerManager::has_runner_id_tracked(self : LiveRunnerManager, runner_id 
   false
 }
 
-/// R14/R15 Invariant 2: Safely sweeps expired/exited draining stop markers in `tick()`:
+/// R14/R15/R18 Invariant 2: Safely sweeps expired/exited draining stop markers in `tick()`:
 /// - Exact `instance_id` (`<id>:<pid>:<started_at>`): removed ONLY once OS confirms process dead
-///   or PID reused (`check_pid_dead(pid, started_at)`; `None` start-time is unknown -> NEVER removed!).
-/// - `Spawning` `"rid:<id>@<before_ms>"`: removed ONLY after `wall_ms > before_ms + LIVE_RUNNER_READY_MS`
-///   so late-ready runners appearing after startup discovery are still caught and stopped!
+///   or PID reused (`check_pid_dead(pid, started_at)`; `None` start-time / `EPERM` -> NEVER removed!).
+/// - `Spawning` `"rid:<id>@<before_ms>"`: removed ONLY when `clean_scan_ok == true` (a clean,
+///   error-free `discover_live_runners_checked` scan ran FIRST and found no matching runner) AND
+///   `wall_ms > before_ms + LIVE_RUNNER_READY_MS`!
 pub fn LiveRunnerManager::sweep_draining_stop_markers(
   self : LiveRunnerManager,
   wall_ms : Int64,
+  clean_scan_ok~ : Bool = false,
   check_pid_dead~ : (Int, Int64) -> Bool = live_runner_pid_confirmed_dead,
 ) -> Bool {
   let keys = self.draining_stopping_ids.keys()
@@ -2265,7 +2267,7 @@ pub fn LiveRunnerManager::sweep_draining_stop_markers(
     let k = keys[i]
     match parse_rid_stop_key_before_ms(k) {
       Some((_, before_ms)) => {
-        if wall_ms > before_ms + LIVE_RUNNER_READY_MS {
+        if clean_scan_ok && wall_ms > before_ms + LIVE_RUNNER_READY_MS {
           self.draining_stopping_ids.remove(k)
           self.draining_stop_sessions.remove(k)
           removed = true
@@ -5638,40 +5640,58 @@ pub fn LiveRunnerManager::tick(
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
 
-  // 0b. R14 Invariant 2: Sweep confirmed-dead exact stop markers (OS liveness/start-time check) and
-  // expired `Spawning` `"rid:<id>@<before_ms>"` markers (`wall_ms > before_ms + 30s`).
-  if self.sweep_draining_stop_markers(wall_ms) {
-    let _ = self.sync_handover_state_with_ctx(ctx)
-  }
-
-  // 0c. R15 P1-2/3: While ANY draining stop marker exists (exact `instance_id` OR `Spawning` `rid:`)
-  // and primary store is open, re-scan disk for untracked matching runners (e.g. after transient socket
-  // error or late-ready spawn) and re-enter `adopt_live_runner` (`attach + TERM -> 5s grace -> KILL`)!
+  // 0b. R18 Step 1 & Step 2 (DISCOVER & PROMOTE FIRST, BEFORE ANY `rid:` EXPIRY SWEEP!):
+  // While ANY draining stop marker exists and primary store is open, run error-preserving
+  // `discover_live_runners_checked`. For every untracked live runner matching a stop marker
+  // (including `started_at <= before_ms + 30s` even if `wall_ms` is already past `+30s`!),
+  // immediately promote `rid:` -> exact `inst_id` and adopt into `draining` (`attach + TERM`).
+  let mut clean_scan_ok = false
   if self.draining_stopping_ids.length() > 0 && core.store.require_open() is Ok(_) {
-    let late_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
-    let late_cfg = live_config_raw(core, ctx.cfg_raw)
-    for lri in 0..<late_runners.length() {
-      let rinfo = late_runners[lri]
-      if rinfo.socket.length() > 0 && !self.has_runner_id_tracked(rinfo.id) {
-        let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
-        if self.is_draining_stop_target(iid, rinfo.id, rinfo.started_at) {
-          let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.started_at) {
-            Some(sk) => Some(sk)
-            None => match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
-              Some(sk) => Some(sk)
-              None => match core.agents.get_runner_launch(iid) {
-                Ok(Some(rec)) => Some(rec.session_key)
-                _ => None
+    match discover_live_runners_checked(ctx.ops_fs, ctx.data, ctx.sep) {
+      Ok(late_runners) => {
+        clean_scan_ok = true
+        let late_cfg = live_config_raw(core, ctx.cfg_raw)
+        for lri in 0..<late_runners.length() {
+          let rinfo = late_runners[lri]
+          if rinfo.socket.length() > 0 && !self.has_runner_id_tracked(rinfo.id) {
+            let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
+            if self.is_draining_stop_target(iid, rinfo.id, rinfo.started_at) {
+              let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.started_at) {
+                Some(sk) => Some(sk)
+                None => match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+                  Some(sk) => Some(sk)
+                  None => match core.agents.get_runner_launch(iid) {
+                    Ok(Some(rec)) => Some(rec.session_key)
+                    _ => None
+                  }
+                }
+              }
+              let prom_skey = match skey_opt {
+                Some(sk) => sk
+                None => ""
+              }
+              if self.promote_rid_stop_marker(iid, rinfo.id, rinfo.started_at, prom_skey) {
+                let _ = self.sync_handover_state_with_ctx(ctx)
+              }
+              match skey_opt {
+                Some(sk) => { let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms) }
+                None => ()
               }
             }
           }
-          match skey_opt {
-            Some(sk) => { let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms) }
-            None => ()
-          }
         }
       }
+      Err(err) => {
+        ctx.log("[live-runner] stop-marker runner scan failed; deferring rid: expiry sweep: " + err)
+      }
     }
+  }
+
+  // 0c. R18 Step 3: Sweep confirmed-dead exact stop markers (OS ESRCH / PID-reuse check) and —
+  // ONLY when Step 1 completed a clean error-free scan (`clean_scan_ok == true`) — expire any
+  // remaining `Spawning` `"rid:<id>@<before_ms>"` markers past `before_ms + LIVE_RUNNER_READY_MS`.
+  if self.sweep_draining_stop_markers(wall_ms, clean_scan_ok=clean_scan_ok) {
+    let _ = self.sync_handover_state_with_ctx(ctx)
   }
 
   // 0d. Retry any manager-level uncommitted `PendingEndTurn` entries preserved across draining exit/fallback (R7 P1-2).

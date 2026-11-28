@@ -3412,12 +3412,24 @@ fn encode_ws_proxy_frame(kind : Int, payload : Bytes) -> Bytes {
 /// `WholeCore::open_after_predecessor_gone` (`whole_agents.pion:807`).
 /// Prioritizes native `stillfail-runner` field `"runner"` (`station/native/runner/src/main.rs:376`),
 /// falling back to `"runnerPid"` / `"runner_pid"` for compatibility.
-fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : String) -> Array[station_drivers::RunnerInfo] {
+/// R18: Strictly error-preserving variant of `discover_live_runners`:
+/// - Returns `Ok([])` ONLY when `<data>/run/runners` does not exist (`FsErr::NotFound`).
+/// - Returns `Err(...)` if `readdir` fails or any `.json` metadata file fails to read (non-`NotFound`) or parse,
+///   so `LiveRunnerManager::tick()` NEVER expires `Spawning` `rid:` stop markers after a failed scan!
+pub fn discover_live_runners_checked_with(
+  ops_fs : station_ops::OpsFs,
+  data : String,
+  sep : String,
+  readlink_fn : (String) -> Option[String],
+  is_alive_fn : (Int) -> Bool,
+  start_time_fn : (Int) -> Option[Int64],
+) -> Result[Array[station_drivers::RunnerInfo], String] {
   let out : Array[station_drivers::RunnerInfo] = []
   let rdir = station_drivers::runners_dir(data, sep)
   let entries = match (ops_fs.readdir)(rdir) {
     Ok(list) => list
-    Err(_) => return out
+    Err(station_ops::FsErr::NotFound) => return Ok(out)
+    Err(e) => return Err("readdir " + rdir + ": " + station_ops::fs_err_msg(e))
   }
   for i in 0..<entries.length() {
     let name = entries[i]
@@ -3427,15 +3439,16 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
     let fpath = nodepath::join(sep, [rdir, name])
     let raw = match ops_fs.read_text(fpath) {
       Ok(s) => s
-      Err(_) => continue
+      Err(station_ops::FsErr::NotFound) => continue
+      Err(e) => return Err("read " + fpath + ": " + station_ops::fs_err_msg(e))
     }
     let j = match base_codec::json_parse(raw) {
       base_codec::JsonParseResult::Ok(v) => v
-      base_codec::JsonParseResult::Err(_) => continue
+      base_codec::JsonParseResult::Err(e) => return Err("parse " + fpath + ": " + e)
     }
     let id = match base_codec::json_get(j, "id") {
       Some(base_codec::Json::Str(s)) => s
-      _ => continue
+      _ => return Err("missing id in " + fpath)
     }
     let rpid = match base_codec::json_get(j, "runner") {
       Some(base_codec::Json::Num(n, _)) => n.to_int()
@@ -3493,7 +3506,7 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
     let cwd_opt = match base_codec::json_get(j, "cwd") {
       Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
       _ => if pid > 1 && pid != rpid {
-        match station_sys::readlink("/proc/" + pid.to_string() + "/cwd") {
+        match readlink_fn("/proc/" + pid.to_string() + "/cwd") {
           Some(p) => if p.trim().length() > 0 { Some(p.trim()) } else { None }
           None => None
         }
@@ -3514,13 +3527,35 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
       pty: pty,
       cwd: cwd_opt,
     }
-    let alive = rpid > 1 && station_ops::is_pid_alive(rpid)
-    let os_start = if alive { station_sys::proc_start_time_ms(rpid) } else { None }
+    let alive = rpid > 1 && is_alive_fn(rpid)
+    let os_start = if alive { start_time_fn(rpid) } else { None }
     if station_drivers::is_runner_live(info, alive, os_start) {
       out.push(info)
     }
   }
-  out
+  Ok(out)
+}
+
+pub fn discover_live_runners_checked(
+  ops_fs : station_ops::OpsFs,
+  data : String,
+  sep : String,
+) -> Result[Array[station_drivers::RunnerInfo], String] {
+  discover_live_runners_checked_with(
+    ops_fs,
+    data,
+    sep,
+    station_sys::readlink,
+    station_ops::is_pid_alive,
+    station_sys::proc_start_time_ms,
+  )
+}
+
+fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : String) -> Array[station_drivers::RunnerInfo] {
+  match discover_live_runners_checked(ops_fs, data, sep) {
+    Ok(list) => list
+    Err(_) => []
+  }
 }
 
 fn find_crlf_crlf(b : Bytes) -> Int {

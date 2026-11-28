@@ -2050,13 +2050,14 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   )
   assert_true(!mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "dead exact id removed")
   assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t still kept at t+10s")
-  // At t + 31s: Spawning rid@t finally expires -> file unlinked!
+  // At t + 31s with clean scan: Spawning rid@t finally expires -> file unlinked!
   assert_true(
     mgr4.sweep_draining_stop_markers(
       1700000032000L,
+      clean_scan_ok=true,
       check_pid_dead=fn(_p, _s) { true },
     ),
-    "Spawning rid@t swept at t+31s",
+    "Spawning rid@t swept at t+31s after clean scan",
   )
   assert_true(!mgr4.has_handover_carry_state(), "all markers swept")
   assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after sweep")
@@ -2104,6 +2105,7 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(
     !mgr6.sweep_draining_stop_markers(
       1700000070000L,
+      clean_scan_ok=true,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(1700000025000L)) },
     ),
     "promoted exact inst_id must survive past 30s while PID is alive",
@@ -2112,6 +2114,57 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(mgr6.clear_draining_stop_target(Some(late_inst), "r-late-r16"), "confirmed exit clears promoted inst_id")
   assert_true(!mgr6.has_pending_draining_stop_for_session("s-late-r16"), "clearing stop marker unblocks replacement launch")
   assert_true(mgr6.sync_handover_state_file(ops, 1006, "/").is_ok(), "unlink after promoted clear")
+
+  // 6. R18 Case A: Runner started at before_ms+5s, first clean scan at before_ms+45s (past 30s!) ->
+  // Step 2 matches `started_at <= before_ms + 30s` and promotes to exact inst_id BEFORE Step 3 sweep!
+  let mgr7 = LiveRunnerManager::new()
+  let t0 : Int64 = 1700000100000L
+  mgr7.record_draining_stop_marker("rid:r-r18-a@" + t0.to_string(), "s-r18-a")
+  let r18_a_inst = "r-r18-a:8181:" + (t0 + 5000L).to_string()
+  assert_true(mgr7.is_draining_stop_target(r18_a_inst, "r-r18-a", t0 + 5000L), "R18-A: +5s runner matches even when discovered at +45s")
+  assert_true(mgr7.promote_rid_stop_marker(r18_a_inst, "r-r18-a", t0 + 5000L, "s-r18-a"), "R18-A: promotes before Step 3 sweep")
+  assert_true(
+    !mgr7.sweep_draining_stop_markers(
+      t0 + 45000L,
+      clean_scan_ok=true,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0 + 5000L)) },
+    ),
+    "R18-A: Step 3 at +45s preserves promoted exact inst_id",
+  )
+  assert_true(mgr7.draining_stopping_ids.contains(r18_a_inst), "R18-A: exact inst_id retained")
+  assert_true(mgr7.has_pending_draining_stop_for_session("s-r18-a"), "R18-A: session still gated")
+
+  // 7. R18 Case B: Failed scan (`clean_scan_ok=false`) NEVER expires `rid:` even at +45s;
+  // only a subsequent clean empty scan (`clean_scan_ok=true`) clears `rid:` & unblocks session!
+  let mgr8 = LiveRunnerManager::new()
+  mgr8.record_draining_stop_marker("rid:r-r18-b@" + t0.to_string(), "s-r18-b")
+  assert_true(
+    !mgr8.sweep_draining_stop_markers(t0 + 45000L, clean_scan_ok=false, check_pid_dead=fn(_p, _s) { false }),
+    "R18-B: failed scan must NOT expire rid: at +45s",
+  )
+  assert_true(mgr8.draining_stopping_ids.contains("rid:r-r18-b@" + t0.to_string()), "R18-B: rid: preserved after failed scan")
+  assert_true(mgr8.has_pending_draining_stop_for_session("s-r18-b"), "R18-B: session still gated after failed scan")
+  assert_true(
+    mgr8.sweep_draining_stop_markers(t0 + 45000L, clean_scan_ok=true, check_pid_dead=fn(_p, _s) { false }),
+    "R18-B: clean empty scan at +45s expires rid:",
+  )
+  assert_true(!mgr8.has_pending_draining_stop_for_session("s-r18-b"), "R18-B: session unblocked after clean scan expiry")
+
+  // 8. R18 `discover_live_runners_checked_with`: `NotFound` -> `Ok([])`, corrupt JSON -> `Err(...)`!
+  let no_rl = fn(_p : String) -> Option[String] { None }
+  let all_alive = fn(_pid : Int) -> Bool { true }
+  let no_start = fn(_pid : Int) -> Option[Int64] { None }
+  assert_true(
+    discover_live_runners_checked_with(ops, "/no-such-data", "/", no_rl, all_alive, no_start).is_ok(),
+    "missing runners dir is Ok([])",
+  )
+  let bad_dir = "/r18-bad/run/runners"
+  assert_true((ops.mkdir_p)(bad_dir).is_ok(), "mkdir bad runners dir")
+  assert_true((ops.write_bytes)(bad_dir + "/corrupt.json", "{not-json".to_bytes(), 384).is_ok(), "write corrupt json")
+  assert_true(
+    discover_live_runners_checked_with(ops, "/r18-bad", "/", no_rl, all_alive, no_start).is_err(),
+    "corrupt runner metadata MUST return Err",
+  )
 }
 
 test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {
