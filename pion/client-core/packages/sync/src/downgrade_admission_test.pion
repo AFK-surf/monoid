@@ -2127,8 +2127,9 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
   debug_assert(h5.core.person_lock_kept_entries().length() == 2, "holding [pg0,pe1]")
   let gen_e1 = h5.ctrl.lock_gen()
 
-  // E1b (R9 Codex P1-1): Bad-signature variant sharing the EXACT same unsigned `entry_hash` as `pe2`
-  // appearing BEFORE valid `pe2` MUST NOT drop valid `pe2` during dedup before `lock::person_chain`!
+  // E1b (R9/R10 Codex P1-1): Bad-signature AND colon-delimiter-colliding `sig.key`/`sig.alg`/`sig.sig`
+  // variants sharing the EXACT same unsigned `entry_hash` as `pe2` appearing BEFORE valid `pe2` MUST
+  // NOT drop valid `pe2` during `form::canonical` dedup before `lock::person_chain`!
   let pe2_bad_sig = j_set_field(
     pe2,
     "sig",
@@ -2138,13 +2139,59 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
       ("sig", base_codec::json_str("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")),
     ]),
   )
-  debug_assert(
-    lock_entry_hash(codec_to_form(pe2_bad_sig), native_lock_crypto()) == pe2_h,
-    "bad-sig variant has identical unsigned entry_hash to valid pe2",
+  // Direct colon-concatenation collision pair: `"ed25519:a" + ":" + "b:c" == "ed25519:a:b" + ":" + "c"`:
+  let pe2_col_a = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519:a")),
+      ("alg", base_codec::json_str("")),
+      ("sig", base_codec::json_str("b:c")),
+    ]),
+  )
+  let pe2_col_b = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519:a:b")),
+      ("alg", base_codec::json_str("")),
+      ("sig", base_codec::json_str("c")),
+    ]),
   )
   debug_assert(
-    h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2_bad_sig, pe2])),
-    "full signed-record dedup preserves valid pe2 after bad-sig variant and extends to [pg0,pe1,pe2]",
+    person_signed_entry_key(codec_to_form(pe2_col_a)) != person_signed_entry_key(codec_to_form(pe2_col_b)),
+    "form::canonical strictly separates colon-colliding sig.key/sig.sig variants",
+  )
+  // Exact real-key colon-concatenation collision against valid `pe2` (`ed25519:<hex>:Ed25519:<sig>`):
+  let pe2_sig_obj = match base_codec::json_get(pe2, "sig") {
+    Some(s) => s
+    None => panic("expected sig on pe2")
+  }
+  let pe2_real_key = j_str(pe2_sig_obj, "key")
+  let pe2_real_sig = j_str(pe2_sig_obj, "sig")
+  debug_assert(pe2_real_key.starts_with("ed25519:"), "real Ed25519 key ID contains ':'")
+  let pe2_key_tail = pe2_real_key.slice(8, pe2_real_key.length())
+  let pe2_colon_collision = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519")),
+      ("alg", base_codec::json_str(pe2_key_tail)),
+      ("sig", base_codec::json_str("Ed25519:" + pe2_real_sig)),
+    ]),
+  )
+  debug_assert(
+    person_signed_entry_key(codec_to_form(pe2_colon_collision)) != person_signed_entry_key(codec_to_form(pe2)),
+    "form::canonical strictly separates crafted colon-collision variant from real signed pe2",
+  )
+  debug_assert(
+    lock_entry_hash(codec_to_form(pe2_bad_sig), native_lock_crypto()) == pe2_h &&
+    lock_entry_hash(codec_to_form(pe2_colon_collision), native_lock_crypto()) == pe2_h,
+    "bad-sig & colon-collision variants share identical unsigned entry_hash with valid pe2",
+  )
+  debug_assert(
+    h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2_bad_sig, pe2_col_a, pe2_col_b, pe2_colon_collision, pe2])),
+    "form::canonical dedup preserves valid pe2 after bad-sig & colon-colliding variants and extends to [pg0,pe1,pe2]",
   )
   debug_assert(h5.core.person_lock_kept_entries().length() == 3 && h5.ctrl.lock_gen() == gen_e1 + 1L, "advanced to len 3, lock_gen +1")
   debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "lagging [pg0,pe1] MUST NOT roll back [pg0,pe1,pe2]")
