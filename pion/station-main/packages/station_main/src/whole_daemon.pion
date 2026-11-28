@@ -3412,24 +3412,46 @@ fn encode_ws_proxy_frame(kind : Int, payload : Bytes) -> Bytes {
 /// `WholeCore::open_after_predecessor_gone` (`whole_agents.pion:807`).
 /// Prioritizes native `stillfail-runner` field `"runner"` (`station/native/runner/src/main.rs:376`),
 /// falling back to `"runnerPid"` / `"runner_pid"` for compatibility.
-/// R18: Strictly error-preserving variant of `discover_live_runners`:
-/// - Returns `Ok([])` ONLY when `<data>/run/runners` does not exist (`FsErr::NotFound`).
-/// - Returns `Err(...)` if `readdir` fails or any `.json` metadata file fails to read (non-`NotFound`) or parse,
-///   so `LiveRunnerManager::tick()` NEVER expires `Spawning` `rid:` stop markers after a failed scan!
-pub fn discover_live_runners_checked_with(
+pub struct RunnerScanResult {
+  pub runners : Array[station_drivers::RunnerInfo]
+  pub complete : Bool
+  pub error : Option[String]
+}
+
+/// R18/R19: Error-preserving runner directory scan that ALWAYS retains all valid live runners while
+/// tracking exact completeness via `realpath_fn` (`sys_realpath_checked` / `station_sys::realpath_err`):
+/// - `readdir` failure is treated as absent (`complete = true, runners = []`) ONLY when `realpath_fn(rdir)`
+///   confirms true `ENOENT` (`FsErr::NotFound`); if `rdir` exists (`Ok(_)`, e.g. `EACCES`) or `realpath`
+///   errors otherwise, returns `complete = false`.
+/// - Single `.json` read failure is treated as vanished ONLY when `realpath_fn(fpath)` confirms true `ENOENT`;
+///   if `fpath` still exists (`Ok(_)`, e.g. `EACCES`/`EMFILE`) or parse/`id` fails, marks `complete = false`
+///   and continues collecting all other valid runners!
+pub fn discover_live_runners_scan_with(
   ops_fs : station_ops::OpsFs,
   data : String,
   sep : String,
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
   readlink_fn : (String) -> Option[String],
   is_alive_fn : (Int) -> Bool,
   start_time_fn : (Int) -> Option[Int64],
-) -> Result[Array[station_drivers::RunnerInfo], String] {
+) -> RunnerScanResult {
   let out : Array[station_drivers::RunnerInfo] = []
+  let mut complete = true
+  let mut first_err : Option[String] = None
+  let mark_incomplete = fn(msg : String) -> Unit {
+    complete = false
+    if first_err is None {
+      first_err = Some(msg)
+    }
+  }
   let rdir = station_drivers::runners_dir(data, sep)
   let entries = match (ops_fs.readdir)(rdir) {
     Ok(list) => list
-    Err(station_ops::FsErr::NotFound) => return Ok(out)
-    Err(e) => return Err("readdir " + rdir + ": " + station_ops::fs_err_msg(e))
+    Err(e) => match realpath_fn(rdir) {
+      Err(station_ops::FsErr::NotFound) => return RunnerScanResult::{ runners: out, complete: true, error: None }
+      Ok(_) => return RunnerScanResult::{ runners: out, complete: false, error: Some("readdir " + rdir + " failed while dir exists: " + station_ops::fs_err_msg(e)) }
+      Err(re) => return RunnerScanResult::{ runners: out, complete: false, error: Some("readdir/realpath " + rdir + ": " + station_ops::fs_err_msg(re)) }
+    }
   }
   for i in 0..<entries.length() {
     let name = entries[i]
@@ -3439,16 +3461,31 @@ pub fn discover_live_runners_checked_with(
     let fpath = nodepath::join(sep, [rdir, name])
     let raw = match ops_fs.read_text(fpath) {
       Ok(s) => s
-      Err(station_ops::FsErr::NotFound) => continue
-      Err(e) => return Err("read " + fpath + ": " + station_ops::fs_err_msg(e))
+      Err(e) => match realpath_fn(fpath) {
+        Err(station_ops::FsErr::NotFound) => continue
+        Ok(_) => {
+          mark_incomplete("read " + fpath + " failed while file exists: " + station_ops::fs_err_msg(e))
+          continue
+        }
+        Err(re) => {
+          mark_incomplete("read/realpath " + fpath + ": " + station_ops::fs_err_msg(re))
+          continue
+        }
+      }
     }
     let j = match base_codec::json_parse(raw) {
       base_codec::JsonParseResult::Ok(v) => v
-      base_codec::JsonParseResult::Err(e) => return Err("parse " + fpath + ": " + e)
+      base_codec::JsonParseResult::Err(e) => {
+        mark_incomplete("parse " + fpath + ": " + e)
+        continue
+      }
     }
     let id = match base_codec::json_get(j, "id") {
       Some(base_codec::Json::Str(s)) => s
-      _ => return Err("missing id in " + fpath)
+      _ => {
+        mark_incomplete("missing id in " + fpath)
+        continue
+      }
     }
     let rpid = match base_codec::json_get(j, "runner") {
       Some(base_codec::Json::Num(n, _)) => n.to_int()
@@ -3533,18 +3570,19 @@ pub fn discover_live_runners_checked_with(
       out.push(info)
     }
   }
-  Ok(out)
+  RunnerScanResult::{ runners: out, complete: complete, error: first_err }
 }
 
-pub fn discover_live_runners_checked(
+pub fn discover_live_runners_scan(
   ops_fs : station_ops::OpsFs,
   data : String,
   sep : String,
-) -> Result[Array[station_drivers::RunnerInfo], String] {
-  discover_live_runners_checked_with(
+) -> RunnerScanResult {
+  discover_live_runners_scan_with(
     ops_fs,
     data,
     sep,
+    sys_realpath_checked,
     station_sys::readlink,
     station_ops::is_pid_alive,
     station_sys::proc_start_time_ms,
@@ -3552,10 +3590,7 @@ pub fn discover_live_runners_checked(
 }
 
 fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : String) -> Array[station_drivers::RunnerInfo] {
-  match discover_live_runners_checked(ops_fs, data, sep) {
-    Ok(list) => list
-    Err(_) => []
-  }
+  discover_live_runners_scan(ops_fs, data, sep).runners
 }
 
 fn find_crlf_crlf(b : Bytes) -> Int {

@@ -5640,49 +5640,49 @@ pub fn LiveRunnerManager::tick(
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
 
-  // 0b. R18 Step 1 & Step 2 (DISCOVER & PROMOTE FIRST, BEFORE ANY `rid:` EXPIRY SWEEP!):
-  // While ANY draining stop marker exists and primary store is open, run error-preserving
-  // `discover_live_runners_checked`. For every untracked live runner matching a stop marker
-  // (including `started_at <= before_ms + 30s` even if `wall_ms` is already past `+30s`!),
-  // immediately promote `rid:` -> exact `inst_id` and adopt into `draining` (`attach + TERM`).
+  // 0b. R18/R19 Step 1 & Step 2 (DISCOVER & PROMOTE FIRST, BEFORE ANY `rid:` EXPIRY SWEEP!):
+  // While ANY draining stop marker exists and primary store is open, run `discover_live_runners_scan`:
+  // - ALWAYS promote & adopt every valid matching runner in `scan.runners` (even when `scan.complete == false`!);
+  // - ONLY allow Step 3 to expire `rid:` markers when `scan.complete == true` (zero read/parse/permission errors).
   let mut clean_scan_ok = false
   if self.draining_stopping_ids.length() > 0 && core.store.require_open() is Ok(_) {
-    match discover_live_runners_checked(ctx.ops_fs, ctx.data, ctx.sep) {
-      Ok(late_runners) => {
-        clean_scan_ok = true
-        let late_cfg = live_config_raw(core, ctx.cfg_raw)
-        for lri in 0..<late_runners.length() {
-          let rinfo = late_runners[lri]
-          if rinfo.socket.length() > 0 && !self.has_runner_id_tracked(rinfo.id) {
-            let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
-            if self.is_draining_stop_target(iid, rinfo.id, rinfo.started_at) {
-              let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.started_at) {
-                Some(sk) => Some(sk)
-                None => match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
-                  Some(sk) => Some(sk)
-                  None => match core.agents.get_runner_launch(iid) {
-                    Ok(Some(rec)) => Some(rec.session_key)
-                    _ => None
-                  }
-                }
-              }
-              let prom_skey = match skey_opt {
-                Some(sk) => sk
-                None => ""
-              }
-              if self.promote_rid_stop_marker(iid, rinfo.id, rinfo.started_at, prom_skey) {
-                let _ = self.sync_handover_state_with_ctx(ctx)
-              }
-              match skey_opt {
-                Some(sk) => { let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms) }
-                None => ()
+    let scan = discover_live_runners_scan(ctx.ops_fs, ctx.data, ctx.sep)
+    clean_scan_ok = scan.complete
+    if !scan.complete {
+      let err_msg = match scan.error {
+        Some(e) => e
+        None => "incomplete runner scan"
+      }
+      ctx.log("[live-runner] stop-marker runner scan incomplete; deferring rid: expiry sweep: " + err_msg)
+    }
+    let late_cfg = live_config_raw(core, ctx.cfg_raw)
+    for lri in 0..<scan.runners.length() {
+      let rinfo = scan.runners[lri]
+      if rinfo.socket.length() > 0 && !self.has_runner_id_tracked(rinfo.id) {
+        let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
+        if self.is_draining_stop_target(iid, rinfo.id, rinfo.started_at) {
+          let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.started_at) {
+            Some(sk) => Some(sk)
+            None => match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+              Some(sk) => Some(sk)
+              None => match core.agents.get_runner_launch(iid) {
+                Ok(Some(rec)) => Some(rec.session_key)
+                _ => None
               }
             }
           }
+          let prom_skey = match skey_opt {
+            Some(sk) => sk
+            None => ""
+          }
+          if self.promote_rid_stop_marker(iid, rinfo.id, rinfo.started_at, prom_skey) {
+            let _ = self.sync_handover_state_with_ctx(ctx)
+          }
+          match skey_opt {
+            Some(sk) => { let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms) }
+            None => ()
+          }
         }
-      }
-      Err(err) => {
-        ctx.log("[live-runner] stop-marker runner scan failed; deferring rid: expiry sweep: " + err)
       }
     }
   }

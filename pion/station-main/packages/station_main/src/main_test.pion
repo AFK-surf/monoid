@@ -2150,21 +2150,29 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   )
   assert_true(!mgr8.has_pending_draining_stop_for_session("s-r18-b"), "R18-B: session unblocked after clean scan expiry")
 
-  // 8. R18 `discover_live_runners_checked_with`: `NotFound` -> `Ok([])`, corrupt JSON -> `Err(...)`!
+  // 8. R18/R19 `discover_live_runners_scan_with`:
+  // - Missing runners dir (`ENOENT`) -> `complete == true && runners == []`
+  // - 1 corrupt `.json` + 1 valid `.json` -> `runners.length() == 1` AND `complete == false`!
   let no_rl = fn(_p : String) -> Option[String] { None }
   let all_alive = fn(_pid : Int) -> Bool { true }
   let no_start = fn(_pid : Int) -> Option[Int64] { None }
-  assert_true(
-    discover_live_runners_checked_with(ops, "/no-such-data", "/", no_rl, all_alive, no_start).is_ok(),
-    "missing runners dir is Ok([])",
-  )
+  let mem_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
+    match (ops.stat)(p) {
+      Ok(_) => Ok(p)
+      Err(e) => Err(e)
+    }
+  }
+  let missing_scan = discover_live_runners_scan_with(ops, "/no-such-data", "/", mem_realpath, no_rl, all_alive, no_start)
+  assert_true(missing_scan.complete && missing_scan.runners.length() == 0, "missing runners dir is complete & empty")
   let bad_dir = "/r18-bad/run/runners"
   assert_true((ops.mkdir_p)(bad_dir).is_ok(), "mkdir bad runners dir")
   assert_true((ops.write_bytes)(bad_dir + "/corrupt.json", "{not-json".to_bytes(), 384).is_ok(), "write corrupt json")
-  assert_true(
-    discover_live_runners_checked_with(ops, "/r18-bad", "/", no_rl, all_alive, no_start).is_err(),
-    "corrupt runner metadata MUST return Err",
-  )
+  let good_json = "{\"id\":\"r-good-19\",\"runner\":4321,\"pid\":4322,\"pgid\":4322,\"startedAt\":1700000105000,\"socket\":\"/tmp/r-good-19.sock\"}"
+  assert_true((ops.write_bytes)(bad_dir + "/good.json", good_json.to_bytes(), 384).is_ok(), "write valid json")
+  let partial_scan = discover_live_runners_scan_with(ops, "/r18-bad", "/", mem_realpath, no_rl, all_alive, no_start)
+  assert_true(!partial_scan.complete, "corrupt runner metadata MUST mark scan incomplete")
+  assert_true(partial_scan.runners.length() == 1, "valid runner MUST still be returned alongside corrupt file")
+  assert_str_eq(partial_scan.runners[0].id, "r-good-19")
 }
 
 test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {
