@@ -6977,7 +6977,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   st.live_runners.import_handover_state_json(lr_j)
                   // R12 P1-1: Keep `whole-live-runners.json` on disk until ALL pending_end_turns
                   // and draining_stopping_ids are truly drained (unlink only when empty).
-                  st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+                  let _ = st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
                 }
                 base_codec::JsonParseResult::Err(e) => ctx.log("[live-runner] failed to parse " + lr_ho_path + ": " + e)
               }
@@ -7194,6 +7194,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     None => ()
                   }
                 }
+              }
+              // R13 P1-2: Prune any draining/stopping markers whose runners are already gone from disk,
+              // syncing/unlinking `whole-live-runners.json` once all orphaned markers are cleared.
+              if st.live_runners.prune_orphaned_draining_stops(live_runners) {
+                let _ = st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
               }
               ctx.mark_role_ready()
               true
@@ -8466,7 +8471,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
               st.live_runners.set_handover_state_path(lr_ho_path)
               st.live_runners.import_handover_state_json(lr_j)
-              st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+              let _ = st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
             }
             None => ()
           }
@@ -8509,7 +8514,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     ctx.carry(base_codec::json_obj([("liveRunnerHandover", lr_j)]))
                     let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
                     st.live_runners.set_handover_state_path(lr_ho_path)
-                    st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+                    match st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) }) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
                   }
                   st.connects.stop()
                   if st.replica.kept_log.entries.length() > 0 {

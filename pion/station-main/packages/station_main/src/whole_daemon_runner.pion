@@ -1830,52 +1830,162 @@ pub fn LiveRunnerManager::set_handover_state_path(self : LiveRunnerManager, path
   }
 }
 
-/// R12 P1-1: Atomically persists `whole-live-runners.json` while `pending_end_turns` or
+/// R12/R13 P1-1: Atomically persists `whole-live-runners.json` while `pending_end_turns` or
 /// `draining_stopping_ids` is non-empty, and unlinks the file ONLY once BOTH are truly drained.
+/// Returns `Err(reason)` if disk persistence fails so `on_handover_start` never silently ignores it.
 pub fn LiveRunnerManager::sync_handover_state_file(
   self : LiveRunnerManager,
   ops_fs : station_ops::OpsFs,
   pid : Int,
   sep : String,
   log_fn~ : (String) -> Unit = fn(_m : String) -> Unit {},
-) -> Unit {
+) -> Result[Unit, String] {
   match self.handover_state_path {
     Some(p) => {
       if self.has_handover_carry_state() {
         let body = base_codec::json_stringify(self.export_handover_state_json())
         match station_ops::write_private(ops_fs, p, body.to_bytes(), pid, 1, sep=sep) {
-          Ok(_) => ()
-          Err(e) => log_fn("[live-runner] failed to persist handover state to " + p + ": " + station_ops::fs_err_msg(e))
+          Ok(_) => Ok(())
+          Err(e) => {
+            let msg = "failed to persist handover state to " + p + ": " + station_ops::fs_err_msg(e)
+            log_fn("[live-runner] " + msg)
+            Err(msg)
+          }
         }
       } else {
         match (ops_fs.remove)(p) {
-          Ok(_) => ()
-          Err(station_ops::FsErr::NotFound) => ()
-          Err(e) => log_fn("[live-runner] failed to remove drained handover state " + p + ": " + station_ops::fs_err_msg(e))
+          Ok(_) => Ok(())
+          Err(station_ops::FsErr::NotFound) => Ok(())
+          Err(e) => {
+            let msg = "failed to remove drained handover state " + p + ": " + station_ops::fs_err_msg(e)
+            log_fn("[live-runner] " + msg)
+            Err(msg)
+          }
         }
+      }
+    }
+    None => Ok(())
+  }
+}
+
+fn LiveRunnerManager::sync_handover_state_with_ctx(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+) -> Result[Unit, String] {
+  self.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+}
+
+fn parse_i64_decimal(s : String) -> Option[Int64] {
+  if s.length() == 0 {
+    return None
+  }
+  let bs = s.to_bytes()
+  let mut acc : Int64 = 0L
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    if b < 48 || b > 57 {
+      return None
+    }
+    acc = acc * 10L + (b - 48).to_int64()
+  }
+  Some(acc)
+}
+
+fn match_rid_stop_key(key : String, runner_id : String, started_at : Int64) -> Bool {
+  if runner_id.length() == 0 {
+    return false
+  }
+  let prefix = "rid:" + runner_id + "@"
+  if !key.starts_with(prefix) {
+    return false
+  }
+  let suffix = key.slice(prefix.length(), key.length())
+  match parse_i64_decimal(suffix) {
+    Some(before_ms) => started_at <= before_ms + 10000L
+    None => false
+  }
+}
+
+/// R13 P1-2: Read-only check whether `(inst_id, runner_id, started_at)` matches a predecessor
+/// draining/stopping runner (exact `inst_id`, or `Spawning`-only `"rid:<rid>@<before_ms>"` with
+/// `started_at <= before_ms + 10s`). Does NOT remove the marker; removal happens only on confirmed
+/// exit (`finish_draining`) or startup orphan prune (`prune_orphaned_draining_stops`).
+pub fn LiveRunnerManager::is_draining_stop_target(
+  self : LiveRunnerManager,
+  inst_id : String,
+  runner_id : String,
+  started_at : Int64,
+) -> Bool {
+  if self.draining_stopping_ids.contains(inst_id) {
+    return true
+  }
+  if runner_id.length() > 0 {
+    let keys = self.draining_stopping_ids.keys()
+    for i in 0..<keys.length() {
+      if match_rid_stop_key(keys[i], runner_id, started_at) {
+        return true
+      }
+    }
+  }
+  false
+}
+
+/// R13 P1-2: Removes any draining/stopping markers matching `inst_id_opt` or `"rid:<runner_id>@..."`.
+pub fn LiveRunnerManager::clear_draining_stop_target(
+  self : LiveRunnerManager,
+  inst_id_opt : Option[String],
+  runner_id : String,
+) -> Bool {
+  let mut removed = false
+  match inst_id_opt {
+    Some(iid) => {
+      if self.draining_stopping_ids.contains(iid) {
+        self.draining_stopping_ids.remove(iid)
+        removed = true
       }
     }
     None => ()
   }
-}
-
-/// R12 P1-2: Checks whether `(inst_id, runner_id)` matches a predecessor draining/stopping runner
-/// (supporting both full `instance_id` and startup-phase `"rid:" + runner_id`), removing both keys on match.
-pub fn LiveRunnerManager::match_and_consume_draining_stop(
-  self : LiveRunnerManager,
-  inst_id : String,
-  runner_id : String,
-) -> Bool {
-  let rid_key = "rid:" + runner_id
-  let hit = self.draining_stopping_ids.contains(inst_id)
-  || (runner_id.length() > 0 && self.draining_stopping_ids.contains(rid_key))
-  if hit {
-    self.draining_stopping_ids.remove(inst_id)
-    if runner_id.length() > 0 {
-      self.draining_stopping_ids.remove(rid_key)
+  if runner_id.length() > 0 {
+    let prefix = "rid:" + runner_id + "@"
+    let legacy_key = "rid:" + runner_id
+    let keys = self.draining_stopping_ids.keys()
+    for i in 0..<keys.length() {
+      let k = keys[i]
+      if k == legacy_key || k.starts_with(prefix) {
+        self.draining_stopping_ids.remove(k)
+        removed = true
+      }
     }
   }
-  hit
+  removed
+}
+
+/// R13 P1-2: After startup `discover_live_runners` + `adopt_live_runner` scan, removes any
+/// draining/stopping markers whose runners are no longer present in `live_runners` on disk.
+pub fn LiveRunnerManager::prune_orphaned_draining_stops(
+  self : LiveRunnerManager,
+  live_runners : Array[station_drivers::RunnerInfo],
+) -> Bool {
+  let keys = self.draining_stopping_ids.keys()
+  let mut removed = false
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    let mut still_live = false
+    for j in 0..<live_runners.length() {
+      let r = live_runners[j]
+      let iid = station_whole::WholeAgents::runner_instance_id(r.id, r.runner_pid, r.started_at)
+      if k == iid || match_rid_stop_key(k, r.id, r.started_at) {
+        still_live = true
+        break
+      }
+    }
+    if !still_live {
+      self.draining_stopping_ids.remove(k)
+      removed = true
+    }
+  }
+  removed
 }
 
 /// Returns true if any old runner instance for `session_key` is still draining/stopping.
@@ -1923,7 +2033,11 @@ fn LiveRunnerManager::move_to_draining(self : LiveRunnerManager, skey : String, 
   self.draining.set(sess.conn_id, sess)
 }
 
-fn LiveRunnerManager::preserve_pending_end_turn(self : LiveRunnerManager, sess : LiveRunnerSession) -> Unit {
+fn LiveRunnerManager::preserve_pending_end_turn(
+  self : LiveRunnerManager,
+  sess : LiveRunnerSession,
+  ctx_opt~ : Option[DaemonCtx] = None,
+) -> Unit {
   match sess.pending_end_turn {
     Some(pend) => {
       let launch_inst = match live_runner_info_of(sess.phase) {
@@ -1944,18 +2058,42 @@ fn LiveRunnerManager::preserve_pending_end_turn(self : LiveRunnerManager, sess :
         },
       )
       sess.pending_end_turn = None
+      match ctx_opt {
+        Some(ctx) => { let _ = self.sync_handover_state_with_ctx(ctx) }
+        None => ()
+      }
     }
     None => ()
   }
 }
 
-fn LiveRunnerManager::finish_draining(self : LiveRunnerManager, conn_id : Int) -> Unit {
+fn LiveRunnerManager::finish_draining(
+  self : LiveRunnerManager,
+  conn_id : Int,
+  ctx_opt~ : Option[DaemonCtx] = None,
+) -> Unit {
+  let mut cleared_stop = false
   match self.draining.get(conn_id) {
-    Some(ds) => self.preserve_pending_end_turn(ds)
+    Some(ds) => {
+      self.preserve_pending_end_turn(ds, ctx_opt=ctx_opt)
+      let inst_opt = match live_runner_info_of(ds.phase) {
+        Some(info) => Some(station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at))
+        None => ds.adopted_instance_id
+      }
+      if self.clear_draining_stop_target(inst_opt, ds.runner_id) {
+        cleared_stop = true
+      }
+    }
     None => ()
   }
   self.draining.remove(conn_id)
   self.by_conn_id.remove(conn_id)
+  if cleared_stop {
+    match ctx_opt {
+      Some(ctx) => { let _ = self.sync_handover_state_with_ctx(ctx) }
+      None => ()
+    }
+  }
 }
 
 /// R7/R8 P1-3: Single real-time policy + `identity_verified` + `(profile_id, runtime_str, cwd)` check
@@ -2551,7 +2689,7 @@ fn live_runner_commit_end_turn(
             }
             sess.phase = LiveRunnerPhase::Exited
             if mgr.draining.get(sess.conn_id) is Some(_) {
-              mgr.finish_draining(sess.conn_id)
+              mgr.finish_draining(sess.conn_id, ctx_opt=Some(ctx))
             } else {
               mgr.by_conn_id.remove(sess.conn_id)
               let a_done = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
@@ -2701,7 +2839,7 @@ fn live_runner_commit_manager_pending_end_turn(
       }) {
         Ok(_) => {
           mgr.pending_end_turns.remove(mpend.session_key)
-          mgr.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
+          let _ = mgr.sync_handover_state_with_ctx(ctx)
           match mpend.launch_instance_id {
             Some(inst_id) => core.agents.delete_runner_launch(inst_id)
             None => ()
@@ -3334,9 +3472,9 @@ pub fn LiveRunnerManager::adopt_live_runner(
     Err(_) => None
   }
   let mut unauthorized_stop = false
-  if self.match_and_consume_draining_stop(inst_id, rinfo.id) {
-    self.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
-    ctx.log("[live-runner] adopt runner " + inst_id + " (rid=" + rinfo.id + ") was draining/stopping on predecessor; continuing stop via socket")
+  if self.is_draining_stop_target(inst_id, rinfo.id, rinfo.started_at) {
+    // R13 P1-2: Do NOT clear the marker yet — keep it persisted until confirmed exit in `finish_draining`!
+    ctx.log("[live-runner] adopt runner " + inst_id + " (rid=" + rinfo.id + ") matched predecessor stop marker; continuing stop via socket")
     unauthorized_stop = true
   }
   let mut identity_verified = false
@@ -3801,6 +3939,7 @@ fn LiveRunnerManager::dispatch_prompt(
             },
           },
         )
+        let _ = self.sync_handover_state_with_ctx(ctx)
       }
     }
     match tid_opt {
@@ -4323,7 +4462,7 @@ pub fn LiveRunnerManager::handle_sys_event(
               ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
               sess.phase = LiveRunnerPhase::Exited
               if is_draining {
-                self.finish_draining(cid)
+                self.finish_draining(cid, ctx_opt=Some(ctx))
               } else {
                 self.by_conn_id.remove(sess.conn_id)
                 let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -4333,7 +4472,7 @@ pub fn LiveRunnerManager::handle_sys_event(
                 live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
               }
               if is_draining {
-                self.preserve_pending_end_turn(sess)
+                self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
               }
             }
           }
@@ -4398,8 +4537,8 @@ pub fn LiveRunnerManager::handle_role_done(
               live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket write failed: " + e.message), now_ms, wall_ms)
             }
             if is_draining {
-              self.finish_draining(conn_id)
-              self.preserve_pending_end_turn(sess)
+              self.finish_draining(conn_id, ctx_opt=Some(ctx))
+              self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
             } else {
               self.by_conn_id.remove(conn_id)
               let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -4503,8 +4642,8 @@ pub fn LiveRunnerManager::handle_role_done(
                   live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket connect failed: " + e.message), now_ms, wall_ms)
                 }
                 if is_draining {
-                  self.finish_draining(conn_id)
-                  self.preserve_pending_end_turn(sess)
+                  self.finish_draining(conn_id, ctx_opt=Some(ctx))
+                  self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
                 } else {
                   self.by_conn_id.remove(conn_id)
                   let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -4521,7 +4660,7 @@ pub fn LiveRunnerManager::handle_role_done(
                 }
                 sess.phase = LiveRunnerPhase::Exited
                 if is_draining {
-                  self.finish_draining(conn_id)
+                  self.finish_draining(conn_id, ctx_opt=Some(ctx))
                 } else {
                   self.by_conn_id.remove(conn_id)
                 }
@@ -4552,8 +4691,8 @@ pub fn LiveRunnerManager::handle_role_done(
               live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket closed unexpectedly"), now_ms, wall_ms)
             }
             if is_draining {
-              self.finish_draining(conn_id)
-              self.preserve_pending_end_turn(sess)
+              self.finish_draining(conn_id, ctx_opt=Some(ctx))
+              self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
             } else {
               self.by_conn_id.remove(conn_id)
               let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -4931,7 +5070,7 @@ pub fn LiveRunnerManager::handle_role_done(
                   live_runner_close_sock(ctx, conn_id, cur_sock)
                   sess.phase = LiveRunnerPhase::Exited
                   if is_draining {
-                    self.finish_draining(conn_id)
+                    self.finish_draining(conn_id, ctx_opt=Some(ctx))
                   } else {
                     self.by_conn_id.remove(conn_id)
                     let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -5014,8 +5153,8 @@ pub fn LiveRunnerManager::handle_role_done(
             live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket read error"), now_ms, wall_ms)
           }
           if is_draining {
-            self.finish_draining(conn_id)
-            self.preserve_pending_end_turn(sess)
+            self.finish_draining(conn_id, ctx_opt=Some(ctx))
+            self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
           } else {
             self.by_conn_id.remove(conn_id)
             let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
@@ -5189,7 +5328,7 @@ pub fn LiveRunnerManager::tick(
               live_runner_close_sock(ctx, cid, sock_id)
               safe_kill_runner_info(info)
               dsess.phase = LiveRunnerPhase::Exited
-              self.finish_draining(cid)
+              self.finish_draining(cid, ctx_opt=Some(ctx))
               match core.agents.hub.actors.get(dsess.session_key) {
                 Some(actor) => actor.has_process = false
                 None => ()
@@ -5200,7 +5339,7 @@ pub fn LiveRunnerManager::tick(
             live_runner_close_sock(ctx, cid, sock_id)
             safe_kill_runner_info(info)
             dsess.phase = LiveRunnerPhase::Exited
-            self.finish_draining(cid)
+            self.finish_draining(cid, ctx_opt=Some(ctx))
             match core.agents.hub.actors.get(dsess.session_key) {
               Some(actor) => actor.has_process = false
               None => ()
@@ -5217,10 +5356,10 @@ pub fn LiveRunnerManager::tick(
           if dsess.current_turn_id is Some(_) {
             live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
           }
-          self.finish_draining(cid)
+          self.finish_draining(cid, ctx_opt=Some(ctx))
         }
       }
-      LiveRunnerPhase::Exited => self.finish_draining(cid)
+      LiveRunnerPhase::Exited => self.finish_draining(cid, ctx_opt=Some(ctx))
       _ => ()
     }
   }
@@ -5532,6 +5671,9 @@ pub fn LiveRunnerManager::prepare_handover(
     }
   }
   let record_stopping_ids = fn(s : LiveRunnerSession) -> Unit {
+    // R13 P1-2: When exact `instance_id` is known (`RunnerInfo` or `adopted_instance_id`),
+    // record ONLY that exact instance ID (NEVER a cross-instance `rid:` key).
+    // Record `"rid:<runner_id>@<wall_ms>"` ONLY for startup-phase `Spawning` sessions lacking `RunnerInfo`.
     match live_runner_info_of(s.phase) {
       Some(info) => {
         let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
@@ -5539,11 +5681,10 @@ pub fn LiveRunnerManager::prepare_handover(
       }
       None => match s.adopted_instance_id {
         Some(iid) => self.draining_stopping_ids.set(iid, true)
-        None => ()
+        None => if s.runner_id.length() > 0 {
+          self.draining_stopping_ids.set("rid:" + s.runner_id + "@" + wall_ms.to_string(), true)
+        }
       }
-    }
-    if s.runner_id.length() > 0 {
-      self.draining_stopping_ids.set("rid:" + s.runner_id, true)
     }
   }
   let dcids = self.draining.keys()
@@ -5554,7 +5695,7 @@ pub fn LiveRunnerManager::prepare_handover(
           Some(pend) => {
             live_runner_commit_end_turn(self, ctx, core, ds, pend)
             if ds.pending_end_turn is Some(_) {
-              self.preserve_pending_end_turn(ds)
+              self.preserve_pending_end_turn(ds, ctx_opt=Some(ctx))
             }
           }
           None => ()
@@ -5576,7 +5717,7 @@ pub fn LiveRunnerManager::prepare_handover(
           Some(pend) => {
             live_runner_commit_end_turn(self, ctx, core, sess, pend)
             if sess.pending_end_turn is Some(_) {
-              self.preserve_pending_end_turn(sess)
+              self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
             }
           }
           None => ()

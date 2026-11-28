@@ -1924,15 +1924,15 @@ test "W17C-1 R11 LiveRunnerManager handover carry state round-trip (pending_end_
   }
 }
 
-test "W17C-1 R12 whole-live-runners.json persists across crash/restart until drained & Spawning rid: stop match" {
+test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until exit & time-bounded Spawning rid: stop + orphan prune" {
   let mem = station_ops::MemFs::new()
   let ops = mem.ops()
   let ho_file = "/run/whole-live-runners.json"
 
-  // 1. Predecessor writes `whole-live-runners.json` containing uncommitted endTurn + Spawning `rid:` stop id
+  // 1. Predecessor writes `whole-live-runners.json` containing uncommitted endTurn + Spawning time-bounded `rid:<id>@<before_ms>`
   let mgr1 = LiveRunnerManager::new()
   mgr1.set_handover_state_path(ho_file)
-  mgr1.draining_stopping_ids.set("rid:r-spawn-r12", true)
+  mgr1.draining_stopping_ids.set("rid:r-spawn-r13@1700000010000", true)
   mgr1.pending_end_turns.set(
     "s-r12",
     ManagerPendingEndTurn::{
@@ -1958,10 +1958,10 @@ test "W17C-1 R12 whole-live-runners.json persists across crash/restart until dra
       },
     },
   )
-  mgr1.sync_handover_state_file(ops, 1001, "/")
-  assert_true(ops.read_text(ho_file).is_ok(), "handover state file must be written")
+  assert_true(mgr1.sync_handover_state_file(ops, 1001, "/").is_ok(), "handover state file must be written")
+  assert_true(ops.read_text(ho_file).is_ok(), "handover state file exists on disk")
 
-  // 2. Successor 1 loads file, SQLite transiently fails -> file MUST remain on disk (NEVER unlinked early!)
+  // 2. Successor 1 loads file, adopts stop target (READ-ONLY check -> marker & file MUST stay on disk before Exit!)
   let mgr2 = LiveRunnerManager::new()
   mgr2.set_handover_state_path(ho_file)
   match ops.read_text(ho_file) {
@@ -1971,10 +1971,21 @@ test "W17C-1 R12 whole-live-runners.json persists across crash/restart until dra
     }
     Err(_) => panic("missing handover state file for successor 1")
   }
-  mgr2.sync_handover_state_file(ops, 1002, "/")
-  assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk while pending_end_turns/draining non-empty")
+  // Matches runner started within handover window (<= before_ms + 10s), rejects newer replacement (> before_ms + 10s)!
+  assert_true(
+    mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000015000", "r-spawn-r13", 1700000015000L),
+    "adopt must match Spawning rid@before_ms within 10s window",
+  )
+  assert_true(
+    !mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000025000", "r-spawn-r13", 1700000025000L),
+    "newer replacement runner after handover window must NOT be killed by Spawning rid@before_ms",
+  )
+  // Because `is_draining_stop_target` is read-only, if successor 1 crashes before `attach/TERM/Exit`,
+  // the marker and file are STILL intact on disk!
+  assert_true(mgr2.sync_handover_state_file(ops, 1002, "/").is_ok(), "sync keeps file on disk")
+  assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk before runner Exit")
 
-  // 3. Successor 2 restarts from disk, matches Spawning `rid:` stop id on adopt, and drains pending_end_turns
+  // 3. Successor 2 restarts from disk, STILL matches the stop target, then clears ONLY on confirmed exit!
   let mgr3 = LiveRunnerManager::new()
   mgr3.set_handover_state_path(ho_file)
   match ops.read_text(ho_file) {
@@ -1984,20 +1995,31 @@ test "W17C-1 R12 whole-live-runners.json persists across crash/restart until dra
     }
     Err(_) => panic("missing handover state file for successor 2")
   }
-  // Spawning runner only knew `runner_id = "r-spawn-r12"` before handover; adopt matches via `"rid:" + rinfo.id`!
   assert_true(
-    mgr3.match_and_consume_draining_stop("r-spawn-r12:9999:1700000099000", "r-spawn-r12"),
-    "adopt must match Spawning rid: stop id",
+    mgr3.is_draining_stop_target("r-spawn-r13:9999:1700000015000", "r-spawn-r13", 1700000015000L),
+    "successor 2 after crash before Exit must still match stop marker",
   )
+  // Confirmed exit clears the marker; pending_end_turns still uncommitted -> file still exists!
   assert_true(
-    !mgr3.match_and_consume_draining_stop("r-spawn-r12:9999:1700000099000", "r-spawn-r12"),
-    "consumed rid: stop id must not match twice",
+    mgr3.clear_draining_stop_target(Some("r-spawn-r13:9999:1700000015000"), "r-spawn-r13"),
+    "confirmed exit clears stop marker",
   )
-  mgr3.sync_handover_state_file(ops, 1003, "/")
-  // Still has pending_end_turns -> file must STILL exist!
+  assert_true(mgr3.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after exit")
   assert_true(ops.read_text(ho_file).is_ok(), "file must remain while pending_end_turns still uncommitted")
   // Once pending_end_turns is committed & removed -> file is finally unlinked!
   mgr3.pending_end_turns.remove("s-r12")
-  mgr3.sync_handover_state_file(ops, 1003, "/")
+  assert_true(mgr3.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after drain")
   assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file must be unlinked once truly drained")
+
+  // 4. Startup orphan prune: when old runner already exited before discovery, `prune_orphaned_draining_stops([])`
+  // removes stale markers so a replacement runner for the same session is NEVER killed!
+  let mgr4 = LiveRunnerManager::new()
+  mgr4.set_handover_state_path(ho_file)
+  mgr4.draining_stopping_ids.set("r-old:5000:1700000001000", true)
+  mgr4.draining_stopping_ids.set("rid:r-gone@1700000001000", true)
+  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write orphan markers")
+  assert_true(mgr4.prune_orphaned_draining_stops([]), "orphan prune removes markers absent from live_runners")
+  assert_true(!mgr4.has_handover_carry_state(), "all orphaned markers pruned")
+  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after orphan prune")
+  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after orphan prune")
 }
