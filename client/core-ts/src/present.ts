@@ -555,7 +555,7 @@ export function rowStateLine(row: J, cards = true, alreadySaid: (agent: J) => bo
 export function openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {
   const agents: J[] = arr(get(row, "agents")) ?? [];
   const stated = { ...row, unread: false, agents: agents.map((a: J) => agentStated(a)) };
-  const shown = row.card !== undefined || row.decision !== undefined ? decisions.presentRow(stated) : stated;
+  const shown = get(row, "card") !== undefined || get(row, "decision") !== undefined ? decisions.presentRow(stated) : stated;
   const line = rowStateLine(shown);
   return { mark: rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
 }

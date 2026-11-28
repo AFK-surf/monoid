@@ -14,7 +14,7 @@ type J = any;
 
 /// As #openedState made it before: every agent presented whole, every row through presentRow.
 function was(row: J): { mark: string | null; text: string | null; lead: string | null } {
-  const agents: J[] = Array.isArray(row.agents) ? row.agents : [];
+  const agents: J[] = Array.isArray(row?.agents) ? row.agents : [];
   const shown = decisions.presentRow({ ...row, unread: false, agents: agents.map((a: J) => present.session(a)) });
   const line = present.rowStateLine(shown);
   return { mark: present.rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
@@ -59,6 +59,8 @@ const STATES: [string, J][] = [
   ["all_done_about_elsewhere", row({ agents: [agent("c", { lastTurn: ended({ ending: "final", about: { thread: 9, seq: 1 } }) })] })],
   ["mixed_agents", row({ agents: [agent("a", { lastTurn: ended({ ending: "final" }) }), agent("b", { lastTurn: ended({ outcome: "failed" }) }), agent("c", { process: "running" })] })],
   ["two_done_one_waiting", row({ agents: [agent("a", { lastTurn: ended({ ending: "final" }) }), agent("b", { lastTurn: ended({ ending: "waiting", waitFor: "review" }) })] })],
+  ["agents_not_all_objects", row({ agents: [null, "bad", agent("c", { process: "running" })] })],
+  ["card_null_need_not_a_need", row({ card: null, need: "confirm" })],
   ["agent_with_stale_shown_fields", row({ agents: [agent("c", { lastTurn: ended({ ending: "final" }), statusText: "旧的", mark: "run", tone: "bad", badgeText: "x" })] })],
 ];
 
@@ -89,4 +91,9 @@ test("a_chat_opened_is_read_never_written", () => {
     present.openedState(r);
     assert.deepEqual(r, frozen, name);
   }
+});
+
+test("a_chat_opened_given_no_record_stands_nowhere", () => {
+  for (const r of [null, undefined, {}]) assert.deepEqual(present.openedState(r), { mark: null, text: null, lead: null }, String(r));
+  assert.deepEqual(present.openedState({}), was({}));
 });

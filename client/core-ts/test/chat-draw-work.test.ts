@@ -514,20 +514,25 @@ test("a_chat_leading_mostly_archived_chats_opened_cold_again_and_again_takes_wha
   const took: number[] = [];
   const made: number[] = [];
   const opened: number[] = [];
-  for (let i = 0; i < 9; i++) {
-    const { w, t } = await ledRig((c) => c.subscribe(1, chatTopic));
-    const u = ui();
-    // (timed by the real clock: the parts of making the chat, store.ts `chat.open`'s)
-    spentClock(() => performance.now());
-    const was = { ...spent };
-    const started = performance.now();
-    await t.read(u, 1);
-    took.push(performance.now() - started);
-    made.push((spent["chat.make"] ?? 0) - (was["chat.make"] ?? 0));
-    opened.push((spent["chat.opened"] ?? 0) - (was["chat.opened"] ?? 0));
-    assert.equal(u.value.opened.length, LED);
-    t.store.runner.shutdown();
-    w.store.runner.shutdown();
+  try {
+    for (let i = 0; i < 9; i++) {
+      const { w, t } = await ledRig((c) => c.subscribe(1, chatTopic));
+      const u = ui();
+      // (timed by the real clock: the parts of making the chat, store.ts `chat.open`'s)
+      spentClock(() => performance.now());
+      const was = { ...spent };
+      const started = performance.now();
+      await t.read(u, 1);
+      took.push(performance.now() - started);
+      made.push((spent["chat.make"] ?? 0) - (was["chat.make"] ?? 0));
+      opened.push((spent["chat.opened"] ?? 0) - (was["chat.opened"] ?? 0));
+      assert.equal(u.value.opened.length, LED);
+      t.store.runner.shutdown();
+      w.store.runner.shutdown();
+    }
+  } finally {
+    // (the clock as a core's tests have it: what a later test times is not this one's)
+    spentClock(() => 0);
   }
   const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const said = (xs: number[]) => `median ${median(xs).toFixed(2)} ms (${xs.map((x) => x.toFixed(1)).join(", ")})`;
