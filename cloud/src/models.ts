@@ -5,7 +5,7 @@
 // own (api.json, the provider its canonical id names): another provider's are what that one charges. Where models.dev
 // is known to be wrong, CORRECTIONS says what is right. Made at most once an hour in each of Cloudflare's locations
 // (the Cache API), and answered 304 to a station that has it already (its ETag).
-import { reply } from "./auth";
+import { etagMatches, reply } from "./auth";
 import type { Env } from "./env";
 
 const CANONICAL = "https://models.dev/models.json";
@@ -156,7 +156,10 @@ export function catalog(canonical: Json, providers: Json): Record<string, Facts>
 async function made(): Promise<Response> {
   const [canonical, providers] = await Promise.all([CANONICAL, PROVIDERS].map(async (url) => {
     const r = await fetch(url, { headers: { "user-agent": "stillfail-cloud" } });
-    if (!r.ok) throw new Error(`${url} answered ${r.status}`);
+    if (!r.ok) {
+      await r.body?.cancel().catch(() => {});
+      throw new Error(`${url} answered ${r.status}`);
+    }
     return r.json();
   }));
   const body = JSON.stringify({ models: catalog(canonical, providers) });
@@ -181,7 +184,10 @@ export async function serveModels(request: Request): Promise<Response> {
   let answer = await cache.match(KEPT);
   // Asked for by the catalog stations were told it changed to: one this place keeps from before is made afresh.
   const wanted = new URL(request.url).searchParams.get("v");
-  if (answer && wanted !== null && answer.headers.get("etag") !== wanted) answer = undefined;
+  if (answer && wanted !== null && answer.headers.get("etag") !== wanted) {
+    await answer.body?.cancel().catch(() => {});
+    answer = undefined;
+  }
   if (!answer) {
     try {
       answer = await made();
@@ -193,6 +199,9 @@ export async function serveModels(request: Request): Promise<Response> {
   const etag = answer.headers.get("etag");
   // Stations ask again on their own (every few hours, an app starting): no cache of theirs keeps it.
   const headers = { etag: etag ?? "", "cache-control": "no-cache" };
-  if (etag !== null && request.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers });
+  if (etag !== null && etagMatches(request.headers.get("if-none-match"), etag)) {
+    await answer.body?.cancel().catch(() => {});
+    return new Response(null, { status: 304, headers });
+  }
   return new Response(answer.body, { headers: { ...headers, "content-type": "application/json" } });
 }

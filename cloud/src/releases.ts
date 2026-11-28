@@ -69,7 +69,10 @@ export async function upstreamRelease(request: Request, upstream: string, file: 
   });
   if (!got.ok) return unavailable(file, got.error);
   const answer = got.value;
-  if (answer.status !== 200 && answer.status !== 206 && answer.status !== 416) return notFound();
+  if (answer.status !== 200 && answer.status !== 206 && answer.status !== 416) {
+    await answer.body?.cancel().catch(() => {});
+    return notFound();
+  }
   const headers = new Headers();
   for (const name of PASSED) {
     const value = answer.headers.get(name);

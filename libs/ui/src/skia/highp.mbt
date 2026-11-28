@@ -1,56 +1,51 @@
 // tiny-skia's high precision pipeline: 8 pixels at a time in floats, lane by lane as the
 // SIMD types compute them (src/wide: SSE's min, max and conversions; reciprocals exact).
-// Optimized with module-level scratch buffers, inlined blend stages (zero closures),
+// Optimized with per-blitter reusable scratch buffers (`HighPScratch`, zero global mutable state,
+// thread-safe and reentrant across concurrent draws), inlined blend stages (zero closures),
 // allocation-free bilinear/bicubic sampling, and direct scanline fast paths for integer-translate
 // nearest-neighbor pixmap blits (`Gather`).
-// Invariant: module-level scratch buffers (`highp_r`..`highp_wy`) rely on single-threaded,
-// non-reentrant execution of `highp_start_generic` (same as `lowp.mbt`). Lanes `>= p.tail` are
-// never stored to `dst` and no stage reads across lanes except `MaskU8`, which zeros `>= p.tail`.
+// Invariant: lanes `>= p.tail` are never stored to `dst` and no stage reads across lanes except
+// `MaskU8`, which zeros `>= p.tail`.
 
 ///|
-let highp_r : FixedArray[Float] = FixedArray::make(8, 0.0)
+priv struct HighPScratch {
+  r : FixedArray[Float]
+  g : FixedArray[Float]
+  b : FixedArray[Float]
+  a : FixedArray[Float]
+  dr : FixedArray[Float]
+  dg : FixedArray[Float]
+  db : FixedArray[Float]
+  da : FixedArray[Float]
+  mask_c : FixedArray[Float]
+  cx : FixedArray[Float]
+  cy : FixedArray[Float]
+  xs : FixedArray[Float]
+  ys : FixedArray[Float]
+  wx : FixedArray[Float]
+  wy : FixedArray[Float]
+}
 
 ///|
-let highp_g : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_b : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_a : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_dr : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_dg : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_db : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_da : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_mask_c : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_cx : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_cy : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_xs : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_ys : FixedArray[Float] = FixedArray::make(8, 0.0)
-
-///|
-let highp_wx : FixedArray[Float] = FixedArray::make(32, 0.0)
-
-///|
-let highp_wy : FixedArray[Float] = FixedArray::make(32, 0.0)
+fn HighPScratch::new() -> HighPScratch {
+  {
+    r: FixedArray::make(8, 0.0),
+    g: FixedArray::make(8, 0.0),
+    b: FixedArray::make(8, 0.0),
+    a: FixedArray::make(8, 0.0),
+    dr: FixedArray::make(8, 0.0),
+    dg: FixedArray::make(8, 0.0),
+    db: FixedArray::make(8, 0.0),
+    da: FixedArray::make(8, 0.0),
+    mask_c: FixedArray::make(8, 0.0),
+    cx: FixedArray::make(8, 0.0),
+    cy: FixedArray::make(8, 0.0),
+    xs: FixedArray::make(8, 0.0),
+    ys: FixedArray::make(8, 0.0),
+    wx: FixedArray::make(32, 0.0),
+    wy: FixedArray::make(32, 0.0),
+  }
+}
 
 ///|
 /// _mm_max_ps: a where a > b, else b.
@@ -143,6 +138,13 @@ priv struct HighP {
   dg : FixedArray[Float]
   db : FixedArray[Float]
   da : FixedArray[Float]
+  mask_c : FixedArray[Float]
+  cx : FixedArray[Float]
+  cy : FixedArray[Float]
+  xs : FixedArray[Float]
+  ys : FixedArray[Float]
+  wx : FixedArray[Float]
+  wy : FixedArray[Float]
   mut tail : Int
   mut dx : Int
   mut dy : Int
@@ -162,16 +164,24 @@ fn highp_start_generic(
   ctx : Context,
   src : Pixmap,
   dst : SubPixmap,
+  scratch : HighPScratch,
 ) -> Unit {
   let p : HighP = {
-    r: highp_r,
-    g: highp_g,
-    b: highp_b,
-    a: highp_a,
-    dr: highp_dr,
-    dg: highp_dg,
-    db: highp_db,
-    da: highp_da,
+    r: scratch.r,
+    g: scratch.g,
+    b: scratch.b,
+    a: scratch.a,
+    dr: scratch.dr,
+    dg: scratch.dg,
+    db: scratch.db,
+    da: scratch.da,
+    mask_c: scratch.mask_c,
+    cx: scratch.cx,
+    cy: scratch.cy,
+    xs: scratch.xs,
+    ys: scratch.ys,
+    wx: scratch.wx,
+    wy: scratch.wy,
     tail: 0,
     dx: 0,
     dy: 0,
@@ -499,11 +509,12 @@ fn highp_start(
   ctx : Context,
   src : Pixmap,
   dst : SubPixmap,
+  scratch : PipelineScratch,
 ) -> Unit {
   if highp_try_gather_translate(stages, rect, ctx, src, dst) {
     return
   }
-  highp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, src, dst)
+  highp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, src, dst, scratch.highp())
 }
 
 ///|
@@ -591,7 +602,7 @@ fn HighP::stage(self : HighP, s : Stage) -> Bool {
       let mut all_zero = true
       for i in 0..<8 {
         let v : Float = if i < p.tail { fi(p.mask_ctx.data[offset + i].to_int()) / 255.0 } else { 0.0 }
-        highp_mask_c[i] = v
+        p.mask_c[i] = v
         if v != 0.0 {
           all_zero = false
         }
@@ -600,7 +611,7 @@ fn HighP::stage(self : HighP, s : Stage) -> Bool {
         return false
       }
       for i in 0..<8 {
-        let ci = highp_mask_c[i]
+        let ci = p.mask_c[i]
         p.r[i] = p.r[i] * ci
         p.g[i] = p.g[i] * ci
         p.b[i] = p.b[i] * ci
@@ -1397,32 +1408,38 @@ fn bicubic_far(t : Float) -> Float {
 }
 
 ///|
-/// bilinear (n 2) and bicubic (n 4) sampling of the source, allocation-free via module scratch buffers.
+/// bilinear (n 2) and bicubic (n 4) sampling of the source, allocation-free via per-blitter scratch buffers.
 fn HighP::sampler(self : HighP, n : Int) -> Unit {
   let tail = self.tail
   let start : Float = if n == 2 { -0.5 } else { -1.5 }
+  let cx_buf = self.cx
+  let cy_buf = self.cy
+  let xs_buf = self.xs
+  let ys_buf = self.ys
+  let wx_buf = self.wx
+  let wy_buf = self.wy
   for i in 0..<tail {
     let cx = self.r[i]
     let cy = self.g[i]
-    highp_cx[i] = cx
-    highp_cy[i] = cy
-    highp_ys[i] = cy + start
+    cx_buf[i] = cx
+    cy_buf[i] = cy
+    ys_buf[i] = cy + start
     let fx = (cx + 0.5) - lfloor(cx + 0.5)
     let fy = (cy + 0.5) - lfloor(cy + 0.5)
     if n == 2 {
-      highp_wx[i] = 1.0 - fx
-      highp_wx[8 + i] = fx
-      highp_wy[i] = 1.0 - fy
-      highp_wy[8 + i] = fy
+      wx_buf[i] = 1.0 - fx
+      wx_buf[8 + i] = fx
+      wy_buf[i] = 1.0 - fy
+      wy_buf[8 + i] = fy
     } else {
-      highp_wx[i] = bicubic_far(1.0 - fx)
-      highp_wx[8 + i] = bicubic_near(1.0 - fx)
-      highp_wx[16 + i] = bicubic_near(fx)
-      highp_wx[24 + i] = bicubic_far(fx)
-      highp_wy[i] = bicubic_far(1.0 - fy)
-      highp_wy[8 + i] = bicubic_near(1.0 - fy)
-      highp_wy[16 + i] = bicubic_near(fy)
-      highp_wy[24 + i] = bicubic_far(fy)
+      wx_buf[i] = bicubic_far(1.0 - fx)
+      wx_buf[8 + i] = bicubic_near(1.0 - fx)
+      wx_buf[16 + i] = bicubic_near(fx)
+      wx_buf[24 + i] = bicubic_far(fx)
+      wy_buf[i] = bicubic_far(1.0 - fy)
+      wy_buf[8 + i] = bicubic_near(1.0 - fy)
+      wy_buf[16 + i] = bicubic_near(fy)
+      wy_buf[24 + i] = bicubic_far(fy)
     }
     self.r[i] = 0.0
     self.g[i] = 0.0
@@ -1444,26 +1461,26 @@ fn HighP::sampler(self : HighP, n : Int) -> Unit {
   for j in 0..<n {
     let wy_base = j * 8
     for i in 0..<tail {
-      highp_xs[i] = highp_cx[i] + start
+      xs_buf[i] = cx_buf[i] + start
     }
     for k in 0..<n {
       let wx_base = k * 8
       for i in 0..<tail {
-        let tx = tile(highp_xs[i], spread, wf, inv_w)
-        let ty = tile(highp_ys[i], spread, hf, inv_h)
+        let tx = tile(xs_buf[i], spread, wf, inv_w)
+        let ty = tile(ys_buf[i], spread, hf, inv_h)
         let x = smin(smax(tx, 0.0), w_ulp)
         let y = smin(smax(ty, 0.0), h_ulp)
         let o = (trunc_int(y) * pw + trunc_int(x)) * 4
-        let w = highp_wx[wx_base + i] * highp_wy[wy_base + i]
+        let w = wx_buf[wx_base + i] * wy_buf[wy_base + i]
         self.r[i] = w * (fi(sdata[o].to_int()) * inv255) + self.r[i]
         self.g[i] = w * (fi(sdata[o + 1].to_int()) * inv255) + self.g[i]
         self.b[i] = w * (fi(sdata[o + 2].to_int()) * inv255) + self.b[i]
         self.a[i] = w * (fi(sdata[o + 3].to_int()) * inv255) + self.a[i]
-        highp_xs[i] = highp_xs[i] + 1.0
+        xs_buf[i] = xs_buf[i] + 1.0
       }
     }
     for i in 0..<tail {
-      highp_ys[i] = highp_ys[i] + 1.0
+      ys_buf[i] = ys_buf[i] + 1.0
     }
   }
 }

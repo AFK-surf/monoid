@@ -1,0 +1,1108 @@
+// Markdown -> Slack Block Kit blocks (1:1 with `station/src/slack/markdown.ts`).
+//
+// Preserves Slack's native `{ type: "markdown", text }` for ordinary content
+// (headings, tables, quotes, code blocks, simple lists) while:
+// 1. Emitting native `rich_text` blocks with explicit `indent` and `offset` for
+//    ordered list groups that Slack's markdown block resets to `1.` (nested
+//    lists, loose blank lines between ordered items, mixed styles, or non-1
+//    starting numbers).
+// 2. Inserting a zero-width boundary inside `markdown` blocks where `*`/`**`/`***`
+//    touches an inline code span on the inside and a non-ASCII character on the
+//    outside, avoiding Slack's flanking bug that leaks literal asterisks.
+
+import "base_codec"
+
+let SLACK_MD_MAX_SPLIT_BLOCKS : Int = 40
+let SLACK_MD_MAX_INDENT : Int = 8
+let SLACK_MD_ZWSP : String = "\u{200B}"
+
+struct SlackInlineStyle {
+  bold : Bool
+  italic : Bool
+  strike : Bool
+  code : Bool
+}
+
+fn SlackInlineStyle::none() -> SlackInlineStyle {
+  SlackInlineStyle::{ bold: false, italic: false, strike: false, code: false }
+}
+
+fn SlackInlineStyle::is_empty(self : SlackInlineStyle) -> Bool {
+  !self.bold && !self.italic && !self.strike && !self.code
+}
+
+fn SlackInlineStyle::eq(self : SlackInlineStyle, other : SlackInlineStyle) -> Bool {
+  self.bold == other.bold && self.italic == other.italic && self.strike == other.strike && self.code == other.code
+}
+
+fn SlackInlineStyle::to_json(self : SlackInlineStyle) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  if self.bold {
+    fields.push(("bold", base_codec::json_bool(true)))
+  }
+  if self.italic {
+    fields.push(("italic", base_codec::json_bool(true)))
+  }
+  if self.strike {
+    fields.push(("strike", base_codec::json_bool(true)))
+  }
+  if self.code {
+    fields.push(("code", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+struct SlackListItem {
+  raw_indent : Int
+  is_ordered : Bool
+  start_num : Int
+  mut text : String
+}
+
+struct SlackFenceInfo {
+  ch : Int
+  len : Int
+  rest : String
+}
+
+fn smd_is_alnum(b : Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+fn smd_is_upper_or_digit(b : Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90)
+}
+
+fn smd_is_non_ascii_byte(b : Int) -> Bool {
+  b >= 128
+}
+
+fn smd_parse_fence(line : String) -> Option[SlackFenceInfo] {
+  let raw = line.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  let mut spaces = 0
+  while i < n && (raw[i].to_int() & 0xFF) == 32 && spaces < 4 {
+    i = i + 1
+    spaces = spaces + 1
+  }
+  if spaces > 3 || i >= n {
+    return None
+  }
+  let ch = raw[i].to_int() & 0xFF
+  if ch != 96 && ch != 126 {
+    return None
+  }
+  let mut len = 0
+  while i + len < n && (raw[i + len].to_int() & 0xFF) == ch {
+    len = len + 1
+  }
+  if len < 3 {
+    return None
+  }
+  Some(SlackFenceInfo::{ ch, len, rest: str_slice(line, i + len, n) })
+}
+
+fn smd_is_thematic_break(line : String) -> Bool {
+  let raw = line.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  let mut spaces = 0
+  while i < n && (raw[i].to_int() & 0xFF) == 32 && spaces < 4 {
+    i = i + 1
+    spaces = spaces + 1
+  }
+  if spaces > 3 || i >= n {
+    return false
+  }
+  let ch = raw[i].to_int() & 0xFF
+  if ch != 45 && ch != 42 && ch != 95 {
+    return false
+  }
+  let mut count = 0
+  while i < n {
+    let c = raw[i].to_int() & 0xFF
+    if c == ch {
+      count = count + 1
+    } else if c != 32 && c != 9 {
+      return false
+    }
+    i = i + 1
+  }
+  count >= 3
+}
+
+fn smd_measure_indent(line : String) -> (Int, Int) {
+  let raw = line.to_bytes()
+  let n = raw.length()
+  let mut raw_indent = 0
+  let mut pos = 0
+  while pos < n {
+    let c = raw[pos].to_int() & 0xFF
+    if c == 32 {
+      raw_indent = raw_indent + 1
+      pos = pos + 1
+    } else if c == 9 {
+      raw_indent = raw_indent + (4 - (raw_indent % 4))
+      pos = pos + 1
+    } else {
+      break
+    }
+  }
+  (raw_indent, pos)
+}
+
+fn smd_trim_leading_ws(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let c = raw[i].to_int() & 0xFF
+    if c == 32 || c == 9 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  str_slice(s, i, n)
+}
+
+fn smd_parse_list_line(line : String) -> Option[SlackListItem] {
+  if smd_is_thematic_break(line) {
+    return None
+  }
+  let (raw_indent, pos) = smd_measure_indent(line)
+  let raw = line.to_bytes()
+  let n = raw.length()
+  if pos >= n {
+    return None
+  }
+  let ch = raw[pos].to_int() & 0xFF
+  if ch == 45 || ch == 42 || ch == 43 {
+    if pos + 1 >= n {
+      return None
+    }
+    let next = raw[pos + 1].to_int() & 0xFF
+    if next != 32 && next != 9 {
+      return None
+    }
+    return Some(
+      SlackListItem::{
+        raw_indent,
+        is_ordered: false,
+        start_num: 1,
+        text: smd_trim_leading_ws(str_slice(line, pos + 2, n)),
+      },
+    )
+  }
+  if ch >= 48 && ch <= 57 {
+    let mut end = pos
+    let mut num = 0
+    while end < n && end - pos < 9 {
+      let d = raw[end].to_int() & 0xFF
+      if d < 48 || d > 57 {
+        break
+      }
+      num = num * 10 + (d - 48)
+      end = end + 1
+    }
+    if end + 1 < n {
+      let delim = raw[end].to_int() & 0xFF
+      let after = raw[end + 1].to_int() & 0xFF
+      if (delim == 46 || delim == 41) && (after == 32 || after == 9) {
+        return Some(
+          SlackListItem::{
+            raw_indent,
+            is_ordered: true,
+            start_num: num,
+            text: smd_trim_leading_ws(str_slice(line, end + 2, n)),
+          },
+        )
+      }
+    }
+  }
+  None
+}
+
+fn smd_find_closing_ticks(raw : Bytes, from : Int, ticks : Int) -> Int {
+  let n = raw.length()
+  let mut i = from
+  while i < n {
+    if (raw[i].to_int() & 0xFF) == 96 {
+      let mut run = 0
+      while i + run < n && (raw[i + run].to_int() & 0xFF) == 96 {
+        run = run + 1
+      }
+      if run == ticks {
+        return i
+      }
+      i = i + run
+    } else {
+      i = i + 1
+    }
+  }
+  -1
+}
+
+fn smd_has_star_run(raw : Bytes, from : Int, to : Int, want : Int) -> Bool {
+  let mut i = from
+  while i < to {
+    let c = raw[i].to_int() & 0xFF
+    if c == 92 {
+      i = i + 2
+      continue
+    }
+    if c == 96 {
+      let mut ticks = 0
+      while i + ticks < to && (raw[i + ticks].to_int() & 0xFF) == 96 {
+        ticks = ticks + 1
+      }
+      let close = smd_find_closing_ticks(raw, i + ticks, ticks)
+      if close >= 0 && close + ticks <= to {
+        i = close + ticks
+        continue
+      }
+      i = i + ticks
+      continue
+    }
+    if c == 42 {
+      let mut run = 0
+      while i + run < to && (raw[i + run].to_int() & 0xFF) == 42 {
+        run = run + 1
+      }
+      if run == want {
+        return true
+      }
+      i = i + run
+      continue
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn slack_fix_markdown_emphasis(md : String) -> String {
+  if !str_contains(md, "`") || !str_contains(md, "*") {
+    return md
+  }
+  let lines = str_split(md, "\n")
+  let mut fence_ch = 0
+  let mut fence_len = 0
+  let mut changed = false
+  let out_lines : Array[String] = []
+
+  for li in 0..<lines.length() {
+    let line = lines[li]
+    match smd_parse_fence(line) {
+      Some(f) => {
+        if fence_len == 0 {
+          if !(f.ch == 96 && str_contains(f.rest, "`")) {
+            fence_ch = f.ch
+            fence_len = f.len
+            out_lines.push(line)
+            continue
+          }
+        } else {
+          if f.ch == fence_ch && f.len >= fence_len && str_trim(f.rest) == "" {
+            fence_ch = 0
+            fence_len = 0
+          }
+          out_lines.push(line)
+          continue
+        }
+      }
+      None => {
+        if fence_len > 0 {
+          out_lines.push(line)
+          continue
+        }
+      }
+    }
+    if !str_contains(line, "`") || !str_contains(line, "*") {
+      out_lines.push(line)
+      continue
+    }
+    let raw = line.to_bytes()
+    let n = raw.length()
+    let sb = StringBuilder::new()
+    let mut i = 0
+    let mut line_changed = false
+    while i < n {
+      let c = raw[i].to_int() & 0xFF
+      if c == 92 {
+        let end = if i + 2 <= n { i + 2 } else { n }
+        sb.write_string(str_slice(line, i, end))
+        i = end
+        continue
+      }
+      if c == 96 {
+        let mut ticks = 0
+        while i + ticks < n && (raw[i + ticks].to_int() & 0xFF) == 96 {
+          ticks = ticks + 1
+        }
+        let close = smd_find_closing_ticks(raw, i + ticks, ticks)
+        if close >= 0 {
+          let span_end = close + ticks
+          let mut left_stars = 0
+          while left_stars < 3 && i - 1 - left_stars >= 0 && (raw[i - 1 - left_stars].to_int() & 0xFF) == 42 {
+            left_stars = left_stars + 1
+          }
+          let before_idx = i - 1 - left_stars
+          if left_stars >= 1 && left_stars <= 3 && before_idx >= 0 {
+            let b = raw[before_idx].to_int() & 0xFF
+            if b != 42 && b != 92 && smd_is_non_ascii_byte(b) && smd_has_star_run(raw, span_end, n, left_stars) {
+              sb.write_string(SLACK_MD_ZWSP)
+              line_changed = true
+            }
+          }
+          sb.write_string(str_slice(line, i, span_end))
+          let mut right_stars = 0
+          while right_stars < 3 && span_end + right_stars < n && (raw[span_end + right_stars].to_int() & 0xFF) == 42 {
+            right_stars = right_stars + 1
+          }
+          let after_idx = span_end + right_stars
+          if right_stars >= 1 && right_stars <= 3 && after_idx < n {
+            let a = raw[after_idx].to_int() & 0xFF
+            if a != 42 && smd_is_non_ascii_byte(a) && smd_has_star_run(raw, 0, i, right_stars) {
+              sb.write_string(SLACK_MD_ZWSP)
+              line_changed = true
+            }
+          }
+          i = span_end
+          continue
+        }
+        sb.write_string(str_slice(line, i, i + ticks))
+        i = i + ticks
+        continue
+      }
+      sb.write_byte(raw[i])
+      i = i + 1
+    }
+    if line_changed {
+      out_lines.push(sb.to_string())
+      changed = true
+    } else {
+      out_lines.push(line)
+    }
+  }
+  if !changed {
+    return md
+  }
+  let res = StringBuilder::new()
+  for i in 0..<out_lines.length() {
+    if i > 0 {
+      res.write_byte(10 as Byte)
+    }
+    res.write_string(out_lines[i])
+  }
+  res.to_string()
+}
+
+struct SlackRichElem {
+  is_text : Bool
+  mut text : String
+  style : SlackInlineStyle
+  node : base_codec::Json
+}
+
+fn smd_push_text(elems : Array[SlackRichElem], text : String, style : SlackInlineStyle) -> Unit {
+  if text.length() == 0 {
+    return
+  }
+  if elems.length() > 0 {
+    let last = elems[elems.length() - 1]
+    if last.is_text && last.style.eq(style) {
+      last.text = last.text + text
+      return
+    }
+  }
+  elems.push(SlackRichElem::{ is_text: true, text, style, node: base_codec::json_null() })
+}
+
+fn smd_push_node(elems : Array[SlackRichElem], node : base_codec::Json) -> Unit {
+  elems.push(SlackRichElem::{ is_text: false, text: "", style: SlackInlineStyle::none(), node })
+}
+
+fn smd_is_allowed_url(url : String) -> Bool {
+  let raw = url.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if is_ascii_ws(c) || c == 60 || c == 62 {
+      return false
+    }
+  }
+  let lower = str_to_lower_ascii(url)
+  str_starts_with(lower, "https://") || str_starts_with(lower, "http://") || str_starts_with(lower, "mailto:") || str_starts_with(lower, "slack://")
+}
+
+fn smd_is_slack_id(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    if !smd_is_upper_or_digit(raw[i].to_int() & 0xFF) {
+      return false
+    }
+  }
+  true
+}
+
+fn smd_with_style_fields(fields : Array[(String, base_codec::Json)], style : SlackInlineStyle) -> base_codec::Json {
+  if !style.is_empty() {
+    fields.push(("style", style.to_json()))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn smd_parse_slack_token(s : String, raw : Bytes, at : Int, style : SlackInlineStyle) -> Option[(base_codec::Json, Int)] {
+  let end = str_index_of(s, ">", at + 1)
+  if end < 0 {
+    return None
+  }
+  let body = str_slice(s, at + 1, end)
+  if body.length() == 0 || str_contains(body, "<") || str_contains(body, "\n") {
+    return None
+  }
+  let pipe = str_index_of(body, "|", 0)
+  let head = if pipe >= 0 { str_slice(body, 0, pipe) } else { body }
+  let tail = if pipe >= 0 { str_slice(body, pipe + 1, body.to_bytes().length()) } else { "" }
+
+  if str_starts_with(head, "@") {
+    let id = str_slice(head, 1, head.to_bytes().length())
+    if smd_is_slack_id(id) {
+      return Some((smd_with_style_fields([("type", base_codec::json_str("user")), ("user_id", base_codec::json_str(id))], style), end + 1))
+    }
+    return None
+  }
+  if str_starts_with(head, "#") {
+    let id = str_slice(head, 1, head.to_bytes().length())
+    if smd_is_slack_id(id) {
+      return Some((smd_with_style_fields([("type", base_codec::json_str("channel")), ("channel_id", base_codec::json_str(id))], style), end + 1))
+    }
+    return None
+  }
+  if str_starts_with(head, "!subteam^") {
+    let id = str_slice(head, 9, head.to_bytes().length())
+    if smd_is_slack_id(id) {
+      return Some((smd_with_style_fields([("type", base_codec::json_str("usergroup")), ("usergroup_id", base_codec::json_str(id))], style), end + 1))
+    }
+    return None
+  }
+  if body == "!here" || body == "!channel" || body == "!everyone" {
+    let range = str_slice(body, 1, body.to_bytes().length())
+    return Some((smd_with_style_fields([("type", base_codec::json_str("broadcast")), ("range", base_codec::json_str(range))], style), end + 1))
+  }
+  if smd_is_allowed_url(head) {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("type", base_codec::json_str("link")),
+      ("url", base_codec::json_str(head)),
+    ]
+    if tail.length() > 0 {
+      fields.push(("text", base_codec::json_str(tail)))
+    }
+    return Some((smd_with_style_fields(fields, style), end + 1))
+  }
+  let _ = raw
+  None
+}
+
+fn smd_parse_markdown_link(s : String, raw : Bytes, at : Int, style : SlackInlineStyle) -> Option[(base_codec::Json, Int)] {
+  let n = raw.length()
+  let mut i = at + 1
+  let mut depth = 0
+  let mut close_bracket = -1
+  while i < n {
+    let c = raw[i].to_int() & 0xFF
+    if c == 92 {
+      i = i + 2
+      continue
+    }
+    if c == 96 {
+      let mut ticks = 0
+      while i + ticks < n && (raw[i + ticks].to_int() & 0xFF) == 96 {
+        ticks = ticks + 1
+      }
+      let close = smd_find_closing_ticks(raw, i + ticks, ticks)
+      if close >= 0 {
+        i = close + ticks
+        continue
+      }
+      i = i + ticks
+      continue
+    }
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      if depth == 0 {
+        close_bracket = i
+        break
+      }
+      depth = depth - 1
+    }
+    i = i + 1
+  }
+  if close_bracket < 0 || close_bracket + 1 >= n || (raw[close_bracket + 1].to_int() & 0xFF) != 40 {
+    return None
+  }
+  let mut u = close_bracket + 2
+  let mut parens = 0
+  let mut close_paren = -1
+  while u < n {
+    let c = raw[u].to_int() & 0xFF
+    if c == 92 {
+      u = u + 2
+      continue
+    }
+    if c == 40 {
+      parens = parens + 1
+    } else if c == 41 {
+      if parens == 0 {
+        close_paren = u
+        break
+      }
+      parens = parens - 1
+    } else if is_ascii_ws(c) {
+      break
+    }
+    u = u + 1
+  }
+  if close_paren < 0 {
+    return None
+  }
+  let mut url = str_trim(str_slice(s, close_bracket + 2, close_paren))
+  if str_starts_with(url, "<") && str_ends_with(url, ">") && url.to_bytes().length() >= 2 {
+    url = str_slice(url, 1, url.to_bytes().length() - 1)
+  }
+  if !smd_is_allowed_url(url) {
+    return None
+  }
+  let mut label = str_slice(s, at + 1, close_bracket)
+  let mut lbold = style.bold
+  let mut litalic = style.italic
+  let mut lstrike = style.strike
+  let mut lcode = style.code
+  while true {
+    let lb = label.to_bytes().length()
+    if lb >= 4 && str_starts_with(label, "**") && str_ends_with(label, "**") && !str_contains(str_slice(label, 2, lb - 2), "**") {
+      lbold = true
+      label = str_slice(label, 2, lb - 2)
+    } else if lb >= 4 && str_starts_with(label, "~~") && str_ends_with(label, "~~") && !str_contains(str_slice(label, 2, lb - 2), "~~") {
+      lstrike = true
+      label = str_slice(label, 2, lb - 2)
+    } else if lb >= 2 && str_starts_with(label, "`") && str_ends_with(label, "`") && !str_contains(str_slice(label, 1, lb - 1), "`") {
+      lcode = true
+      label = str_slice(label, 1, lb - 1)
+    } else if lb >= 2 && str_starts_with(label, "*") && str_ends_with(label, "*") && !str_contains(str_slice(label, 1, lb - 1), "*") {
+      litalic = true
+      label = str_slice(label, 1, lb - 1)
+    } else {
+      break
+    }
+  }
+  let lst = SlackInlineStyle::{ bold: lbold, italic: litalic, strike: lstrike, code: lcode }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("link")),
+    ("url", base_codec::json_str(url)),
+  ]
+  if label.length() > 0 {
+    fields.push(("text", base_codec::json_str(label)))
+  }
+  Some((smd_with_style_fields(fields, lst), close_paren + 1))
+}
+
+fn smd_find_closing_delim(raw : Bytes, from : Int, ch : Int, dlen : Int, word_boundary : Bool) -> Int {
+  let n = raw.length()
+  let mut i = from
+  while i < n {
+    let c = raw[i].to_int() & 0xFF
+    if c == 92 {
+      i = i + 2
+      continue
+    }
+    if c == 96 {
+      let mut ticks = 0
+      while i + ticks < n && (raw[i + ticks].to_int() & 0xFF) == 96 {
+        ticks = ticks + 1
+      }
+      let close = smd_find_closing_ticks(raw, i + ticks, ticks)
+      if close >= 0 {
+        i = close + ticks
+        continue
+      }
+      i = i + ticks
+      continue
+    }
+    if c == ch {
+      let mut run = 0
+      while i + run < n && (raw[i + run].to_int() & 0xFF) == ch {
+        run = run + 1
+      }
+      if run == dlen && i > from {
+        let before = raw[i - 1].to_int() & 0xFF
+        let after_ok = if !word_boundary || i + dlen >= n {
+          true
+        } else {
+          !smd_is_alnum(raw[i + dlen].to_int() & 0xFF)
+        }
+        if !is_ascii_ws(before) && after_ok {
+          return i
+        }
+      }
+      i = i + run
+      continue
+    }
+    i = i + 1
+  }
+  -1
+}
+
+fn smd_is_escapable(b : Int) -> Bool {
+  b == 42 || b == 95 || b == 96 || b == 126 || b == 91 || b == 93 || b == 92
+}
+
+fn smd_parse_inline_into(s : String, style : SlackInlineStyle, elems : Array[SlackRichElem]) -> Unit {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let c = raw[i].to_int() & 0xFF
+
+    if c == 92 && i + 1 < n && smd_is_escapable(raw[i + 1].to_int() & 0xFF) {
+      smd_push_text(elems, str_slice(s, i + 1, i + 2), style)
+      i = i + 2
+      continue
+    }
+
+    if c == 96 {
+      let mut ticks = 0
+      while i + ticks < n && (raw[i + ticks].to_int() & 0xFF) == 96 {
+        ticks = ticks + 1
+      }
+      let close = smd_find_closing_ticks(raw, i + ticks, ticks)
+      if close >= 0 {
+        let mut code = str_slice(s, i + ticks, close)
+        let cb = code.to_bytes().length()
+        if cb >= 2 && str_starts_with(code, " ") && str_ends_with(code, " ") && str_trim(code) != "" {
+          code = str_slice(code, 1, cb - 1)
+        }
+        let cst = SlackInlineStyle::{ bold: style.bold, italic: style.italic, strike: style.strike, code: true }
+        smd_push_text(elems, code, cst)
+        i = close + ticks
+        continue
+      }
+      smd_push_text(elems, str_slice(s, i, i + ticks), style)
+      i = i + ticks
+      continue
+    }
+
+    if c == 60 {
+      match smd_parse_slack_token(s, raw, i, style) {
+        Some((node, next)) => {
+          smd_push_node(elems, node)
+          i = next
+          continue
+        }
+        None => ()
+      }
+    }
+
+    if c == 91 {
+      match smd_parse_markdown_link(s, raw, i, style) {
+        Some((node, next)) => {
+          smd_push_node(elems, node)
+          i = next
+          continue
+        }
+        None => ()
+      }
+    }
+
+    if c == 126 && i + 2 < n && (raw[i + 1].to_int() & 0xFF) == 126 && (raw[i + 2].to_int() & 0xFF) != 126 && !is_ascii_ws(raw[i + 2].to_int() & 0xFF) {
+      let close = smd_find_closing_delim(raw, i + 2, 126, 2, false)
+      if close >= 0 {
+        let nst = SlackInlineStyle::{ bold: style.bold, italic: style.italic, strike: true, code: style.code }
+        smd_parse_inline_into(str_slice(s, i + 2, close), nst, elems)
+        i = close + 2
+        continue
+      }
+    }
+
+    if c == 42 {
+      let mut run = 0
+      while i + run < n && (raw[i + run].to_int() & 0xFF) == 42 {
+        run = run + 1
+      }
+      if run >= 1 && run <= 3 && i + run < n && !is_ascii_ws(raw[i + run].to_int() & 0xFF) {
+        let close = smd_find_closing_delim(raw, i + run, 42, run, false)
+        if close >= 0 {
+          let nst = SlackInlineStyle::{
+            bold: style.bold || run >= 2,
+            italic: style.italic || run == 1 || run == 3,
+            strike: style.strike,
+            code: style.code,
+          }
+          smd_parse_inline_into(str_slice(s, i + run, close), nst, elems)
+          i = close + run
+          continue
+        }
+      }
+      smd_push_text(elems, str_slice(s, i, i + run), style)
+      i = i + run
+      continue
+    }
+
+    if c == 95 {
+      let mut run = 0
+      while i + run < n && (raw[i + run].to_int() & 0xFF) == 95 {
+        run = run + 1
+      }
+      let prev_ok = if i == 0 { true } else { !smd_is_alnum(raw[i - 1].to_int() & 0xFF) }
+      if run >= 1 && run <= 2 && prev_ok && i + run < n && !is_ascii_ws(raw[i + run].to_int() & 0xFF) {
+        let close = smd_find_closing_delim(raw, i + run, 95, run, true)
+        if close >= 0 {
+          let nst = SlackInlineStyle::{
+            bold: style.bold || run == 2,
+            italic: style.italic || run == 1,
+            strike: style.strike,
+            code: style.code,
+          }
+          smd_parse_inline_into(str_slice(s, i + run, close), nst, elems)
+          i = close + run
+          continue
+        }
+      }
+      smd_push_text(elems, str_slice(s, i, i + run), style)
+      i = i + run
+      continue
+    }
+
+    // Advance one full UTF-8 codepoint so multi-byte characters stay intact.
+    let mut step = 1
+    if c >= 240 {
+      step = 4
+    } else if c >= 224 {
+      step = 3
+    } else if c >= 192 {
+      step = 2
+    }
+    let end = if i + step <= n { i + step } else { n }
+    smd_push_text(elems, str_slice(s, i, end), style)
+    i = end
+  }
+}
+
+fn smd_parse_inline(s : String) -> Array[base_codec::Json] {
+  let elems : Array[SlackRichElem] = []
+  smd_parse_inline_into(s, SlackInlineStyle::none(), elems)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<elems.length() {
+    let e = elems[i]
+    if e.is_text {
+      out.push(smd_with_style_fields([("type", base_codec::json_str("text")), ("text", base_codec::json_str(e.text))], e.style))
+    } else {
+      out.push(e.node)
+    }
+  }
+  if out.length() == 0 {
+    out.push(base_codec::json_obj([("type", base_codec::json_str("text")), ("text", base_codec::json_str(" "))]))
+  }
+  out
+}
+
+struct SlackListLevel {
+  raw_indent : Int
+  is_ordered : Bool
+  mut count : Int
+  base_offset : Int
+}
+
+struct SlackListRun {
+  is_ordered : Bool
+  indent : Int
+  offset : Int
+  sections : Array[base_codec::Json]
+}
+
+fn smd_build_rich_text_lists(items : Array[SlackListItem]) -> Array[base_codec::Json] {
+  let stack : Array[SlackListLevel] = []
+  let runs : Array[SlackListRun] = []
+
+  for i in 0..<items.length() {
+    let item = items[i]
+    while stack.length() > 1 && stack[stack.length() - 1].raw_indent > item.raw_indent {
+      let _ = stack.pop()
+    }
+    let base_off = if item.is_ordered && item.start_num > 1 { item.start_num - 1 } else { 0 }
+    if stack.length() == 0 {
+      stack.push(SlackListLevel::{ raw_indent: item.raw_indent, is_ordered: item.is_ordered, count: 0, base_offset: base_off })
+    } else {
+      let top = stack[stack.length() - 1]
+      if item.raw_indent >= top.raw_indent + 2 {
+        stack.push(SlackListLevel::{ raw_indent: item.raw_indent, is_ordered: item.is_ordered, count: 0, base_offset: base_off })
+      } else if top.is_ordered != item.is_ordered {
+        stack[stack.length() - 1] = SlackListLevel::{ raw_indent: top.raw_indent, is_ordered: item.is_ordered, count: 0, base_offset: base_off }
+      }
+    }
+    let level = stack[stack.length() - 1]
+    let indent = if stack.length() - 1 > SLACK_MD_MAX_INDENT { SLACK_MD_MAX_INDENT } else { stack.length() - 1 }
+    let section = base_codec::json_obj([
+      ("type", base_codec::json_str("rich_text_section")),
+      ("elements", base_codec::json_arr(smd_parse_inline(item.text))),
+    ])
+    let merged = if runs.length() > 0 {
+      let prev = runs[runs.length() - 1]
+      if prev.is_ordered == item.is_ordered && prev.indent == indent {
+        prev.sections.push(section)
+        true
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+    if !merged {
+      let off = if item.is_ordered { level.base_offset + level.count } else { 0 }
+      runs.push(SlackListRun::{ is_ordered: item.is_ordered, indent, offset: off, sections: [section] })
+    }
+    level.count = level.count + 1
+  }
+
+  let out : Array[base_codec::Json] = []
+  for i in 0..<runs.length() {
+    let r = runs[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("type", base_codec::json_str("rich_text_list")),
+      ("style", base_codec::json_str(if r.is_ordered { "ordered" } else { "bullet" })),
+      ("indent", base_codec::json_int(r.indent)),
+      ("elements", base_codec::json_arr(r.sections)),
+    ]
+    if r.is_ordered && r.offset > 0 {
+      fields.push(("offset", base_codec::json_int(r.offset)))
+    }
+    out.push(base_codec::json_obj(fields))
+  }
+  out
+}
+
+fn smd_list_needs_rich_text(items : Array[SlackListItem], has_blank_between : Bool) -> Bool {
+  let mut has_ordered = false
+  let first_indent = items[0].raw_indent
+  let first_ordered = items[0].is_ordered
+  let mut has_nested = false
+  let mut has_mixed = false
+  let mut has_non_one = false
+  let stack : Array[(Int, Bool)] = []
+
+  for i in 0..<items.length() {
+    let item = items[i]
+    if item.is_ordered {
+      has_ordered = true
+    }
+    if item.raw_indent >= first_indent + 2 {
+      has_nested = true
+    }
+    if item.is_ordered != first_ordered {
+      has_mixed = true
+    }
+    while stack.length() > 1 && stack[stack.length() - 1].0 > item.raw_indent {
+      let _ = stack.pop()
+    }
+    let opened = if stack.length() == 0 {
+      true
+    } else {
+      let top = stack[stack.length() - 1]
+      item.raw_indent >= top.0 + 2 || top.1 != item.is_ordered
+    }
+    if opened {
+      if item.is_ordered && item.start_num != 1 {
+        has_non_one = true
+      }
+      if stack.length() == 0 || item.raw_indent >= stack[stack.length() - 1].0 + 2 {
+        stack.push((item.raw_indent, item.is_ordered))
+      } else {
+        stack[stack.length() - 1] = (stack[stack.length() - 1].0, item.is_ordered)
+      }
+    }
+  }
+  has_ordered && (has_nested || has_non_one || has_blank_between || has_mixed)
+}
+
+fn smd_starts_own_block(line : String) -> Bool {
+  let trimmed = smd_trim_leading_ws(line)
+  if trimmed.length() == 0 {
+    return true
+  }
+  match smd_parse_fence(trimmed) {
+    Some(_) => return true
+    None => ()
+  }
+  if smd_is_thematic_break(trimmed) {
+    return true
+  }
+  let raw = trimmed.to_bytes()
+  let c0 = raw[0].to_int() & 0xFF
+  if c0 == 62 || c0 == 124 {
+    return true
+  }
+  if c0 == 35 {
+    let mut h = 0
+    while h < raw.length() && h < 6 && (raw[h].to_int() & 0xFF) == 35 {
+      h = h + 1
+    }
+    if h >= 1 && h < raw.length() {
+      let sp = raw[h].to_int() & 0xFF
+      if sp == 32 || sp == 9 {
+        return true
+      }
+    }
+  }
+  false
+}
+
+fn smd_flush_md(md_lines : Array[String], blocks : Array[base_codec::Json]) -> Unit {
+  let mut start = 0
+  while start < md_lines.length() && str_trim(md_lines[start]) == "" {
+    start = start + 1
+  }
+  let mut end = md_lines.length()
+  while end > start && str_trim(md_lines[end - 1]) == "" {
+    end = end - 1
+  }
+  if end > start {
+    let sb = StringBuilder::new()
+    for i in start..<end {
+      if i > start {
+        sb.write_byte(10 as Byte)
+      }
+      sb.write_string(md_lines[i])
+    }
+    blocks.push(slack_markdown_block(slack_fix_markdown_emphasis(sb.to_string())))
+  }
+  while md_lines.length() > 0 {
+    let _ = md_lines.pop()
+  }
+}
+
+pub fn slack_markdown_blocks(text : String) -> Array[base_codec::Json] {
+  let normalized = str_replace_all(text, "\r\n", "\n")
+  let lines = str_split(normalized, "\n")
+  let blocks : Array[base_codec::Json] = []
+  let md_lines : Array[String] = []
+  let mut has_rich = false
+  let mut fence_ch = 0
+  let mut fence_len = 0
+
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i]
+    match smd_parse_fence(line) {
+      Some(f) => {
+        if fence_len == 0 {
+          if !(f.ch == 96 && str_contains(f.rest, "`")) {
+            fence_ch = f.ch
+            fence_len = f.len
+            md_lines.push(line)
+            i = i + 1
+            continue
+          }
+        } else {
+          if f.ch == fence_ch && f.len >= fence_len && str_trim(f.rest) == "" {
+            fence_ch = 0
+            fence_len = 0
+          }
+          md_lines.push(line)
+          i = i + 1
+          continue
+        }
+      }
+      None => {
+        if fence_len > 0 {
+          md_lines.push(line)
+          i = i + 1
+          continue
+        }
+      }
+    }
+
+    let first_item = match smd_parse_list_line(line) {
+      Some(it) => it
+      None => {
+        md_lines.push(line)
+        i = i + 1
+        continue
+      }
+    }
+
+    let items : Array[SlackListItem] = [first_item]
+    let start_line = i
+    let mut j = i + 1
+    let mut has_blank_between = false
+    while j < lines.length() {
+      let cur = lines[j]
+      match smd_parse_list_line(cur) {
+        Some(parsed) => {
+          items.push(parsed)
+          j = j + 1
+          continue
+        }
+        None => ()
+      }
+      if str_trim(cur) == "" {
+        let mut k = j + 1
+        while k < lines.length() && str_trim(lines[k]) == "" {
+          k = k + 1
+        }
+        if k < lines.length() {
+          match smd_parse_list_line(lines[k]) {
+            Some(after) => {
+              if !(after.raw_indent <= first_item.raw_indent && after.is_ordered != first_item.is_ordered) {
+                has_blank_between = true
+                j = k
+                continue
+              }
+            }
+            None => ()
+          }
+        }
+        break
+      }
+      let (cur_indent, _) = smd_measure_indent(cur)
+      let last = items[items.length() - 1]
+      if cur_indent >= last.raw_indent + 2 && !smd_starts_own_block(cur) {
+        last.text = last.text + "\n" + str_trim(cur)
+        j = j + 1
+        continue
+      }
+      break
+    }
+
+    if smd_list_needs_rich_text(items, has_blank_between) {
+      smd_flush_md(md_lines, blocks)
+      blocks.push(
+        base_codec::json_obj([
+          ("type", base_codec::json_str("rich_text")),
+          ("elements", base_codec::json_arr(smd_build_rich_text_lists(items))),
+        ]),
+      )
+      has_rich = true
+    } else {
+      for k in start_line..<j {
+        md_lines.push(lines[k])
+      }
+    }
+    i = j
+  }
+
+  if !has_rich {
+    return [slack_markdown_block(slack_fix_markdown_emphasis(text))]
+  }
+  smd_flush_md(md_lines, blocks)
+  if blocks.length() == 0 || blocks.length() > SLACK_MD_MAX_SPLIT_BLOCKS {
+    return [slack_markdown_block(slack_fix_markdown_emphasis(text))]
+  }
+  blocks
+}

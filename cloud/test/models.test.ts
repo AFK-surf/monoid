@@ -132,3 +132,46 @@ test("the catalog is made once, and a station that has it is told so", async () 
     await h.close();
   }
 });
+
+test("serveModels matches weak, multi-value, and wildcard If-None-Match headers and refreshes stale ?v= entries cleanly", async () => {
+  let fetches = 0;
+  let failUpstream = false;
+  const h = await harness({
+    push: (request) => {
+      fetches++;
+      if (failUpstream) return { status: 502, body: "upstream error" };
+      if (request.url === "https://models.dev/models.json") return { status: 200, body: JSON.stringify(CANONICAL) };
+      if (request.url === "https://models.dev/api.json") return { status: 200, body: JSON.stringify(PROVIDERS) };
+      return { status: 404 };
+    },
+  });
+  try {
+    const first = await h.fetch("/v1/models");
+    assert.equal(first.status, 200);
+    const etag = first.headers.get("etag")!;
+    await first.arrayBuffer();
+
+    for (const header of [`W/${etag}`, `"old", ${etag}`, `  ${etag}  `, "*"]) {
+      const hit = await h.fetch("/v1/models", { headers: { "if-none-match": header } });
+      assert.equal(hit.status, 304, header);
+      assert.equal(hit.headers.get("etag"), etag);
+      await hit.arrayBuffer();
+    }
+    assert.equal(fetches, 2);
+
+    // Mismatched ?v= cancels the cached body and refreshes from upstream.
+    const refreshed = await h.fetch("/v1/models?v=%22stale%22");
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.headers.get("etag"), etag);
+    await refreshed.arrayBuffer();
+    assert.equal(fetches, 4);
+
+    // Non-OK upstream response body is cancelled before returning 502.
+    failUpstream = true;
+    const failed = await h.fetch("/v1/models?v=%22stale2%22");
+    assert.equal(failed.status, 502);
+    await failed.arrayBuffer();
+  } finally {
+    await h.close();
+  }
+});

@@ -2089,11 +2089,19 @@ export class Data {
     return f?.record === undefined ? undefined : { row: f.record, archived: f.archived };
   }
 
-  /// The chats many links name (as chatNamed finds each), by `${station}\u0001${id}`, only those found with a record:
+  /// The chats many links name (as chatNamed finds each), by `${station}\u0001${id}`, only those found with a record (or,
+  /// archived where `archivedRecords` is false, with their columns alone):
   /// one statement for them all in each database (none while none of their keys was told), and their records read
   /// together. A chat that leads others names hundreds it opened, and read one by one they were twice as many statements.
-  chatNamedMany(targets: readonly (readonly [station: string, id: string])[]): Map<string, { row: unknown; archived: boolean }> {
-    const out = new Map<string, { row: unknown; archived: boolean }>();
+  /// Each with its title and thread, of their columns. `archivedRecords` false: an archived one's record is not read (its
+  /// JSON neither read, parsed nor held), given by its columns alone: a chat that has long led others has mostly archived
+  /// ones, which its list shows by their titles alone, and reading them was most of opening it (54-119 ms on a phone).
+  chatNamedMany(
+    targets: readonly (readonly [station: string, id: string])[],
+    opts?: { archivedRecords?: boolean },
+  ): Map<string, { row?: unknown; title: string | null; thread: number | null; archived: boolean }> {
+    const out = new Map<string, { row?: unknown; title: string | null; thread: number | null; archived: boolean }>();
+    const wantArchived = opts?.archivedRecords !== false;
     const pairs: [string, string][] = [];
     const asked = new Set<string>();
     const stations: string[] = [];
@@ -2121,13 +2129,21 @@ export class Data {
     }
     const winners = new Map<string, ChatFound>();
     for (const { f } of best.values()) {
+      if (f.archived && !wantArchived) continue;
       const key = `${f.station}\u0001${f.archived ? 1 : 0}\u0001${f.id}`;
       if (!winners.has(key)) winners.set(key, f);
     }
-    this.chatRecords([...winners.values()]);
+    if (winners.size > 0) this.chatRecords([...winners.values()]);
     for (const [k, { f }] of best) {
+      // (f.cols: req_id, ord, title, thread)
+      const title = typeof f.cols[2] === "string" ? f.cols[2] : null;
+      const thread = u64(f.cols[3]) ?? null;
+      if (f.archived && !wantArchived) {
+        out.set(k, { title, thread, archived: true });
+        continue;
+      }
       const w = winners.get(`${f.station}\u0001${f.archived ? 1 : 0}\u0001${f.id}`)!;
-      if (w.record !== undefined) out.set(k, { row: w.record, archived: w.archived });
+      if (w.record !== undefined) out.set(k, { row: w.record, title, thread, archived: w.archived });
     }
     return out;
   }

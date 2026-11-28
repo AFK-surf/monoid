@@ -3,7 +3,7 @@
 // what its version has and what is still to come. Bug reports an entry fixes (`Fixes: FB-<n>`) are marked fixed with
 // it, and once the fix is out on the channel the report came on, the station that sent it is told (POST
 // /v1/feedback/fixed), for its agent to tell the person who reported it.
-import { readText, reply } from "./auth";
+import { etagMatches, readText, reply } from "./auth";
 import { betaOrigin, header } from "./compat";
 import type { Env } from "./env";
 import { sharedRelease } from "./install.ts";
@@ -85,20 +85,6 @@ export async function etagOf(body: string): Promise<string> {
   let hex = "";
   for (let i = 0; i < 8; i++) hex += bytes[i]!.toString(16).padStart(2, "0");
   return `"${hex}"`;
-}
-
-/** RFC 9110 weak ETag comparison for GET If-None-Match headers. */
-export function etagMatches(ifNoneMatch: string | null, etag: string): boolean {
-  if (!ifNoneMatch) return false;
-  const target = etag.startsWith("W/") ? etag.slice(2) : etag;
-  for (const raw of ifNoneMatch.split(",")) {
-    const token = raw.trim();
-    if (!token) continue;
-    if (token === "*") return true;
-    const bare = token.startsWith("W/") ? token.slice(2) : token;
-    if (bare === target) return true;
-  }
-  return false;
 }
 
 function singleEtagToken(ifNoneMatch: string | null): string | null {

@@ -3375,6 +3375,11 @@ export class Mesh {
     return this.#links.has(addr) && this.#live(addr).some((w) => w.missed < DEAD_PINGS);
   }
 
+  /// How many fibers are currently awaiting a ping health transition for `addr`.
+  healthWaiters(addr: string): number {
+    return this.#healthWaiting.get(addr)?.length ?? 0;
+  }
+
   /// Succeeds with whether a way to the station answers its pings once that is no longer `was`, as the ticks find it.
   healthChange(addr: string, was: boolean): Effect.Effect<boolean> {
     return Effect.suspend(() => {
@@ -3382,7 +3387,17 @@ export class Mesh {
       if (now !== was) return Effect.succeed(now);
       const d = Deferred.makeUnsafe<boolean>();
       this.#healthWaiting.set(addr, [...(this.#healthWaiting.get(addr) ?? []), d]);
-      return Deferred.await(d);
+      return Deferred.await(d).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            const waiting = this.#healthWaiting.get(addr);
+            if (!waiting) return;
+            const left = waiting.filter((x) => x !== d);
+            if (left.length === 0) this.#healthWaiting.delete(addr);
+            else this.#healthWaiting.set(addr, left);
+          }),
+        ),
+      );
     });
   }
 

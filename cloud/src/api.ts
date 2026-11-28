@@ -363,8 +363,11 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     // An operator is noted, to be told when the console's lists change (directory.ts `noteOperator`).
     const onConsole = adminOrigins(env).includes(new URL(request.url).origin);
     const operator = onConsole && (await consoleAdmin(request, env, claims.email, sub));
-    if (operator) await dir.noteOperator(sub, claims.email);
-    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator, ...(onConsole ? { console: true as const } : {}) }));
+    return directory(async () => {
+      const note = operator ? dir.noteOperator(sub, claims.email) : undefined;
+      const [me, invitations] = await Promise.all([dir.me(sub), dir.invitationsFor(claims.email), note]);
+      return { ...me, invitations, operator, ...(onConsole ? { console: true as const } : {}) };
+    });
   }
   // The person's own lock, which the cloud keeps and carries but does not decide (personal-lock.ts).
   if (path === "/v1/me/personal-lock") {
@@ -615,7 +618,10 @@ export async function relayAdmin(env: Env, by: string, path: string, method: str
   const dir = env.DIRECTORY.getByName("primary");
   const call = path.slice("/v1/admin/relays/".length);
   const said = (v: unknown) => (typeof v === "string" ? v : "");
-  if (call === "list") return directory(async () => ({ ...await dir.relayList(), mesh: await dir.meshRelays() }));
+  if (call === "list") return directory(async () => {
+    const [relays, mesh] = await Promise.all([dir.relayList(), dir.meshRelays()]);
+    return { ...relays, mesh };
+  });
   if (call === "put") return audited(env, by, "relay.put", said(input.name) || said(input.url), said(input.url), () => directory(() => dir.relayPut(by, input)));
   if (call === "remove") return audited(env, by, "relay.remove", said(input.url), "", () => directory(async () => (await dir.relayRemove(input.url), { removed: true })));
   if (call === "mesh-remove") return audited(env, by, "relay.remove", said(input.node), "", () => directory(async () => (await dir.meshRelayRemove(input.node), { removed: true })));
@@ -717,7 +723,10 @@ async function handleAdmin(request: Request, env: Env, path: string, actor: Admi
   const dir = env.DIRECTORY.getByName("primary");
   if (path === "/v1/admin/me" && method === "GET") return reply({ email: actor.email, ...(actor.key ? { key: actor.key } : {}) });
   // With the emails given rights before anyone signed in with them (`pending`; a console from before reads no such list).
-  if (path === "/v1/admin/users" && method === "GET") return directory(async () => ({ users: await dir.adminUsers(), pending: await dir.adminPending() }));
+  if (path === "/v1/admin/users" && method === "GET") return directory(async () => {
+    const [users, pending] = await Promise.all([dir.adminUsers(), dir.adminPending()]);
+    return { users, pending };
+  });
   // Gives an email the test channel or the standard plan, signed in with or not: { email, beta?: boolean, may_create?: boolean }.
   const by = actor.auditBy;
   const text = (v: unknown) => (typeof v === "string" ? v : "");

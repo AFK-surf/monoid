@@ -648,3 +648,59 @@ test("an_incomplete_page_fails_without_losing_the_cache_and_can_be_retried", asy
   const older = await Effect.runPromise(Effect.result(w.channels.older(c, 20, { quiet: false })));
   assert.equal(older._tag === "Failure" && older.failure.code, "bad_response", "an empty older page must release the UI into retry");
 });
+
+test("catchUp_stops_after_failed_after_read_without_following_up_on_existing_holes", async () => {
+  const w = world();
+  const c = log("c");
+  w.there.set("c", 6);
+  w.tell(c, 1, 5, 6);
+  assert.equal(w.channels.behind(c), true);
+  w.state.failing = new CoreError("http_500", "err", 500);
+  w.channels.catchUp(c, Priority.shown);
+  await w.work();
+  assert.deepEqual(w.asked, ["c?after=6"]);
+});
+
+test("catchUp_does_not_queue_second_shown_bring_after_in_flight_revision_mismatch", async () => {
+  const base = world();
+  const c = log("c");
+  base.there.set("c", 6);
+  let rev = 1;
+  const queued: number[] = [];
+  const items = new Map<number, unknown>([[1, "c:1"], [5, "c:5"], [6, "c:6"]]);
+  const channels = new Channels(
+    {
+      numbers: () => [...items.keys()].sort((a, b) => a - b),
+      span: () => ({ min: 1, max: 6 }),
+      count: (_c, from, to) => [...items.keys()].filter((n) => n >= from && n <= to).length,
+      put: () => {},
+      letGo: () => false,
+      head: () => 6,
+      raise: () => {},
+      revision: () => rev,
+    },
+    {
+      read: (_station, path) => {
+        base.asked.push(path);
+        rev++;
+        return Effect.succeed({ last: 6, items: [] });
+      },
+      reached: () => true,
+      enqueue: (_station, _name, priority, work) => {
+        queued.push(priority);
+        base.waiting.push({ name: "read/c", priority, work, done: Deferred.makeUnsafe<void, CoreError>() });
+        return Deferred.makeUnsafe<void, CoreError>();
+      },
+      later: () => {},
+      now: () => 0,
+      firstWaiting: () => false,
+      turn: () => Effect.yieldNow,
+      answered: () => {},
+    },
+  );
+  channels.catchUp(c, Priority.shown);
+  const first = base.waiting.shift()!;
+  await Effect.runPromise(Effect.exit(first.work));
+  assert.deepEqual(base.asked, ["c?after=6"]);
+  assert.deepEqual(queued, [Priority.shown, Priority.background]);
+});

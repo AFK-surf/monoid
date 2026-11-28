@@ -185,7 +185,7 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
   }
 }
 
-/// Exact list of MCP station tools genuinely wired to live SQLite / SessionHub / JobManager.
+/// Exact list of base MCP station tools always wired to live SQLite / SessionHub / JobManager.
 pub fn wired_mcp_tool_names() -> Array[String] {
   [
     "chat_post",
@@ -229,6 +229,29 @@ pub fn wired_station_tools() -> Array[station_tools::ToolDecl] {
   out
 }
 
+/// Dynamic tool declarations for this `WholeAgents` instance: base SQLite tools plus ONLY the
+/// extra tools explicitly backed by live production handlers (`wired_extra_tool_names`).
+pub fn WholeAgents::wired_tools(self : WholeAgents) -> Array[station_tools::ToolDecl] {
+  let all = station_tools::station_tools()
+  let out : Array[station_tools::ToolDecl] = []
+  for i in 0..<all.length() {
+    let n = all[i].name
+    let mut ok = is_wired_mcp_tool(n)
+    if !ok {
+      for j in 0..<self.wired_extra_tool_names.length() {
+        if self.wired_extra_tool_names[j] == n {
+          ok = true
+          break
+        }
+      }
+    }
+    if ok {
+      out.push(all[i])
+    }
+  }
+  out
+}
+
 /// Full-station agents subsystem: `SessionHub`, `DriversRuntime`, `McpServer`, `JobManager`,
 /// and per-session CSPRNG Bearer token table.
 pub struct WholeAgents {
@@ -251,6 +274,12 @@ pub struct WholeAgents {
   session_runtimes : Map[String, String]
   session_is_subagent : Map[String, Bool]
   random_bytes_fn : (Int) -> Result[Bytes, String]
+  pub mut device_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
+  pub mut screen_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
+  pub mut browser_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
+  pub mut signin_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
+  pub mut wired_extra_tool_names : Array[String]
+  pub mut on_session_archived_dsb : Option[(String, Array[String], Int64) -> Unit]
 }
 
 /// Pure dependency-injected `WholeAgents` constructor (no OS FFI references).
@@ -289,6 +318,12 @@ pub fn WholeAgents::new_with_deps(
     session_runtimes: Map::new(),
     session_is_subagent: Map::new(),
     random_bytes_fn: rng,
+    device_tool_override: None,
+    screen_tool_override: None,
+    browser_tool_override: None,
+    signin_tool_override: None,
+    wired_extra_tool_names: [],
+    on_session_archived_dsb: None,
   }
 }
 
@@ -793,15 +828,15 @@ pub fn WholeAgents::archive_session(
     Err(e) => return Err(e)
   }
   // Atomically archive the session (and owned conversation members), persist token revocation,
-  // and revoke persistent Vault state (`vault_grants`, `vault_cross_listings`, pending `vault_requests`)
-  // inside ONE single SQLite transaction (1:1 Node `secrets.ts:393,402-418`).
-  let archived_entries = match st.tx(fn(t : sql_db::Db) -> Result[Array[(String, Array[String])], sql_db::SqlError] {
+  // revoke persistent Vault state (`vault_grants`, `vault_cross_listings`, pending `vault_requests`),
+  // and end all open `signin_asks` (`card_outbox` close=true) inside ONE single SQLite transaction.
+  let archived_entries = match st.tx(fn(t : sql_db::Db) -> Result[Array[(String, Array[String], Array[String])], sql_db::SqlError] {
     let outcome = match station_store::archive_session(t, key, now_ms, by) {
       Ok(o) => o
       Err(e) => return Err(e)
     }
     let keys : Array[String] = if outcome.sessions.length() > 0 { outcome.sessions } else { [key] }
-    let entries : Array[(String, Array[String])] = []
+    let entries : Array[(String, Array[String], Array[String])] = []
     for i in 0..<keys.length() {
       let sk = keys[i]
       let marker = self.generate_revoked_marker(sk)
@@ -816,7 +851,11 @@ pub fn WholeAgents::archive_session(
         Ok(ids) => ids
         Err(e) => return Err(e)
       }
-      entries.push((sk, dropped_ids))
+      let ended_signins = match end_signin_asks_for_archived_session_tx(t, sk) {
+        Ok(ids) => ids
+        Err(e) => return Err(e)
+      }
+      entries.push((sk, dropped_ids, ended_signins))
     }
     Ok(entries)
   }) {
@@ -824,9 +863,13 @@ pub fn WholeAgents::archive_session(
     Err(e) => return Err("archive_session failed: " + e.message)
   }
   for i in 0..<archived_entries.length() {
-    let (sk, dropped_ids) = archived_entries[i]
+    let (sk, dropped_ids, ended_signins) = archived_entries[i]
     let _ = self.revoke_session_token(sk)
     purge_vault_mem_for_archived_session(whole_store, sk, dropped_ids)
+    match self.on_session_archived_dsb {
+      Some(f) => f(sk, ended_signins, now_ms)
+      None => ()
+    }
     match self.hub.actors.get(sk) {
       Some(a) => {
         let _ = a.evict()
@@ -3532,14 +3575,37 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
+  let secret_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool == "sign_in" {
+      match self.signin_tool_override {
+        Some(f) => return f(session, tool, args)
+        None => ()
+      }
+    }
+    (base.secret)(session, tool, args)
+  }
+
+  let device_handler = match self.device_tool_override {
+    Some(f) => f
+    None => base.device
+  }
+  let screen_handler = match self.screen_tool_override {
+    Some(f) => f
+    None => base.screen
+  }
+  let browser_handler = match self.browser_tool_override {
+    Some(f) => f
+    None => base.browser
+  }
+
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
     remote: base.remote,
-    secret: base.secret,
-    device: base.device,
-    screen: base.screen,
-    browser: base.browser,
+    secret: secret_handler,
+    device: device_handler,
+    screen: screen_handler,
+    browser: browser_handler,
     project: project_handler,
     search: search_handler,
     managed_mcp: base.managed_mcp,
@@ -3587,7 +3653,7 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
         },
       }
     },
-    static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { self.wired_tools() },
     dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { [] },
     listing_of: fn(session : String) -> Option[station_tools::Listing] {
       let rt = match self.session_runtimes.get(session) {

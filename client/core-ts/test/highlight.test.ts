@@ -148,3 +148,32 @@ test("highlight_code_ink_a_call_of_the_clients_kept_by_its_code", () => {
   assert.equal(inkKept("x = 1", "py"), "a2c2f");
   assert.equal(inkKept("x = 1", "text"), null);
 });
+
+test("highlight_css_nested_blocks_comments_strings_and_large_minified_rules", () => {
+  paints("@media { .a { color: #fff; .b > em { margin: 1px } padding: 0 } }", "css", [
+    ["@", "punct"], ["media", "control"], [" ", "text"], ["{", "punct"], [" .", "punct"], ["a", "variable"], [" ", "text"], ["{", "punct"], [" ", "text"],
+    ["color", "property"], [":", "punct"], [" ", "text"], ["#", "punct"], ["fff", "constant"], [";", "punct"], [" ", "text"],
+    [".", "punct"], ["b", "variable"], [" ", "text"], [">", "storage"], [" ", "text"], ["em", "control"], [" ", "text"], ["{", "punct"], [" ", "text"],
+    ["margin", "property"], [":", "punct"], [" ", "text"], ["1", "number"], ["px", "storage"], [" ", "text"], ["}", "punct"], [" ", "text"],
+    ["padding", "property"], [":", "punct"], [" ", "text"], ["0", "number"], [" }", "punct"], [" }", "punct"],
+  ]);
+  paints('{ /* ; */ color: 1px; .nested + span { content: "a;b"; width: 2em } }', "css", [
+    ["{", "punct"], [" ", "text"], ["/* ; */", "comment"], [" ", "text"],
+    ["color", "property"], [":", "punct"], [" ", "text"], ["1", "number"], ["px", "storage"], [";", "punct"], [" ", "text"],
+    [".", "punct"], ["nested", "variable"], [" ", "text"], ["+", "storage"], [" ", "text"], ["span", "control"], [" ", "text"], ["{", "punct"], [" ", "text"],
+    ["content", "property"], [":", "punct"], [" ", "text"], ['"', "quote"], ["a;b", "string"], ['"', "quote"], [";", "punct"], [" ", "text"],
+    ["width", "property"], [":", "punct"], [" ", "text"], ["2", "number"], ["em", "storage"], [" }", "punct"], [" }", "punct"],
+  ]);
+  paints("{ /* { */ padding: 0 }", "css", [
+    ["{", "punct"], [" ", "text"], ["/* { */", "comment"], [" ", "text"],
+    ["padding", "property"], [":", "punct"], [" ", "text"], ["0", "number"], [" }", "punct"],
+  ]);
+  paints('{ a: "x{y"; }', "css", [
+    ["{", "punct"], [" ", "text"], ["a", "control"], [":", "punct"], [" ", "text"], ['"', "quote"], ["x{y", "string"], ['"', "quote"], ["; }", "punct"],
+  ]);
+  const big = `.r{${Array.from({ length: 2000 }, (_, i) => `color${i}:#fff;--v${i}:${i}px`).join(";")}}`;
+  assert.ok(big.length < INK_LIMIT);
+  const out = ink(big, "css");
+  assert.ok(out !== null);
+  assert.equal(runsOf(big, out).map(([t]) => t).join(""), big);
+});

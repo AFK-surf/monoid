@@ -6,6 +6,15 @@ import type { AdminFeedback, FeedbackReply, FeedbackStatus, WorkspaceFeedback } 
 import type { DirectoryDb, DirectoryHost } from "./db";
 import { FEEDBACK_LISTED, FEEDBACK_PER_DAY, FEEDBACK_REPLIES_PER_DAY, FEEDBACK_SHOWN, FEEDBACK_SLIM, contextOf, fail, replyOf, sessionOf, type Row } from "./types";
 
+const SQL_BATCH = 90;
+
+function chunked<T>(items: readonly T[], run: (batch: readonly T[], marks: string) => void): void {
+  for (let i = 0; i < items.length; i += SQL_BATCH) {
+    const batch = items.slice(i, i + SQL_BATCH);
+    run(batch, batch.map(() => "?").join(", "));
+  }
+}
+
 // ── bug reports (feedback.ts) ───────────────────────────────────────────
 
 export class DirectoryFeedback {
@@ -128,15 +137,34 @@ export class DirectoryFeedback {
     // station's ask runs it).
     const said = JSON.stringify(fixes);
     if (said === this.#fixesMarked) return;
+    const untold = this.#db.rows("SELECT number, fixed_in FROM feedback WHERE told_at IS NULL");
+    if (untold.length === 0) {
+      this.#fixesMarked = said;
+      return;
+    }
+    const currentByNumber = new Map<number, number | null>(untold.map((r) => [r.number as number, r.fixed_in as number | null]));
+    const pending = new Map<number, { number: number; version: number; parts: string[] }>();
+    for (const fix of fixes) {
+      const current = currentByNumber.get(fix.number);
+      if (current === undefined || (current !== null && current >= fix.version)) continue;
+      const prev = pending.get(fix.number);
+      if (!prev || fix.version > prev.version) pending.set(fix.number, fix);
+    }
+    if (pending.size === 0) {
+      this.#fixesMarked = said;
+      return;
+    }
     const now = nowSeconds();
     let marked = 0;
-    for (const { number, version, parts } of fixes) {
-      marked += this.#db.ctx.storage.sql.exec(
-        `UPDATE feedback SET fixed_in = ?, fixed_parts = ?, status = CASE WHEN status = 'wontfix' THEN status ELSE 'fixed' END, updated_at = ?
-         WHERE number = ? AND told_at IS NULL AND (fixed_in IS NULL OR fixed_in < ?)`,
-        version, JSON.stringify(parts), now, number, version,
-      ).rowsWritten;
-    }
+    this.#db.ctx.storage.transactionSync(() => {
+      for (const { number, version, parts } of pending.values()) {
+        marked += this.#db.ctx.storage.sql.exec(
+          `UPDATE feedback SET fixed_in = ?, fixed_parts = ?, status = CASE WHEN status = 'wontfix' THEN status ELSE 'fixed' END, updated_at = ?
+           WHERE number = ? AND told_at IS NULL AND (fixed_in IS NULL OR fixed_in < ?)`,
+          version, JSON.stringify(parts), now, number, version,
+        ).rowsWritten;
+      }
+    });
     this.#fixesMarked = said;
     if (marked > 0) this.#host.adminChanged("feedback");
   }
@@ -226,19 +254,45 @@ export class DirectoryFeedback {
     const rows = this.#db.rows(`SELECT f.id, f.number, f.title, f.station, f.context FROM feedback f JOIN station_members s ON s.station = f.station AND s.workspace = ?
       WHERE EXISTS (SELECT 1 FROM feedback_replies r WHERE r.feedback = f.id AND r.author = 'team') ORDER BY f.number DESC LIMIT ${FEEDBACK_SHOWN}`, workspace)
       .filter((r) => this.#chatWorkspace(r.station as string, r.context as string | null) === workspace);
-    const names = new Map<string, string>();
-    const nameOf = (by: string): string => {
-      if (!by.startsWith("account:")) return "";
-      if (!names.has(by)) {
-        const u = this.#db.one("SELECT name, email FROM users WHERE sub = ?", by.slice("account:".length));
-        names.set(by, u ? ((u.name as string) || (u.email as string)) : "");
+    if (rows.length === 0) return { feedback: [] };
+
+    const feedbackIds = rows.map((r) => r.id as string);
+    const repliesByFeedback = new Map<string, Row[]>();
+    const undelivered: string[] = [];
+    const subs = new Set<string>();
+    chunked(feedbackIds, (batch, marks) => {
+      for (const reply of this.#db.rows(
+        `SELECT feedback, id, author, by, text, created_at, delivered_at FROM feedback_replies WHERE feedback IN (${marks}) ORDER BY created_at, rowid`,
+        ...batch,
+      )) {
+        const fid = reply.feedback as string;
+        const list = repliesByFeedback.get(fid);
+        if (list) list.push(reply);
+        else repliesByFeedback.set(fid, [reply]);
+        if (reply.author === "team" && reply.delivered_at === null) undelivered.push(reply.id as string);
+        const by = reply.by as string;
+        if (by.startsWith("account:")) subs.add(by.slice("account:".length));
       }
-      return names.get(by)!;
-    };
-    const now = nowSeconds();
+    });
+
+    const names = new Map<string, string>();
+    chunked([...subs], (batch, marks) => {
+      for (const u of this.#db.rows(`SELECT sub, name, email FROM users WHERE sub IN (${marks})`, ...batch)) {
+        names.set(`account:${u.sub as string}`, (u.name as string) || (u.email as string));
+      }
+    });
+
+    if (undelivered.length > 0) {
+      const now = nowSeconds();
+      this.#db.ctx.storage.transactionSync(() => {
+        chunked(undelivered, (batch, marks) => {
+          this.#db.run(`UPDATE feedback_replies SET delivered_at = ? WHERE id IN (${marks})`, now, ...batch);
+        });
+      });
+    }
+
     const feedback = rows.map((r): WorkspaceFeedback => {
-      const replies = this.#db.rows("SELECT id, author, by, text, created_at, delivered_at FROM feedback_replies WHERE feedback = ? ORDER BY created_at, rowid", r.id);
-      for (const reply of replies) if (reply.author === "team" && reply.delivered_at === null) this.#db.run("UPDATE feedback_replies SET delivered_at = ? WHERE id = ?", now, reply.id);
+      const replies = repliesByFeedback.get(r.id as string) ?? [];
       const context = contextOf(r.context as string | null);
       return {
         id: r.id as string,
@@ -250,7 +304,7 @@ export class DirectoryFeedback {
         replies: replies.map((reply) => {
           const by = reply.by as string;
           const from = reply.author === "team" ? "team" : by.startsWith("account:") ? "person" : "agent";
-          return { id: reply.id as string, from, name: from === "person" ? nameOf(by) : "", text: reply.text as string, created_at: reply.created_at as number };
+          return { id: reply.id as string, from, name: from === "person" ? (names.get(by) ?? "") : "", text: reply.text as string, created_at: reply.created_at as number };
         }),
       };
     });

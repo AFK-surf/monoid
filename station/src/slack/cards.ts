@@ -4,6 +4,7 @@
 // that code and a button that hands it to the login, never said in the thread. Pressed, a button comes over Socket Mode
 // (an `interactive` envelope) and the message is changed to say who answered what.
 import { type Lang, tr } from "../ops/i18n.ts";
+import { markdownBlocks } from "./markdown.ts";
 
 type Json = any;
 
@@ -34,6 +35,7 @@ const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").rep
 
 /// Words as a markdown block: Slack draws it as still.fail does (bold, links, lists, headings, tables, code).
 export const markdown = (text: string): Json => ({ type: "markdown", text });
+export { markdownBlocks };
 
 /// A question's blocks. Options: radio buttons, the recommended one last and chosen, each option's detail under it; a
 /// label or detail too long for an option is shown whole above them, the option keeping its start; with a button that
@@ -57,15 +59,15 @@ export function questionBlocks(text: string, question: Json, lang: Lang): Json[]
     let sent: Sent = { l: labels };
     // Labels too long to carry are read from the option chosen instead (its start, as shown).
     if (JSON.stringify(sent).length > VALUE_CHARS) sent = {};
-    blocks.push(markdownOf(said));
+    blocks.push(...markdownOf(said));
     blocks.push({ type: "actions", elements: [pick, { type: "button", action_id: SEND, text: plain(tr(lang, "station.slack.confirm")), style: "primary", value: JSON.stringify(sent) }] });
   } else if (question?.type === "text") {
     blocks.push({ type: "header", text: plain(tr(lang, "station.card.asking")) });
-    blocks.push(markdownOf(said));
+    blocks.push(...markdownOf(said));
     const hint = typeof question.placeholder === "string" && question.placeholder.trim() !== "" ? ` · ${question.placeholder.trim()}` : "";
     blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: escape(`${tr(lang, "station.slack.replyHint")}${hint}`) }] });
   }
-  return blocks.filter((b) => b !== null);
+  return blocks;
 }
 
 /// A login card: the agent's words (with the login's link), a button that opens its page, and a
@@ -77,13 +79,14 @@ export type LoginPage = { url: string; domain: string; code?: string; paste: boo
 export function loginBlocks(text: string, lang: Lang, page: LoginPage | null = null, shown = true): Json[] {
   const open = page !== null && shown && page.url.length <= URL_CHARS ? page : null;
   const button = open && { type: "actions", elements: [{ type: "button", action_id: OPEN, text: plain(tr(lang, "station.slack.loginOpen", { domain: open.domain })), url: open.url, ...(open.paste ? {} : { style: "primary" }) }] };
+  const head = markdownOf(text.trim() === "" ? [] : [text]);
   if (page !== null && !page.paste) {
-    if (open === null) return [markdownOf(text.trim() === "" ? [] : [text])].filter((b) => b !== null);
+    if (open === null) return head;
     const code = { type: "section", text: { type: "mrkdwn", text: `${escape(tr(lang, "station.slack.loginDeviceCode"))}  \`${escape(page.code ?? "")}\`` } };
-    return [markdownOf(text.trim() === "" ? [] : [text]), code, button].filter((b) => b !== null);
+    return [...head, code, button].filter((b) => b !== null);
   }
   return [
-    markdownOf(text.trim() === "" ? [] : [text]),
+    ...head,
     button,
     { type: "input", block_id: CODE, dispatch_action: false, label: plain(tr(lang, "station.slack.loginCode")), element: { type: "plain_text_input", action_id: CODE, placeholder: plain(tr(lang, "station.slack.loginCodeHint")) } },
     { type: "actions", elements: [{ type: "button", action_id: LOGIN, text: plain(tr(lang, "station.slack.loginSubmit")), style: "primary" }] },
@@ -105,18 +108,18 @@ export function loginCodeOf(payload: Json): string | null {
   return typeof field?.value === "string" ? field.value.trim() : "";
 }
 
-/// What a card says above its buttons, in one markdown block (none when it says nothing); the most Slack takes.
-const markdownOf = (parts: string[]): Json | null => (parts.length === 0 ? null : markdown(cut(parts.join("\n\n"), MARKDOWN_CHARS)));
+/// What a card says above its buttons, in markdown/rich_text blocks (none when it says nothing); the most Slack takes.
+const markdownOf = (parts: string[]): Json[] => (parts.length === 0 ? [] : markdownBlocks(cut(parts.join("\n\n"), MARKDOWN_CHARS)));
 
 /// A card's words, to be shown again once it is answered: the Markdown the station posted, or, when that is not known
 /// any more (a restart since), the blocks Slack holds of the message. Never the message's `text` Slack hands back with
 /// a press: Slack makes that of the blocks with every line break a space, and as Markdown it reads as one paragraph.
 export type Words = { markdown: string } | { blocks: Json[] };
 
-/// The blocks that show a card's words: its Markdown in a markdown block, or Slack's own blocks of it without what
+/// The blocks that show a card's words: its Markdown as blocks, or Slack's own blocks of it without what
 /// could be pressed or filled in (its buttons and fields).
 function wordsBlocks(words: Words): Json[] {
-  if ("markdown" in words) return [markdownOf(words.markdown.trim() === "" ? [] : [words.markdown])].filter((b) => b !== null);
+  if ("markdown" in words) return markdownOf(words.markdown.trim() === "" ? [] : [words.markdown]);
   return words.blocks.filter((b) => b?.type !== "actions" && b?.type !== "input");
 }
 
@@ -130,7 +133,7 @@ export function answeredBlocks(words: Words, who: string, said: string, lang: La
 /// nothing to press any more.
 export function endedBlocks(text: string, words: string): Json[] {
   const ended = { type: "context", elements: [{ type: "mrkdwn", text: escape(words) }] };
-  return [markdownOf(text.trim() === "" ? [] : [text]), ended].filter((b) => b !== null);
+  return [...markdownOf(text.trim() === "" ? [] : [text]), ended];
 }
 
 /// Where a thread stands once its agent's turn ended (the line still.fail's chat shows at its end, and its row): done,

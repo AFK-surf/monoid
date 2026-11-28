@@ -72,7 +72,7 @@ pub fn slack_post_message_request(
 ) -> HttpRequest {
   let blocks_str = match blocks_json {
     Some(b) => b
-    None => base_codec::json_stringify(base_codec::json_arr([slack_markdown_block(text)]))
+    None => base_codec::json_stringify(base_codec::json_arr(slack_markdown_blocks(text)))
   }
   let params : Array[(String, String)] = [
     ("channel", thread.channel),
@@ -1009,7 +1009,10 @@ pub fn SlackConnector::post_step(
     let blocks_opt : Option[String] = if is_last && card_blocks.length() > 0 {
       let arr : Array[base_codec::Json] = []
       if part.trim().length() > 0 {
-        arr.push(slack_markdown_block(part))
+        let md_blocks = slack_markdown_blocks(part)
+        for mi in 0..<md_blocks.length() {
+          arr.push(md_blocks[mi])
+        }
       }
       for bi in 0..<card_blocks.length() {
         arr.push(card_blocks[bi])

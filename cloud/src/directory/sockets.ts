@@ -375,15 +375,21 @@ export class DirectorySockets {
       lock: this.#host.lockHead(row.workspace as string),
       ...(this.#host.locked(row.workspace as string) ? { locked: true } : {}),
     }));
-    const { peers, revocations, lock: _, locked: __, ...row } = home! as typeof home & { locked?: true };
+    const { peers, revocations, lock, locked: __, ...row } = home! as typeof home & { locked?: true };
     // Every workspace's own relays after still.fail's (one endpoint, homed on any of them): a station from before them
     // keeps one more relay as it keeps the rest.
     // `stillfail_relays`: still.fail's alone, so a station tells them from its workspaces' own where one of those is
     // also one of still.fail's (station/src/mesh/ways.ts `stillFails`).
     const stillfail_relays = [...told.relay_urls];
     const relay_urls = [...told.relay_urls];
-    for (const url of found.flatMap((w) => parseRelays(w.relays))) if (!relay_urls.map(sameUrl).includes(sameUrl(url))) relay_urls.push(url);
-    const lock = this.#host.lockHead(row.workspace);
+    const seenRelays = new Set(ours);
+    for (const url of found.flatMap((w) => parseRelays(w.relays))) {
+      const normalized = sameUrl(url);
+      if (!seenRelays.has(normalized)) {
+        seenRelays.add(normalized);
+        relay_urls.push(url);
+      }
+    }
     return JSON.stringify({ type: "state", peers, ...row, origin: this.#db.env.PUBLIC_ORIGIN, ...told, relay_urls, stillfail_relays, grant_keys: grantKeys(this.#db.env), revocations, lock, workspaces: joined });
   }
 
