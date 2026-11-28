@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c09350c0b](https://github.com/AFK-surf/monoid/commit/c09350c0bc20bc276d00dd73d913c9319c8fb6b1) fix(cloud): match weak If-None-Match headers and c | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [02544a117](https://github.com/AFK-surf/monoid/commit/02544a11796d97f393e109172f7fd1d7a00a8d25) fix(install): stage unpacked release on data files | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [c4362f5f7](https://github.com/AFK-surf/monoid/commit/c4362f5f7427daa525820fb0d22fd5819a23c5b0) fix(station): preserve Slack ordered list numberin | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [e196a2778](https://github.com/AFK-surf/monoid/commit/e196a27789a9bbe5a84d0a6138ac178716863e7e) feat(station-main): wire 17 live updates, accounts | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.68 | 120.63 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.56 | 127.37 |
 | [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
-| [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c09350c0b](https://github.com/AFK-surf/monoid/commit/c09350c0bc20bc276d00dd73d913c9319c8fb6b1) fix(cloud): match weak If-None-Match headers and c | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.95 |
 | [02544a117](https://github.com/AFK-surf/monoid/commit/02544a11796d97f393e109172f7fd1d7a00a8d25) fix(install): stage unpacked release on data files | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
 | [c4362f5f7](https://github.com/AFK-surf/monoid/commit/c4362f5f7427daa525820fb0d22fd5819a23c5b0) fix(station): preserve Slack ordered list numberin | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.43 |
 | [e196a2778](https://github.com/AFK-surf/monoid/commit/e196a27789a9bbe5a84d0a6138ac178716863e7e) feat(station-main): wire 17 live updates, accounts | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.53 |
 | [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.61 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.85 |
-| [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
