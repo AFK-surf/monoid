@@ -7195,11 +7195,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                 }
               }
-              // R13 P1-2: Prune any draining/stopping markers whose runners are already gone from disk,
-              // syncing/unlinking `whole-live-runners.json` once all orphaned markers are cleared.
-              if st.live_runners.prune_orphaned_draining_stops(live_runners) {
-                let _ = st.live_runners.sync_handover_state_file(ctx.ops_fs, ctx.self_pid, ctx.sep, log_fn=fn(m) { ctx.log(m) })
-              }
+              // R14 Invariant 2: Do NOT single-scan prune `draining_stopping_ids` at startup;
+              // `LiveRunnerManager::tick()` safely sweeps dead exact `instance_id`s via OS liveness
+              // checks and expires `Spawning` `"rid:<id>@<before_ms>"` markers after 30s while
+              // catching late-ready runners during that window.
               ctx.mark_role_ready()
               true
             }

@@ -2011,15 +2011,146 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(mgr3.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after drain")
   assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file must be unlinked once truly drained")
 
-  // 4. Startup orphan prune: when old runner already exited before discovery, `prune_orphaned_draining_stops([])`
-  // removes stale markers so a replacement runner for the same session is NEVER killed!
+  // 4. R14 Invariant 2: `sweep_draining_stop_markers` keeps `Spawning` rid@t within 30s window,
+  // expires it after `t + 30s`, keeps exact `instance_id` while PID alive, removes it once PID dead!
   let mgr4 = LiveRunnerManager::new()
   mgr4.set_handover_state_path(ho_file)
   mgr4.draining_stopping_ids.set("r-old:5000:1700000001000", true)
-  mgr4.draining_stopping_ids.set("rid:r-gone@1700000001000", true)
-  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write orphan markers")
-  assert_true(mgr4.prune_orphaned_draining_stops([]), "orphan prune removes markers absent from live_runners")
-  assert_true(!mgr4.has_handover_carry_state(), "all orphaned markers pruned")
-  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after orphan prune")
-  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after orphan prune")
+  mgr4.draining_stopping_ids.set("rid:r-late@1700000001000", true)
+  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write stop markers")
+  // At t + 5s with PID 5000 still alive: NEITHER marker is removed!
+  assert_true(
+    !mgr4.sweep_draining_stop_markers(1700000006000L, check_pid_alive=fn(p, _s) { p == 5000 }),
+    "must not sweep live exact id or Spawning rid@t at t+5s",
+  )
+  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "live exact id kept")
+  assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t kept at t+5s")
+  // Once PID 5000 exits (at t + 10s): exact id removed, Spawning rid@t STILL kept!
+  assert_true(
+    mgr4.sweep_draining_stop_markers(1700000011000L, check_pid_alive=fn(_p, _s) { false }),
+    "dead exact id swept",
+  )
+  assert_true(!mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "dead exact id removed")
+  assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t still kept at t+10s")
+  // At t + 31s: Spawning rid@t finally expires -> file unlinked!
+  assert_true(
+    mgr4.sweep_draining_stop_markers(1700000032000L, check_pid_alive=fn(_p, _s) { false }),
+    "Spawning rid@t swept at t+31s",
+  )
+  assert_true(!mgr4.has_handover_carry_state(), "all markers swept")
+  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after sweep")
+  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after sweep")
+}
+
+test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {
+  let mem = station_ops::MemFs::new()
+  let base_ops = mem.ops()
+  let ho_file = "/run/whole-live-runners.json"
+  let mut fail_remove = true
+  let flaky_ops = station_ops::OpsFs::{
+    read_bytes: base_ops.read_bytes,
+    write_bytes: base_ops.write_bytes,
+    remove: fn(p : String) -> Result[Unit, station_ops::FsErr] {
+      if fail_remove { Err(station_ops::FsErr::PermissionDenied("injected unlink failure")) } else { (base_ops.remove)(p) }
+    },
+    rename: base_ops.rename,
+    mkdir_p: base_ops.mkdir_p,
+    readdir: base_ops.readdir,
+    stat: base_ops.stat,
+    lstat: base_ops.lstat,
+    readlink: base_ops.readlink,
+    realpath: base_ops.realpath,
+    truncate: base_ops.truncate,
+    rotate_in_place_native: base_ops.rotate_in_place_native,
+  }
+
+  // 1. `handover_state_dirty` stays true when unlink fails even though maps are empty, then clears on retry!
+  let mgr = LiveRunnerManager::new()
+  mgr.set_handover_state_path(ho_file)
+  mgr.draining_stopping_ids.set("r-dirty:777:1700000001000", true)
+  assert_true(mgr.sync_handover_state_file(flaky_ops, 2001, "/").is_ok(), "initial write succeeds")
+  assert_true(!mgr.handover_state_dirty, "clean after write")
+  mgr.draining_stopping_ids.remove("r-dirty:777:1700000001000")
+  assert_true(!mgr.has_handover_carry_state(), "maps now empty")
+  assert_true(mgr.sync_handover_state_file(flaky_ops, 2001, "/").is_err(), "unlink fails with PermissionDenied")
+  assert_true(mgr.handover_state_dirty, "dirty flag set on unlink failure")
+  assert_true(base_ops.read_text(ho_file).is_ok(), "stale file still on disk")
+  // Retry once FS recovers -> unlinks file and clears dirty flag!
+  fail_remove = false
+  assert_true(mgr.sync_handover_state_file(flaky_ops, 2001, "/").is_ok(), "retry unlink succeeds")
+  assert_true(!mgr.handover_state_dirty, "dirty flag cleared after retry")
+  assert_true(base_ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked on retry")
+
+  // 2. `finish_draining(confirmed_exited=false)` preserves stop marker, `confirmed_exited=true` clears it!
+  let mgr2 = LiveRunnerManager::new()
+  mgr2.set_handover_state_path(ho_file)
+  let inst = "r-eof:888:1700000002000"
+  mgr2.draining_stopping_ids.set(inst, true)
+  let dummy_sess = LiveRunnerSession::{
+    conn_id: 99,
+    session_key: "s-eof",
+    ws: "ws-a",
+    profile_id: "default",
+    model_opt: None,
+    person_opt: None,
+    thread_id_opt: None,
+    runtime_kind: station_drivers::RuntimeKind::Claude,
+    runtime_str: "claude",
+    runner_id: "r-eof",
+    is_acp: false,
+    is_codex: false,
+    is_adopted: true,
+    adopted_instance_id: Some(inst),
+    adopted_db_initialized: false,
+    phase: LiveRunnerPhase::Exited,
+    pending_prompt: None,
+    pending_steers: [],
+    runtime_session_id: None,
+    current_turn_id: None,
+    turn_started_at: 0L,
+    turn_start_out_offset: 0L,
+    pending_ack_out: 0L,
+    last_turn_ended_at: 0L,
+    stop_guard: station_drivers::OwnProcessStopGuard::new(station_drivers::RuntimeKind::Claude),
+    acp_guard: station_drivers::AcpTurnGuard::new(station_drivers::RuntimeKind::Claude),
+    agy_tracker: station_drivers::AgyStateTracker::new("", None),
+    claude_turn: parse_claude::Turn::new(),
+    codex_live: parse_codex::Live::new(),
+    mcp_config_json: None,
+    codex_thread_params_json: None,
+    cwd: "/tmp",
+    rx_chunks: [],
+    rx_total_bytes: 0,
+    out_line_buf: Bytes::new(0),
+    err_line_buf: Bytes::new(0),
+    acked_out: 0L,
+    acked_err: 0L,
+    out_at: 0L,
+    err_at: 0L,
+    prompt_seq: 0,
+    kill_escalate_at: None,
+    detached_for_handover: false,
+    close_after_write: false,
+    attached: false,
+    write_inflight: false,
+    write_inflight_bytes: 0,
+    write_queue: [],
+    write_queue_bytes: 0,
+    codex_active_turn_id: None,
+    dropping_oversized_out_line: false,
+    stopping: true,
+    runner_exited: false,
+    identity_verified: false,
+    adopted_passive_only: false,
+    prompt_write_pending: false,
+    pending_end_turn: None,
+    adopted_db_out: 0L,
+  }
+  mgr2.draining.set(99, dummy_sess)
+  mgr2.finish_draining(99, confirmed_exited=false)
+  assert_true(mgr2.draining_stopping_ids.contains(inst), "socket error/EOF must NOT clear stop marker")
+  // Now on confirmed exit, marker IS cleared!
+  mgr2.draining.set(100, dummy_sess)
+  mgr2.finish_draining(100, confirmed_exited=true)
+  assert_true(!mgr2.draining_stopping_ids.contains(inst), "confirmed exit MUST clear stop marker")
 }
