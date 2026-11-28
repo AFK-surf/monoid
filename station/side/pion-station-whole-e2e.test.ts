@@ -95,15 +95,17 @@ after(async () => {
       try { c.kill("SIGKILL"); } catch {}
     }
   }
-  for (const ep of endpoints.splice(0)) {
+  const toClose = endpoints.splice(0);
+  if (toClose.length > 0) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        ep.close(),
-        new Promise<void>((resolve) => { timer = setTimeout(resolve, 5000); timer.unref?.(); }),
+        Promise.allSettled(toClose.map((ep) => ep.close())),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 5000); }),
       ]);
-    } catch {}
-    finally { if (timer !== undefined) clearTimeout(timer); }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
   for (const d of dirs.splice(0)) {
     rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
