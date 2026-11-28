@@ -2391,7 +2391,10 @@ pub fn ClientCore::absorb_mesh_admission_lock(
   match ws_payload_opt {
     Some(lp) => {
       let sig_before = self.workspace_lock_change_sig(ws)
-      match self.handle_lock_event_for_workspace(ws, lp) {
+      // Refusal bodies may carry a truncated tail (`serve.ts` `REFUSAL_ENTRIES_BYTES`); absorb
+      // silently (`emit_rejected=false`, aligned with TS `views/lock.ts` `heardTail`) so unattached
+      // tails never spam `CoreEvent::LockRejected` on every refusal.
+      match self.handle_lock_event_for_workspace(ws, lp, emit_rejected=false) {
         Ok(_) => {
           if self.workspace_lock_change_sig(ws) != sig_before {
             advanced = true
@@ -5983,10 +5986,36 @@ fn validate_person_lock_entries_one(
   }
 }
 
+/// Strict deterministic total order for equal-length same-genesis personal lock chains:
+/// returns `true` iff `cand` has a strictly smaller canonical entry hash at the first
+/// divergence index from `held` (asymmetric & transitive, preventing A->B->A oscillation).
+fn person_chain_first_diff_lt(
+  cand : Array[base_codec::Json],
+  held : Array[base_codec::Json],
+  c : lock::Crypto,
+) -> Bool {
+  let n = cand.length()
+  if n != held.length() {
+    return false
+  }
+  for i in 0..<n {
+    let ch = lock_entry_hash(codec_to_form(cand[i]), c)
+    let hh = lock_entry_hash(codec_to_form(held[i]), c)
+    if ch != hh {
+      return ch < hh
+    }
+  }
+  false
+}
+
 /// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>` flat entry array
 /// OR real `station/src/mesh/serve.ts:150-151` `[{ genesis, entries }, ...]` chain array) via
-/// `lock::fold_person` / `verify_person_lock`.
-/// Returns `(valid, changed)` and wakes paused stations ONLY when the stored canonical chain actually changes.
+/// `lock::fold_person` / `verify_person_lock`, aligned with `client/core-ts/src/personal-lock.ts:519-555`:
+/// 1. Once a local chain is held (`cur_genesis != ""`), strictly pin genesis — reject every foreign
+///    `vg != cur_genesis` chain even if longer.
+/// 2. Strictly monotonic anti-rollback: ignore shorter lagging prefixes (`cand.length() < held.length()`).
+/// 3. Equal-length same-genesis competing forks converge one-way via `person_chain_first_diff_lt`.
+/// Returns `(valid, changed)` and wakes paused stations ONLY when the stored chain actually advances.
 fn ClientCore::load_person_lock_json_inner(
   self : ClientCore,
   raw : base_codec::Json,
@@ -6019,7 +6048,7 @@ fn ClientCore::load_person_lock_json_inner(
       _ => ()
     }
   }
-  let candidate_opt : Option[Array[base_codec::Json]] = if is_chain_obj_array {
+  let candidate_opt : Option[(String, Array[base_codec::Json])] = if is_chain_obj_array {
     let mut best_g = ""
     let mut best_entries : Option[Array[base_codec::Json]] = None
     for i in 0..<xs.length() {
@@ -6031,16 +6060,18 @@ fn ClientCore::load_person_lock_json_inner(
       let g_opt = proto_str(item, "genesis")
       match validate_person_lock_entries_one(item_entries, sub, g_opt, c) {
         Some((vg, ventries)) => {
+          // Law 1 (Pinned genesis): once holding a personal lock chain, NEVER accept a foreign genesis!
+          if cur_genesis.length() > 0 && vg != cur_genesis {
+            continue
+          }
           let take = match best_entries {
             None => true
             Some(prev) =>
             if ventries.length() > prev.length() {
               true
             } else if ventries.length() == prev.length() {
-              if cur_genesis.length() > 0 && vg == cur_genesis && best_g != cur_genesis {
-                true
-              } else if cur_genesis.length() > 0 && best_g == cur_genesis && vg != cur_genesis {
-                false
+              if vg == best_g {
+                person_chain_first_diff_lt(ventries, prev, c)
               } else {
                 vg < best_g
               }
@@ -6056,21 +6087,45 @@ fn ClientCore::load_person_lock_json_inner(
         None => ()
       }
     }
-    best_entries
+    match best_entries {
+      Some(be) => Some((best_g, be))
+      None => None
+    }
   } else {
     match validate_person_lock_entries_one(xs, sub, None, c) {
-      Some((_, ventries)) => Some(ventries)
+      Some((vg, ventries)) =>
+      if cur_genesis.length() > 0 && vg != cur_genesis {
+        None
+      } else {
+        Some((vg, ventries))
+      }
       None => None
     }
   }
   match candidate_opt {
     None => (false, false)
-    Some(validated) => {
+    Some((_, validated)) => {
+      if self.person_lock_entries.length() == 0 {
+        self.person_lock_entries = validated
+        self.wake_paused_stations_on_lock_change("")
+        return (true, true)
+      }
       let prev_fp = person_lock_entries_fingerprint(self.person_lock_entries, c)
       let next_fp = person_lock_entries_fingerprint(validated, c)
       if prev_fp == next_fp {
         return (true, false)
       }
+      // Law 2 (Anti-rollback): lagging prefix or shorter fork MUST NOT roll back held chain!
+      if validated.length() < self.person_lock_entries.length() {
+        return (true, false)
+      }
+      // Law 3 (Equal-length competing fork): one-way convergence only via deterministic total order.
+      if validated.length() == self.person_lock_entries.length() {
+        if !person_chain_first_diff_lt(validated, self.person_lock_entries, c) {
+          return (true, false)
+        }
+      }
+      // Law 4 (Strict extension or winning equal-length fork of same genesis): advance & wake once!
       self.person_lock_entries = validated
       self.wake_paused_stations_on_lock_change("")
       (true, true)
@@ -6114,14 +6169,20 @@ fn ClientCore::apply_lock_chain_for_workspace(
   entries : Array[form::Json],
   root_hash : String,
   now : Option[Double] = None,
+  emit_rejected : Bool = true,
 ) -> Result[VerifiedWorkspaceLock, String] {
+  let tell_rejected = fn(msg : String) -> Unit {
+    if emit_rejected {
+      self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+    }
+  }
   let is_primary = target_ws == self.workspace
   let extra_slot_opt : Option[WorkspaceLockSlot] = if is_primary {
     if self.lock_read_pending {
       self.restore_lock_state()
       if self.lock_read_pending {
         let msg = "persisted lock state unreadable; refusing lock update"
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
     }
@@ -6130,7 +6191,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
     match self.get_or_restore_extra_lock(target_ws) {
       Ok(sl) => Some(sl)
       Err(msg) => {
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
     }
@@ -6163,7 +6224,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
   // Law 0: Never degrade to TOFU when persisted lock state is corrupt.
   if cur_corrupt {
     let msg = "corrupt persisted lock state; refusing TOFU reset"
-    self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+    tell_rejected(msg)
     return Err(msg)
   }
   // Law 1: Genesis root pinning (anti-hijack). Once pinned to `G`, never accept any other root.
@@ -6171,7 +6232,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
     Some(pinned) => {
       if pinned != root_hash {
         let msg = "lock root mismatch: pinned to " + pinned + ", got " + root_hash
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
     }
@@ -6179,7 +6240,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
   }
   if entries.length() == 0 {
     let msg = "empty lock chain"
-    self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+    tell_rejected(msg)
     return Err(msg)
   }
 
@@ -6223,14 +6284,14 @@ fn ClientCore::apply_lock_chain_for_workspace(
         let cur_seq = cur_st.seq.to_int()
         if max_incoming_seq < cur_seq {
           let msg = "lock rollback rejected: incoming max seq " + max_incoming_seq.to_string() + " < held seq " + cur_seq.to_string()
-          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+          tell_rejected(msg)
           return Err(msg)
         }
         return verify_workspace_lock(cur_kept_entries, root_hash, votes=lock::Votes::Roles, now=now)
       }
       None => {
         let msg = "no valid lock entries"
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
     }
@@ -6250,18 +6311,18 @@ fn ClientCore::apply_lock_chain_for_workspace(
 
   match verify_workspace_lock(all, root_hash, votes=lock::Votes::Roles, now=now) {
     Err(why) => {
-      self.outbox.tell(CoreEvent::LockRejected(target_ws, why))
+      tell_rejected(why)
       Err(why)
     }
     Ok(v) => {
       if v.state.ws != target_ws {
         let msg = "lock workspace mismatch: expected " + target_ws + ", got " + v.state.ws
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
       if v.state.genesis != root_hash {
         let msg = "lock genesis mismatch: expected " + root_hash + ", got " + v.state.genesis
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
 
@@ -6291,7 +6352,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
         let h = lock_entry_hash(e, c)
         if on_set.get(h).is_none() && !is_aside(e) {
           let msg = "the chain held does not hold by the rules"
-          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+          tell_rejected(msg)
           return Err(msg)
         }
       }
@@ -6376,7 +6437,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
       let aside_same = lock_same_hash_seq(final_aside, cur_kept_aside, c)
       if cur_state.is_some() && active_same && aside_same {
         let msg = "incoming lock entries rejected (" + fresh.length().to_string() + " unaccepted, " + v.rejected_count.to_string() + " invalid)"
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        tell_rejected(msg)
         return Err(msg)
       }
 
@@ -6589,6 +6650,7 @@ fn ClientCore::handle_lock_event_for_workspace(
   payload : base_codec::Json,
   sync_opt : Option[SyncScheduler] = None,
   station : String = "",
+  emit_rejected : Bool = true,
 ) -> Result[Unit, String] {
   let _ = station
   match proto_str(payload, "workspace") {
@@ -6642,7 +6704,9 @@ fn ClientCore::handle_lock_event_for_workspace(
       self.restore_lock_state()
       if self.lock_read_pending {
         let msg = "persisted lock state unreadable; refusing lock event"
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        if emit_rejected {
+          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        }
         return Err(msg)
       }
     }
@@ -6651,7 +6715,9 @@ fn ClientCore::handle_lock_event_for_workspace(
     match self.get_or_restore_extra_lock(target_ws) {
       Ok(sl) => sl.lock_root
       Err(msg) => {
-        self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        if emit_rejected {
+          self.outbox.tell(CoreEvent::LockRejected(target_ws, msg))
+        }
         return Err(msg)
       }
     }
@@ -6687,7 +6753,7 @@ fn ClientCore::handle_lock_event_for_workspace(
   if root.length() == 0 {
     return Err("missing lock root")
   }
-  match self.apply_lock_chain_for_workspace(target_ws, form_entries, root) {
+  match self.apply_lock_chain_for_workspace(target_ws, form_entries, root, emit_rejected=emit_rejected) {
     Ok(_) => Ok(())
     Err(msg) => Err(msg)
   }

@@ -1965,6 +1965,224 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
     h4.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = h4.rt.run_ready()
+
+  // Part E (R7): Personal lock anti-rollback, pinned genesis, monotonic equal-length fork choice,
+  // two-station alternating convergence (0 ping-pong), AND silent workspace refusal tail gap absorption!
+  let sign_person_gen = fn(seed : Bytes, sub : String, dev_hex : String, label : String) -> (base_codec::Json, String) {
+    let key = ed25519_key_id(seed)
+    let u = base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str("person:" + sub)),
+      ("seq", base_codec::json_int(0)),
+      ("prev", base_codec::json_null()),
+      ("at", base_codec::json_int(1790000100)),
+      ("kind", base_codec::json_str("genesis")),
+      (
+        "body",
+        base_codec::json_obj([
+          ("sub", base_codec::json_str(sub)),
+          (
+            "device",
+            base_codec::json_obj([
+              ("key", base_codec::json_str(key)),
+              ("id", base_codec::json_str(dev_hex)),
+              ("label", base_codec::json_str(label)),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+    let sf = match sign_lock_entry(seed, codec_to_form(u)) {
+      Ok(e) => e
+      Err(e) => panic("sign person gen failed: " + e)
+    }
+    let h = match lock::entry_hash(sf, native_lock_crypto()) {
+      Ok(v) => v
+      Err(_) => panic("hash person gen failed")
+    }
+    (form_to_codec(sf), h)
+  }
+  let sign_person_dev = fn(
+    signer_seed : Bytes,
+    sub : String,
+    seq : Int,
+    prev_hash : String,
+    dev_seed : Bytes,
+    dev_hex : String,
+    label : String,
+  ) -> (base_codec::Json, String) {
+    let dkey = ed25519_key_id(dev_seed)
+    let u = base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str("person:" + sub)),
+      ("seq", base_codec::json_int(seq)),
+      ("prev", base_codec::json_str(prev_hash)),
+      ("at", base_codec::json_int(1790000100 + seq * 10)),
+      ("kind", base_codec::json_str("device")),
+      (
+        "body",
+        base_codec::json_obj([
+          ("key", base_codec::json_str(dkey)),
+          ("id", base_codec::json_str(dev_hex)),
+          ("label", base_codec::json_str(label)),
+        ]),
+      ),
+    ])
+    let sf = match sign_lock_entry(signer_seed, codec_to_form(u)) {
+      Ok(e) => e
+      Err(e) => panic("sign person dev failed: " + e)
+    }
+    let h = match lock::entry_hash(sf, native_lock_crypto()) {
+      Ok(v) => v
+      Err(_) => panic("hash person dev failed")
+    }
+    (form_to_codec(sf), h)
+  }
+  let make_person_refusal_adm = fn(g_hash : String, entries : Array[base_codec::Json]) -> MeshAdmission {
+    let raw = base_codec::json_obj([
+      ("ok", base_codec::json_bool(false)),
+      ("code", base_codec::json_str("lock_unconfirmed")),
+      ("error", base_codec::json_str("lock refused")),
+      (
+        "person",
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("genesis", base_codec::json_str(g_hash)),
+            ("entries", base_codec::json_arr(entries)),
+          ]),
+        ]),
+      ),
+    ])
+    parse_mesh_admission(raw)
+  }
+
+  let (pg0, pg0_h) = sign_person_gen(p_seed, "sub-alice", hex_64("d"), "Alice Mac")
+  let (pe1, pe1_h) = sign_person_dev(p_seed, "sub-alice", 1, pg0_h, da_seed_bytes(0x78), hex_64("e"), "Alice Phone")
+  let (pe2, _) = sign_person_dev(p_seed, "sub-alice", 2, pe1_h, da_seed_bytes(0x79), hex_64("f"), "Alice iPad")
+  let (pe1_alt, pe1_alt_h) = sign_person_dev(p_seed, "sub-alice", 1, pg0_h, da_seed_bytes(0x7A), hex_64("1"), "Alice Alt")
+
+  // Foreign genesis chain `[g_other, x1, x2, x3]` (length 4 > 3, different root key):
+  let other_seed = da_seed_bytes(0x91)
+  let (og0, og0_h) = sign_person_gen(other_seed, "sub-alice", hex_64("2"), "Other Root")
+  let (ox1, ox1_h) = sign_person_dev(other_seed, "sub-alice", 1, og0_h, da_seed_bytes(0x92), hex_64("3"), "Other 1")
+  let (ox2, ox2_h) = sign_person_dev(other_seed, "sub-alice", 2, ox1_h, da_seed_bytes(0x93), hex_64("4"), "Other 2")
+  let (ox3, _) = sign_person_dev(other_seed, "sub-alice", 3, ox2_h, da_seed_bytes(0x94), hex_64("5"), "Other 3")
+
+  let h5 = make_r4_mesh_harness(true)
+  h5.core.attach_mesh_station_transport(DA_ST1, h5.ctrl, workspace=DA_WS1)
+
+  // E1 + E2: Seed `[g, e1]`, then alternate Station B `[g, e1, e2]` and Station A `[g, e1]`:
+  // MUST converge monotonically to `[g, e1, e2]` with `lock_gen` incrementing EXACTLY ONCE (0 rollback, 0 ping-pong)!
+  debug_assert(h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "initial [g,e1] absorbed")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 2, "holding [g,e1]")
+  let gen_e1 = h5.ctrl.lock_gen()
+  debug_assert(h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2])), "station B extends to [g,e1,e2]")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3 && h5.ctrl.lock_gen() == gen_e1 + 1L, "advanced to len 3, lock_gen +1")
+  // Station A lagging prefix `[g, e1]`, Station B `[g, e1, e2]`, Station A `[g, e1]` again, plus flat load:
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "lagging [g,e1] MUST NOT roll back [g,e1,e2]")
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2])), "duplicate [g,e1,e2] ignored")
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "alternating station A [g,e1] ignored (0 ping-pong)")
+  let _ = h5.core.load_person_lock_json(base_codec::json_arr([pg0, pe1]), "sub-alice")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3, "held chain stayed [g,e1,e2] with zero rollback")
+  debug_assert(h5.ctrl.lock_gen() == gen_e1 + 1L, "lock_gen incremented EXACTLY ONCE across alternating stations")
+
+  // E3: Foreign genesis `[g_other, x1, x2, x3]` (even longer: len 4 > 3) MUST be rejected on BOTH wire formats!
+  debug_assert(
+    !h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(og0_h, [og0, ox1, ox2, ox3])),
+    "foreign genesis chain array rejected even when longer",
+  )
+  debug_assert(
+    !h5.core.load_person_lock_json(base_codec::json_arr([og0, ox1, ox2, ox3]), "sub-alice"),
+    "foreign genesis flat array rejected even when longer",
+  )
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3, "foreign genesis did NOT replace pinned chain")
+  debug_assert(
+    lock_entry_hash(codec_to_form(h5.core.person_lock_kept_entries()[0]), native_lock_crypto()) == pg0_h,
+    "pinned personal genesis hash unchanged",
+  )
+  debug_assert(h5.ctrl.lock_gen() == gen_e1 + 1L, "foreign genesis did NOT increment lock_gen")
+
+  // E4a: Same-genesis equal-length competing forks `[g, high]` vs `[g, low]` converge one-way (A->B->A NEVER oscillates)!
+  let (fork_low, fork_high, low_h) = if pe1_h < pe1_alt_h { (pe1, pe1_alt, pe1_h) } else { (pe1_alt, pe1, pe1_alt_h) }
+  let h6 = make_r4_mesh_harness(true)
+  h6.core.attach_mesh_station_transport(DA_ST1, h6.ctrl, workspace=DA_WS1)
+  debug_assert(h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, fork_high])), "seed equal-length fork_high")
+  let gen_fork = h6.ctrl.lock_gen()
+  debug_assert(h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, fork_low])), "deterministic one-way switch high -> low")
+  debug_assert(h6.ctrl.lock_gen() == gen_fork + 1L, "lock_gen incremented once on high -> low convergence")
+  debug_assert(
+    lock_entry_hash(codec_to_form(h6.core.person_lock_kept_entries()[1]), native_lock_crypto()) == low_h,
+    "converged to deterministic winning head",
+  )
+  debug_assert(!h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, fork_high])), "loser fork_high MUST NOT flip back (0 oscillation)")
+  debug_assert(!h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, fork_low])), "repeat winner fork_low ignored")
+  debug_assert(h6.ctrl.lock_gen() == gen_fork + 1L, "lock_gen stayed flat after one-way fork convergence")
+
+  // E4b: Truncated workspace refusal tail gap (`[ws_e2]` skipping `seq=1`) absorbs silently with 0 `LockRejected`!
+  let _ = h6.core.drain_frame()
+  let (ws_e1, ws_e1_h) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "member.add",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-carol")),
+      ("email", form::Json::Str("carol@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  let _ = ws_e1
+  let (ws_e2, ws_e2_h) = da_sign_entry(
+    kit,
+    DA_WS1,
+    2,
+    ws_e1_h,
+    "member.add",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-dave")),
+      ("email", form::Json::Str("dave@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  // Seed genesis `[g]` first, then deliver a truncated refusal tail `[ws_e2]` (missing `ws_e1` gap!):
+  let _ = h6.core.apply_lock_chain([kit.genesis], kit.genesis_hash)
+  let _ = h6.core.drain_frame()
+  let gap_adm = parse_mesh_admission(base_codec::json_obj([
+    ("ok", base_codec::json_bool(false)),
+    ("code", base_codec::json_str("lock_unconfirmed")),
+    ("error", base_codec::json_str("lock refused")),
+    (
+      "lock",
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(2)),
+        ("hash", base_codec::json_str(ws_e2_h)),
+        ("genesis", base_codec::json_str(kit.genesis_hash)),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([form_to_codec(ws_e2)])),
+  ]))
+  debug_assert(!h6.core.absorb_mesh_admission_lock(DA_WS1, gap_adm), "gapped refusal tail returns advanced=false")
+  let gap_evs = h6.core.drain_frame()
+  let mut saw_lock_rejected = false
+  for gi in 0..<gap_evs.length() {
+    match gap_evs[gi] {
+      CoreEvent::LockRejected(_, _) => saw_lock_rejected = true
+      _ => ()
+    }
+  }
+  debug_assert(!saw_lock_rejected, "gapped refusal tail absorbs silently with 0 CoreEvent::LockRejected")
+
+  h5.core.stop()
+  h6.core.stop()
+  let _ = h5.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h5.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h6.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h6.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h5.rt.run_ready()
+  let _ = h6.rt.run_ready()
 }
 
 test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapshot + post-cut SSE replay, 4-view parity, and tx rollback atomicity)" {

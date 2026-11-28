@@ -1370,10 +1370,30 @@ fn strip_trailing_slash_rt(s : String) -> String {
   s.slice(0, end)
 }
 
+fn ws_confirm_401_key(ws_id : String, cred_epoch : Int64) -> String {
+  ws_id + "|" + cred_epoch.to_string()
+}
+
 fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
-  sess.ws_confirm_401_rotated_count.remove(ws_id)
-  sess.ws_confirm_401_inflight_gen.remove(ws_id)
-  sess.ws_confirm_401_transient_count.remove(ws_id)
+  let prefix = ws_id + "|"
+  let rks = sess.ws_confirm_401_rotated_count.keys()
+  for i in 0..<rks.length() {
+    if rks[i].starts_with(prefix) {
+      sess.ws_confirm_401_rotated_count.remove(rks[i])
+    }
+  }
+  let iks = sess.ws_confirm_401_inflight_gen.keys()
+  for i in 0..<iks.length() {
+    if iks[i].starts_with(prefix) {
+      sess.ws_confirm_401_inflight_gen.remove(iks[i])
+    }
+  }
+  let tks = sess.ws_confirm_401_transient_count.keys()
+  for i in 0..<tks.length() {
+    if tks[i].starts_with(prefix) {
+      sess.ws_confirm_401_transient_count.remove(tks[i])
+    }
+  }
 }
 
 fn clear_all_ws_confirm_401_state(sess : RuntimeSession) -> Unit {
@@ -1424,27 +1444,30 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
     !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
 }
 
-/// Handle HTTP 401 on `/v1/workspaces/<ws>` with live `bearer_gen` gating, per-bearer in-flight
-/// deduplication, separate budgets for post-rotation persistent 401s (max 2 rotations) vs transient
-/// OAuth refresh failures (max 2 bounded backoff retries, never locking out the current bearer).
+/// Handle HTTP 401 on `/v1/workspaces/<ws>` with live `(bearer_gen, cred_epoch)` boundary gating,
+/// per-boundary in-flight deduplication (`ws_id|cred_epoch`), and separate budgets for post-rotation
+/// persistent 401s (max 2 rotations per boundary) vs transient OAuth refresh failures (max 2 bounded
+/// backoff retries, never locking out the current bearer or touching a newer boundary's budget).
 fn handle_workspace_confirm_401(
   sess : RuntimeSession,
   ws_id : String,
+  orig_cred_epoch : Int64,
   orig_bearer_gen : Int64,
   orig_session_gen : Int64,
 ) -> Unit {
   if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
     return
   }
-  // Stale 401 from an older bearer MUST NOT consume the current bearer's budget or trigger refresh!
-  if orig_bearer_gen != sess.bearer_gen {
+  // Stale 401 from an older bearer or older confirmation boundary MUST NOT touch current budget!
+  if orig_bearer_gen != sess.bearer_gen || sess.core.membership.cred_epoch_of(ws_id) != orig_cred_epoch {
     return
   }
-  match sess.ws_confirm_401_inflight_gen.get(ws_id) {
+  let bkey = ws_confirm_401_key(ws_id, orig_cred_epoch)
+  match sess.ws_confirm_401_inflight_gen.get(bkey) {
     Some(g) => if g == orig_bearer_gen { return }
     None => ()
   }
-  let rotated_cnt = match sess.ws_confirm_401_rotated_count.get(ws_id) { Some(c) => c; None => 0 }
+  let rotated_cnt = match sess.ws_confirm_401_rotated_count.get(bkey) { Some(c) => c; None => 0 }
   if rotated_cnt >= 2 {
     return
   }
@@ -1452,29 +1475,32 @@ fn handle_workspace_confirm_401(
   if sub_now.length() == 0 {
     return
   }
-  sess.ws_confirm_401_inflight_gen.set(ws_id, orig_bearer_gen)
+  sess.ws_confirm_401_inflight_gen.set(bkey, orig_bearer_gen)
   runtime_refresh_account_token(sess, sub_now, fn(res : Result[String, String]) -> Unit {
-    match sess.ws_confirm_401_inflight_gen.get(ws_id) {
-      Some(g) => if g == orig_bearer_gen { sess.ws_confirm_401_inflight_gen.remove(ws_id) }
+    match sess.ws_confirm_401_inflight_gen.get(bkey) {
+      Some(g) => if g == orig_bearer_gen { sess.ws_confirm_401_inflight_gen.remove(bkey) }
       None => ()
     }
-    if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
+    if sess.stopped ||
+      sess.session_gen != orig_session_gen ||
+      sess.core.membership.is_session_invalidated() ||
+      sess.core.membership.cred_epoch_of(ws_id) != orig_cred_epoch {
       return
     }
     match res {
       Ok(_) => {
-        sess.ws_confirm_401_transient_count.remove(ws_id)
+        sess.ws_confirm_401_transient_count.remove(bkey)
         if sess.bearer_gen != orig_bearer_gen {
-          let cur_rot = match sess.ws_confirm_401_rotated_count.get(ws_id) { Some(c) => c; None => 0 }
-          sess.ws_confirm_401_rotated_count.set(ws_id, cur_rot + 1)
+          let cur_rot = match sess.ws_confirm_401_rotated_count.get(bkey) { Some(c) => c; None => 0 }
+          sess.ws_confirm_401_rotated_count.set(bkey, cur_rot + 1)
         }
       }
       Err(_) => {
         // Transient refresh failure (bearer did NOT rotate): NEVER increment rotated circuit-breaker
         // or permanently lock out `orig_bearer_gen`; schedule bounded backoff retry (<= 2 tries).
-        let t_cnt = match sess.ws_confirm_401_transient_count.get(ws_id) { Some(c) => c; None => 0 }
+        let t_cnt = match sess.ws_confirm_401_transient_count.get(bkey) { Some(c) => c; None => 0 }
         if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && needs_workspace_cloud_confirm(sess, ws_id) {
-          sess.ws_confirm_401_transient_count.set(ws_id, t_cnt + 1)
+          sess.ws_confirm_401_transient_count.set(bkey, t_cnt + 1)
           let delay_ms = if t_cnt == 0 { 150 } else { 400 }
           let _ = sess.core.rt.fork_quiet_named("ws-401-retry:" + ws_id, fn(rfk : (effect::Exit[Unit]) -> Unit) -> Unit {
             // timer: retry after a failure, with a backoff
@@ -1485,6 +1511,7 @@ fn handle_workspace_confirm_401(
                   if !sess.stopped &&
                     sess.session_gen == orig_session_gen &&
                     !sess.core.membership.is_session_invalidated() &&
+                    sess.core.membership.cred_epoch_of(ws_id) == orig_cred_epoch &&
                     sess.bearer_gen == orig_bearer_gen &&
                     needs_workspace_cloud_confirm(sess, ws_id) {
                     trigger_workspace_confirm_fetch(sess, ws_id)
@@ -1557,7 +1584,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
                 if herr.status == 403 || herr.status == 404 {
                   cs.trigger_me_reconcile()
                 } else if herr.status == 401 {
-                  handle_workspace_confirm_401(sess, ws_id, orig_bearer_gen, orig_gen)
+                  handle_workspace_confirm_401(sess, ws_id, captured_cred_epoch, orig_bearer_gen, orig_gen)
                 }
               }
               _ => ()
@@ -1660,6 +1687,7 @@ fn wire_live_cloud_sync(
       }
       match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=cap_ep) {
         Ok(true) => {
+          clear_ws_confirm_401_state(sess, ws.id)
           emit_topic_refresh(sess, "workspaces")
           emit_topic_refresh(sess, "workspace")
           emit_topic_refresh(sess, "stations")
@@ -2584,8 +2612,11 @@ pub extern "C" fn pion_core_runtime_start(
     }
     out
   })
-  core.set_on_auth_key_confirmed(fn(_ws : String, key : String) -> Unit {
+  core.set_on_auth_key_confirmed(fn(ws : String, key : String) -> Unit {
     if key.starts_with("workspace:") {
+      if ws.length() > 0 {
+        clear_ws_confirm_401_state(sess, ws)
+      }
       emit_topic_refresh(sess, "workspace")
       emit_topic_refresh(sess, "settings")
       emit_topic_refresh(sess, "vaults")
@@ -3297,7 +3328,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           // Reconcile via `/v1/me` on 403/404; NEVER directly call `drop_workspace`!
                           cs.trigger_me_reconcile()
                         } else if herr.status == 401 {
-                          handle_workspace_confirm_401(sess, wid, ws_bearer_gen, req_session_gen)
+                          handle_workspace_confirm_401(sess, wid, ws_cred_ep, ws_bearer_gen, req_session_gen)
                         }
                         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
                         let (out_j, out_b) = protocol::encode_core_event(ev)
