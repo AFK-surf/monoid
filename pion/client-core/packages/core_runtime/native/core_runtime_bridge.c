@@ -501,6 +501,283 @@ void pion_core_log_warn(const char *msg, int64_t len) {
     }
 }
 
+// ── Atomic per-account sidecar file I/O (zero dependency on `.accounts.lock` or SQLite) ──
+// Used as durable fallback backup for Cloud-401 rejected tuples whenever SQLite `meta` write fails.
+static uint8_t *g_sidecar_buf = NULL;
+static size_t g_sidecar_len = 0;
+
+static int is_safe_sidecar_name(const char *name, size_t len) {
+    if (name == NULL || len == 0 || len > 160) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!ok) {
+            return 0;
+        }
+    }
+    if (strstr(name, "..") != NULL) {
+        return 0;
+    }
+    return 1;
+}
+
+// Returns: 1 = found (use data/len accessors), 0 = absent (ENOENT), -1 = I/O or invalid path error.
+int32_t pion_core_sidecar_read(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
+    if (g_sidecar_buf != NULL) {
+        free(g_sidecar_buf);
+        g_sidecar_buf = NULL;
+    }
+    g_sidecar_len = 0;
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
+        return -1;
+    }
+    char name_copy[192];
+    memcpy(name_copy, name, (size_t)name_len);
+    name_copy[name_len] = '\0';
+    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
+        return -1;
+    }
+    char path[4096];
+    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
+    if (path[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+    }
+    size_t cap = 1024;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        CloseHandle(h);
+        return -1;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) {
+            if (cap >= 65536) {
+                free(buf);
+                CloseHandle(h);
+                return -1;
+            }
+            cap *= 2;
+            uint8_t *nb = (uint8_t *)realloc(buf, cap);
+            if (nb == NULL) {
+                free(buf);
+                CloseHandle(h);
+                return -1;
+            }
+            buf = nb;
+        }
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, (DWORD)(cap - total), &got, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        total += (size_t)got;
+    }
+    CloseHandle(h);
+    g_sidecar_buf = buf;
+    g_sidecar_len = total;
+    return 1;
+#else
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return (errno == ENOENT) ? 0 : -1;
+    }
+    size_t cap = 1024;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        close(fd);
+        return -1;
+    }
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) {
+            if (cap >= 65536) {
+                free(buf);
+                close(fd);
+                return -1;
+            }
+            cap *= 2;
+            uint8_t *nb = (uint8_t *)realloc(buf, cap);
+            if (nb == NULL) {
+                free(buf);
+                close(fd);
+                return -1;
+            }
+            buf = nb;
+        }
+        ssize_t n = read(fd, buf + total, cap - total);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            free(buf);
+            close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+    g_sidecar_buf = buf;
+    g_sidecar_len = total;
+    return 1;
+#endif
+}
+
+const uint8_t *pion_core_sidecar_data(void) {
+    return g_sidecar_buf;
+}
+
+int64_t pion_core_sidecar_len(void) {
+    return (int64_t)g_sidecar_len;
+}
+
+// Atomically write `<dir>/<name>` via temp + fsync + rename (returns 0 on ok, -1 on error).
+int32_t pion_core_sidecar_write_atomic(
+    const char *dir,
+    int64_t dir_len,
+    const char *name,
+    int64_t name_len,
+    const uint8_t *bytes,
+    int64_t len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160 ||
+        len < 0 || len > 65536 || (len > 0 && bytes == NULL)) {
+        return -1;
+    }
+    char name_copy[192];
+    memcpy(name_copy, name, (size_t)name_len);
+    name_copy[name_len] = '\0';
+    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
+        return -1;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+
+    char final_path[4096];
+    join_dir_file(final_path, sizeof(final_path), dir_copy, (size_t)dir_len, name_copy);
+    if (final_path[0] == '\0') {
+        return -1;
+    }
+    static _Atomic uint64_t s_sidecar_seq = 0;
+    uint64_t seq = atomic_fetch_add_explicit(&s_sidecar_seq, 1, memory_order_relaxed) + 1;
+    char tmp_name[256];
+#ifdef _WIN32
+    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp.%lu.%llu",
+             name_copy, (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
+#else
+    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp.%lld.%llu",
+             name_copy, (long long)getpid(), (unsigned long long)seq);
+#endif
+    char tmp_path[4096];
+    join_dir_file(tmp_path, sizeof(tmp_path), dir_copy, (size_t)dir_len, tmp_name);
+    if (tmp_path[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    HANDLE h = CreateFileA(tmp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        DWORD wrote = 0;
+        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            DeleteFileA(tmp_path);
+            return -1;
+        }
+        off += (size_t)wrote;
+    }
+    (void)FlushFileBuffers(h);
+    CloseHandle(h);
+    if (!MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileA(tmp_path);
+        return -1;
+    }
+    return 0;
+#else
+    (void)mkdir(dir_copy, 0700);
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        ssize_t n = write(fd, bytes + off, (size_t)len - off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            (void)unlink(tmp_path);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    close(fd);
+    if (rename(tmp_path, final_path) != 0) {
+        (void)unlink(tmp_path);
+        return -1;
+    }
+    int dfd = open(dir_copy, O_RDONLY | O_CLOEXEC);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
+    return 0;
+#endif
+}
+
+int32_t pion_core_sidecar_remove(const char *dir, int64_t dir_len, const char *name, int64_t name_len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || name == NULL || name_len <= 0 || name_len > 160) {
+        return -1;
+    }
+    char name_copy[192];
+    memcpy(name_copy, name, (size_t)name_len);
+    name_copy[name_len] = '\0';
+    if (!is_safe_sidecar_name(name_copy, (size_t)name_len)) {
+        return -1;
+    }
+    char path[4096];
+    join_dir_file(path, sizeof(path), dir, (size_t)dir_len, name_copy);
+    if (path[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    if (DeleteFileA(path)) {
+        return 0;
+    }
+    DWORD err = GetLastError();
+    return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+#else
+    if (unlink(path) == 0 || errno == ENOENT) {
+        return 0;
+    }
+    return -1;
+#endif
+}
+
 int64_t pion_core_wall_now_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {

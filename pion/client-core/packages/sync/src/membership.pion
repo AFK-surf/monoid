@@ -401,28 +401,41 @@ pub let META_REJECTED_TUPLES_KEY : String = "membership:rejected_tuples"
 
 let MAX_REJECTED_TUPLES : Int = 8
 
-pub fn parse_rejected_tuples(raw : String) -> Array[(String, String)] {
-  let out : Array[(String, String)] = []
+/// Strict 3-state result of checking persisted rejected tuples (fail-closed on any read/JSON corruption!).
+pub enum RejectedTupleCheck {
+  Allowed
+  Rejected
+  Unreadable(String)
+}
+
+/// Strictly parse persisted rejected tuples JSON: MUST be a JSON array where EVERY element is an
+/// object containing string `"session"` AND string `"refresh"`. Any parse or structural error
+/// returns `Err(...)` (NEVER silently degrades to empty!).
+pub fn parse_rejected_tuples_strict(raw : String) -> Result[Array[(String, String)], String] {
   match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Err(e) => Err("corrupt_rejected_tuples_meta: " + e)
     base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+      let out : Array[(String, String)] = []
       for i in 0..<xs.length() {
         let item = xs[i]
+        match item {
+          base_codec::Json::Obj(_) => ()
+          _ => return Err("corrupt_rejected_tuples_meta: non-object entry")
+        }
         let sid = match base_codec::json_get(item, "session") {
           Some(base_codec::Json::Str(s)) => s
-          _ => ""
+          _ => return Err("corrupt_rejected_tuples_meta: missing string session")
         }
         let rtok = match base_codec::json_get(item, "refresh") {
           Some(base_codec::Json::Str(s)) => s
-          _ => ""
+          _ => return Err("corrupt_rejected_tuples_meta: missing string refresh")
         }
-        if sid.length() > 0 || rtok.length() > 0 {
-          out.push((sid, rtok))
-        }
+        out.push((sid, rtok))
       }
+      Ok(out)
     }
-    _ => ()
+    base_codec::JsonParseResult::Ok(_) => Err("corrupt_rejected_tuples_meta: expected array")
   }
-  out
 }
 
 pub fn serialize_rejected_tuples(tuples : Array[(String, String)]) -> String {
@@ -442,54 +455,101 @@ pub fn serialize_rejected_tuples(tuples : Array[(String, String)]) -> String {
   base_codec::json_stringify(base_codec::json_arr(arr))
 }
 
-/// Check whether `(session, refresh)` was already persisted as Cloud-rejected (401) in `db`.
-pub fn is_tuple_rejected_in_db(db : sql::Sql, session : String, refresh : String) -> Bool {
-  if session.length() == 0 && refresh.length() == 0 {
-    return false
-  }
-  match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
-    sql::SqlResult::Ok(Some(raw)) => {
-      let tuples = parse_rejected_tuples(raw)
-      for i in 0..<tuples.length() {
-        let (sid, rtok) = tuples[i]
-        if sid == session && rtok == refresh {
-          return true
+/// Strictly check a raw optional JSON string (from SQLite `meta` or atomic sidecar file) against
+/// `(session, refresh)`, returning `Unreadable` on any corruption!
+pub fn check_rejected_tuples_raw(
+  raw_opt : Option[String],
+  session : String,
+  refresh : String,
+) -> RejectedTupleCheck {
+  match raw_opt {
+    None => RejectedTupleCheck::Allowed
+    Some(raw) => match parse_rejected_tuples_strict(raw) {
+      Err(reason) => RejectedTupleCheck::Unreadable(reason)
+      Ok(tuples) => {
+        if session.length() == 0 && refresh.length() == 0 {
+          return RejectedTupleCheck::Allowed
         }
+        for i in 0..<tuples.length() {
+          let (sid, rtok) = tuples[i]
+          if sid == session && rtok == refresh {
+            return RejectedTupleCheck::Rejected
+          }
+        }
+        RejectedTupleCheck::Allowed
       }
-      false
     }
-    _ => false
   }
 }
 
-/// Synchronously persist a confirmed Cloud-rejected `(session, refresh)` tuple into `db`'s `meta`
-/// table (0ms local SQLite write, requires NO `.accounts.lock`, survives stop/restart).
-pub fn record_rejected_tuple_in_db(
+/// Merge new `(session, refresh)` tuples into an existing optional raw JSON string strictly:
+/// fails with `Err` if existing content is corrupt (never silently treats corruption as empty!).
+pub fn merge_rejected_tuples_raw(
+  raw_opt : Option[String],
+  tuples : Array[(String, String)],
+) -> Result[String, String] {
+  let existing : Array[(String, String)] = match raw_opt {
+    None => []
+    Some(raw) => match parse_rejected_tuples_strict(raw) {
+      Ok(xs) => xs
+      Err(e) => return Err(e)
+    }
+  }
+  for t_idx in 0..<tuples.length() {
+    let (session, refresh) = tuples[t_idx]
+    if session.length() == 0 && refresh.length() == 0 {
+      continue
+    }
+    let mut dup = false
+    for i in 0..<existing.length() {
+      let (sid, rtok) = existing[i]
+      if sid == session && rtok == refresh {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      existing.push((session, refresh))
+    }
+  }
+  Ok(serialize_rejected_tuples(existing))
+}
+
+/// Strictly check whether `(session, refresh)` was persisted as Cloud-rejected (401) in `db`:
+/// returns `Unreadable` on SQLite read error OR corrupt JSON (fail-closed!).
+pub fn check_tuple_rejected_in_db(
   db : sql::Sql,
   session : String,
   refresh : String,
+) -> RejectedTupleCheck {
+  match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(raw_opt) => check_rejected_tuples_raw(raw_opt, session, refresh)
+    sql::SqlResult::Err(e) => RejectedTupleCheck::Unreadable(e.to_string())
+  }
+}
+
+/// Atomically persist one or more Cloud-rejected `(session, refresh)` tuples (e.g. primary + `alt_orig`)
+/// in a SINGLE `store::put_meta` statement! Fails with `Err` if SQLite read fails OR existing JSON is
+/// corrupt (never silently drops errors or overwrites corruption as empty!).
+pub fn record_rejected_tuples_in_db(
+  db : sql::Sql,
+  tuples : Array[(String, String)],
 ) -> Result[Unit, String] {
-  if session.length() == 0 && refresh.length() == 0 {
-    return Ok(())
+  let raw_opt = match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(opt) => opt
+    sql::SqlResult::Err(e) => return Err("read_rejected_tuples_failed: " + e.to_string())
   }
-  let existing : Array[(String, String)] = match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
-    sql::SqlResult::Ok(Some(raw)) => parse_rejected_tuples(raw)
-    _ => []
+  let encoded = match merge_rejected_tuples_raw(raw_opt, tuples) {
+    Ok(s) => s
+    Err(e) => return Err(e)
   }
-  for i in 0..<existing.length() {
-    let (sid, rtok) = existing[i]
-    if sid == session && rtok == refresh {
-      return Ok(())
-    }
-  }
-  existing.push((session, refresh))
-  match store::put_meta(db, META_REJECTED_TUPLES_KEY, serialize_rejected_tuples(existing)) {
+  match store::put_meta(db, META_REJECTED_TUPLES_KEY, encoded) {
     sql::SqlResult::Ok(_) => Ok(())
     sql::SqlResult::Err(e) => Err(e.to_string())
   }
 }
 
-/// Clear stale rejected-tuple records from `db` once a newer valid session/token is activated.
+/// Clear stale rejected-tuple records from `db` once a newer valid session/token is committed.
 pub fn clear_rejected_tuples_in_db(db : sql::Sql) -> Result[Unit, String] {
   match store::delete_meta(db, META_REJECTED_TUPLES_KEY) {
     sql::SqlResult::Ok(_) => Ok(())
@@ -996,6 +1056,21 @@ fn AccountRefreshCoordinator::pending_commit200_alt_tuple(
   }
 }
 
+fn AccountRefreshCoordinator::cancel_reconcile_for_sub(
+  self : AccountRefreshCoordinator,
+  sub : String,
+) -> Unit {
+  self.pending_reconcile.remove(sub)
+  self.reconcile_running.remove(sub)
+  match self.reconcile_fibers.get(sub) {
+    Some(fib) => {
+      fib.interrupt()
+      self.reconcile_fibers.remove(sub)
+    }
+    None => ()
+  }
+}
+
 fn AccountRefreshCoordinator::schedule_reconcile(
   self : AccountRefreshCoordinator,
   host : AccountRefreshHost,
@@ -1382,13 +1457,26 @@ pub fn AccountRefreshCoordinator::refresh_k(
                   return
                 }
                 if theirs.refresh != expected_refresh {
-                  // Another core rotated tokens for the exact same session: defer `on_adopt` until AFTER lock release!
-                  let act = RefreshPostLockAction::Adopt(theirs, disk_sid, disk_list, disk_sessions)
-                  let now_sec = now_fn() / 1000L
-                  if theirs.access_expires - 60L > now_sec && theirs.access.length() > 0 {
-                    lk(effect::Exit::Succeeded((Ok((true, theirs.access)), act)))
+                  // Codex P1-3 + Opus R8 P2-1: If disk still holds the KNOWN un-flushed predecessor
+                  // `(c_sid, c_ref)` of our own pending `Commit200`, NEVER revert active memory back
+                  // to the old R1 token! Continue Phase 2 with the newer in-memory `expected_refresh` (R2).
+                  let is_known_commit200_pred = match self.pending_reconcile.get(sub) {
+                    Some(PendingAccountReconcile::Commit200(_, c_sid, c_ref, c_toks)) => {
+                      disk_sid == c_sid && theirs.refresh == c_ref && expected_refresh == c_toks.refresh
+                    }
+                    _ => false
+                  }
+                  if is_known_commit200_pred {
+                    lk(effect::Exit::Succeeded((Ok((false, expected_refresh)), RefreshPostLockAction::None)))
                   } else {
-                    lk(effect::Exit::Succeeded((Ok((false, theirs.refresh)), act)))
+                    // Another core genuinely rotated tokens for the exact same session: defer `on_adopt` until AFTER lock release!
+                    let act = RefreshPostLockAction::Adopt(theirs, disk_sid, disk_list, disk_sessions)
+                    let now_sec = now_fn() / 1000L
+                    if theirs.access_expires - 60L > now_sec && theirs.access.length() > 0 {
+                      lk(effect::Exit::Succeeded((Ok((true, theirs.access)), act)))
+                    } else {
+                      lk(effect::Exit::Succeeded((Ok((false, theirs.refresh)), act)))
+                    }
                   }
                 } else {
                   lk(effect::Exit::Succeeded((Ok((false, expected_refresh)), RefreshPostLockAction::None)))
@@ -1510,6 +1598,10 @@ pub fn AccountRefreshCoordinator::refresh_k(
                       fn(cex : effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit {
                         match cex {
                           effect::Exit::Succeeded((o, act)) => {
+                            match o {
+                              AccountRefreshOutcome::Ok(_, _) | AccountRefreshOutcome::InvalidSession(_, _, true) => self.cancel_reconcile_for_sub(sub)
+                              _ => ()
+                            }
                             run_post_lock(act)
                             match o {
                               AccountRefreshOutcome::Transient(_) => {
@@ -1626,6 +1718,10 @@ pub fn AccountRefreshCoordinator::refresh_k(
                       fn(cex : effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit {
                         match cex {
                           effect::Exit::Succeeded((o, act)) => {
+                            match o {
+                              AccountRefreshOutcome::Ok(_, _) | AccountRefreshOutcome::InvalidSession(_, _, true) => self.cancel_reconcile_for_sub(sub)
+                              _ => ()
+                            }
                             run_post_lock(act)
                             match o {
                               AccountRefreshOutcome::Transient(_) => {

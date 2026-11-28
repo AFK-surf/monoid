@@ -818,6 +818,10 @@ int main(int argc, char **argv) {
     wait_for_matching_msg(&g_host, "\"id\":402,", "\"email\":\"bob@still.fail\"", 10);
     assert(file_exists(bob_db_path));
     assert(!file_exists(default_db_path));
+    // Persist a Bob-unique private marker into `account-u-bob.db` so Phase 9 can prove Bob's DB is
+    // genuinely mounted & hydrated after rejected-Alice cleanup!
+    send_json("{\"id\":4031,\"call\":\"settings.set\",\"params\":{\"key\":\"bob_marker\",\"value\":\"bob-private-marker-phase9\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":4031,", "\"saved\":true", 10);
     // Bob MUST NOT see Alice's draft!
     send_json("{\"id\":403,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
     char *m_bob_draft = wait_for_matching_msg(&g_host, "\"id\":403,", "\"ok\":", 10);
@@ -1099,6 +1103,10 @@ int main(int argc, char **argv) {
         send_json("{\"id\":606,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
         char *m_post_draft = wait_for_matching_msg(&g_host, "\"id\":606,", NULL, 10);
         assert(strstr(m_post_draft, "persisted-alice-draft") == NULL);
+
+        // Hard-assert Bob's private `account-u-bob.db` is genuinely mounted & hydrated (`bob_marker` readable)!
+        send_json("{\"id\":607,\"call\":\"settings.get\",\"params\":{\"key\":\"bob_marker\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":607,", "\"value\":\"bob-private-marker-phase9\"", 10);
 
         // Verify disk `accounts` now has ONLY `u-bob` (`u-live` removed by background CAS)!
         af = fopen(accts_path, "r");

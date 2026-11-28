@@ -2323,12 +2323,18 @@ test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tup
   debug_assert(ls_before_s.contains("\"locked\":true") && ls_before_s.contains(genesis_good), "lock.status reports locked:true + root before 401")
 
   // Simulate 401 lock-busy quarantine: persist rejected tuple to `acct_db` `meta`, switch to `UnauthMemory` (`mem_db`)!
-  match record_rejected_tuple_in_db(acct_db, "sid-1", "ref-1") {
+  match record_rejected_tuples_in_db(acct_db, [("sid-1", "ref-1")]) {
     Ok(_) => ()
-    Err(e) => panic("record_rejected_tuple_in_db failed: " + e)
+    Err(e) => panic("record_rejected_tuples_in_db failed: " + e)
   }
-  debug_assert(is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "rejected tuple persisted in SQLite meta")
-  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-2", "ref-2"), "newer peer tuple NOT marked rejected")
+  match check_tuple_rejected_in_db(acct_db, "sid-1", "ref-1") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("rejected tuple persisted in SQLite meta")
+  }
+  match check_tuple_rejected_in_db(acct_db, "sid-2", "ref-2") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("newer peer tuple NOT marked rejected")
+  }
   core.switch_to_unauthenticated_db(mem_db)
   debug_assert(core.membership.is_unauthenticated(), "UnauthMemory closes read gate")
   debug_assert(core.db_account_sub.is_none(), "UnauthMemory unbinds db_account_sub")
@@ -2337,9 +2343,15 @@ test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tup
   // Aborted / cancelled staging (read-only check on `meta("membership:rejected_tuples")` followed by
   // publication-boundary discard / login_gen cancel) MUST preserve `membership:rejected_tuples` intact
   // so a subsequent restart still rejects the old `(sid-1, ref-1)` tuple!
-  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-2", "ref-2"), "staging read-only check accepts newer candidate")
+  match check_tuple_rejected_in_db(acct_db, "sid-2", "ref-2") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("staging read-only check accepts newer candidate")
+  }
   // (Staging aborted before commit — `clear_rejected_tuples_in_db` NOT called yet!)
-  debug_assert(is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "aborted staging MUST preserve rejected_tuples in meta for restart")
+  match check_tuple_rejected_in_db(acct_db, "sid-1", "ref-1") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("aborted staging MUST preserve rejected_tuples in meta for restart")
+  }
 
   // Simulate committed peer rotation takeover: unified full hydration installs `acct_db`, clears stale
   // rejected meta ONLY on committed install, switches back to active workspace (restoring pinned lock root!),
@@ -2349,7 +2361,10 @@ test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tup
     Err(e) => panic("full hydration switch_account_db failed: " + e)
   }
   let _ = clear_rejected_tuples_in_db(acct_db)
-  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "committed activation cleared old rejected tuples")
+  match check_tuple_rejected_in_db(acct_db, "sid-1", "ref-1") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("committed activation cleared old rejected tuples")
+  }
   core.switch_workspace(ULID_WS1)
   let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
   match core.lock_root {
@@ -2604,4 +2619,276 @@ test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tup
     None => panic("valid disk after upgraded Remove401")
   }
   debug_assert(disk_after_p3.length() == 0, "u-p2 removed from disk after rotated-token 401 upgrade")
+}
+
+// ── Test 15 (R9): Strict 3-state rejected meta fail-closed, full refresh_k Commit200->R2->401 path, multi-WS recovery ──
+
+test "Slice 2B-1 R9: fail-closed RejectedTupleCheck, atomic multi-tuple record, full refresh_k Commit200->R2->401, and multi-WS recovery" {
+  let rt = effect::Runtime::new()
+  let (_, rdb) = make_sim_db(rt)
+
+  // 1. Codex P1-1: Strict 3-state `check_tuple_rejected_in_db` (`Allowed` / `Rejected` / `Unreadable`)
+  //    and atomic single-statement `record_rejected_tuples_in_db` (propagating errors on corrupt meta!).
+  match check_tuple_rejected_in_db(rdb, "s1", "r1") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("absent meta must return Allowed")
+  }
+  match record_rejected_tuples_in_db(rdb, [("s1", "R2"), ("s1", "R1")]) {
+    Ok(_) => ()
+    Err(e) => panic("atomic dual-tuple write failed: " + e)
+  }
+  match check_tuple_rejected_in_db(rdb, "s1", "R2") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("R2 must be Rejected")
+  }
+  match check_tuple_rejected_in_db(rdb, "s1", "R1") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("R1 (alt_orig) must be atomically persisted & Rejected")
+  }
+  match check_tuple_rejected_in_db(rdb, "s1", "R3") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("R3 not rejected -> Allowed")
+  }
+  // Corrupt JSON, non-array JSON, and object missing string `refresh` MUST all return `Unreadable` (fail-closed!)
+  // AND `record_rejected_tuples_in_db` MUST return `Err` instead of overwriting corrupt meta as empty!
+  let corrupt_samples : Array[String] = [
+    "{not-valid-json",
+    "{\"session\":\"s1\",\"refresh\":\"R1\"}",
+    "[{\"session\":\"s1\"}]",
+    "[{\"session\":123,\"refresh\":\"R1\"}]",
+    "[\"bare-string\"]",
+  ]
+  for i in 0..<corrupt_samples.length() {
+    let _ = store::put_meta(rdb, META_REJECTED_TUPLES_KEY, corrupt_samples[i])
+    match check_tuple_rejected_in_db(rdb, "s1", "R3") {
+      RejectedTupleCheck::Unreadable(_) => ()
+      _ => panic("corrupt rejected_tuples meta MUST fail closed with Unreadable: " + corrupt_samples[i])
+    }
+    match record_rejected_tuples_in_db(rdb, [("s2", "R9")]) {
+      Err(_) => ()
+      Ok(_) => panic("record_rejected_tuples_in_db MUST return Err on corrupt existing meta")
+    }
+  }
+  let _ = clear_rejected_tuples_in_db(rdb)
+
+  // 2. Codex P1-3 + Opus R8 P2-1: Full production `refresh_coord.refresh_k(...)` path:
+  //    - 1st `refresh_k` receives 200 (`R1 -> R2`) under lock contention -> updates active memory to `R2`, queues `Commit200(R1->R2)`.
+  //    - Lock frees BEFORE `Commit200`'s backoff timer fires -> 2nd `refresh_k(host, "u-r9", "sid-1", "R2")` runs Phase 1 seeing disk `R1`:
+  //      MUST NOT revert memory back to `R1`, MUST send `R2` to Cloud!
+  //    - Cloud returns 401 on `R2` while lock is busy again -> `on_401_quarantine` receives BOTH `R2` and `alt_orig=(sid-1, R1)`,
+  //      atomically persists both to SQLite `meta`, upgrades reconcile to dual-match `Remove401`, and deletes disk `R1` once lock clears!
+  let acct_r9 = views::StoredAccount::{
+    sub: "u-r9", email: "r9@still.fail", name: "R9", picture: "",
+    access: "acc-R1", refresh: "R1", access_expires: 100L,
+  }
+  let s_r9 : Map[String, String] = Map::new()
+  s_r9.set("u-r9", "sid-1")
+  let disk_r9 : Array[base_codec::Json] = [serialize_stored_accounts([acct_r9], sessions=Some(s_r9))]
+  let mem_ref_r9 : Array[String] = ["R1"]
+  let lock_busy_r9 : Array[Bool] = [false]
+  let http_reqs_r9 : Array[String] = []
+  let adopt_calls_r9 : Array[Int] = [0]
+  let quarantine_saw_both_r9 : Array[Bool] = [false]
+  let inval_r9 : Array[Bool] = [false]
+
+  let coord_r9 = AccountRefreshCoordinator::new(rt=Some(rt))
+  coord_r9.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_r9[0] { ak(Err("accounts lock busy")) } else { ak(Ok(21L)) }
+    },
+    fn(_h : Int64) -> Unit {},
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      if lock_busy_r9[0] { Err("accounts lock busy") } else { Ok(21L) }
+    }),
+  )
+  coord_r9.set_on_pending_200_update(fn(_sub, _sid, _old_ref, toks) -> Unit {
+    mem_ref_r9[0] = toks.refresh
+  })
+  coord_r9.set_on_401_quarantine(fn(_sub, rsid, rref, alt) -> Unit {
+    let tuples : Array[(String, String)] = [(rsid, rref)]
+    match alt {
+      Some((asid, aref)) => {
+        if rref == "R2" && asid == "sid-1" && aref == "R1" {
+          quarantine_saw_both_r9[0] = true
+        }
+        tuples.push((asid, aref))
+      }
+      None => ()
+    }
+    match record_rejected_tuples_in_db(rdb, tuples) {
+      Ok(_) => ()
+      Err(e) => panic("atomic quarantine persist failed: " + e)
+    }
+  })
+  let host_r9 = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_r9[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_r9[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      http_reqs_r9.push(rtok)
+      lock_busy_r9[0] = true
+      if rtok == "R1" {
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "acc-R2",
+          refresh: "R2",
+          access_expires: 999999L,
+          name: None,
+        })))
+      } else {
+        hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+      }
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-1", mem_ref_r9[0])) },
+    on_adopt_or_update: fn(u, _sid, _all, _ss) -> Unit {
+      adopt_calls_r9[0] += 1
+      mem_ref_r9[0] = u.refresh
+    },
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { inval_r9[0] = true },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+
+  // Step 2a: 1st `refresh_k` rotates R1 -> R2 under lock contention -> queues `Commit200(R1->R2)`!
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_r9.refresh_k(host_r9, "u-r9", "sid-1", "R1", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(mem_ref_r9[0] == "R2" && coord_r9.has_pending_reconcile("u-r9"), "R1->R2 advanced memory and queued Commit200")
+  debug_assert(adopt_calls_r9[0] == 0, "no disk adopt yet while locked")
+
+  // Step 2b: Lock temporarily frees before Commit200 timer fires -> 2nd `refresh_k` for `R2` runs full Phase 1->2->3B!
+  lock_busy_r9[0] = false
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_r9.refresh_k(host_r9, "u-r9", "sid-1", "R2", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(adopt_calls_r9[0] == 0, "Phase 1 MUST NOT revert active memory back to un-flushed predecessor R1!")
+  debug_assert(http_reqs_r9.length() == 2 && http_reqs_r9[1] == "R2", "2nd refresh_k MUST send R2 (NOT R1!) to Cloud")
+  debug_assert(quarantine_saw_both_r9[0], "401 on R2 MUST quarantine with BOTH R2 and alt_orig=(sid-1, R1)")
+  match check_tuple_rejected_in_db(rdb, "sid-1", "R2") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("R2 persisted as rejected in DB meta")
+  }
+  match check_tuple_rejected_in_db(rdb, "sid-1", "R1") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("R1 (alt_orig) persisted as rejected in DB meta")
+  }
+
+  // Step 2c: Release lock & advance clock -> upgraded `Remove401(R2, alt=R1)` matches disk `R1` and deletes `u-r9`!
+  lock_busy_r9[0] = false
+  let _ = rt.advance(150)
+  debug_assert(inval_r9[0], "upgraded Remove401 deleted disk R1 and fired on_invalidated")
+  let disk_after_r9 = match parse_stored_accounts_strict(disk_r9[0]) {
+    Some(xs) => xs
+    None => panic("valid disk after R9 full refresh_k test")
+  }
+  debug_assert(disk_after_r9.length() == 0, "disk accounts empty after dual-match Remove401")
+
+  // 3. Codex P1-4: Multi-workspace same-account quarantine + re-login restores prior active `ULID_WS2`
+  //    (NOT default `ULID_WS1`), its Ed25519 pinned lock root (`locked:true`), and station frame delivery!
+  let (_, ws_db) = make_sim_db(rt)
+  let (_, unauth_db) = make_sim_db(rt)
+  let mcore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, ws_db, core_offline_transport(), fn() -> Unit {})
+  let _ = mcore.set_db_account_sub("u-multi")
+  let _ = mcore.commit_cloud_me(
+    mt_make_me("u-multi", "m@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "owner")]),
+    req_seq=1L,
+  )
+  mcore.switch_workspace(ULID_WS2)
+  let _ = mcore.membership.bind_station_checked(ULID_WS2, "st-2")
+  let ws2_seed = make_seed(88)
+  let ws2_key = ed25519_key_id(ws2_seed)
+  let ws2_gen_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ULID_WS2)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("u-multi")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("u-multi")),
+              ("email", form::Json::Str("m@still.fail")),
+              ("role", form::Json::Str("owner")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(hex_64("8"))),
+              ("sub", form::Json::Str("u-multi")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Mac")),
+              ("sign_key", form::Json::Str(ws2_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let ws2_gen = match sign_lock_entry(ws2_seed, ws2_gen_unsigned) {
+    Ok(e) => e
+    Err(why) => panic("sign ws2 genesis failed: " + why)
+  }
+  let ws2_root = match lock::entry_hash(ws2_gen, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("ws2 entry_hash failed")
+  }
+  match mcore.apply_lock_chain([ws2_gen], ws2_root) {
+    Ok(_) => ()
+    Err(e) => panic("apply_lock_chain ws2 failed: " + e)
+  }
+  let saved_quarantined_ws = mcore.workspace
+  debug_assert(saved_quarantined_ws == ULID_WS2, "captured quarantined_workspace == ULID_WS2")
+
+  // Quarantine to UnauthMemory, then same-sub re-login activates `ws_db` with `preferred_ws = saved_quarantined_ws`:
+  mcore.switch_to_unauthenticated_db(unauth_db)
+  debug_assert(mcore.workspace == "ws-default" && mcore.lock_root.is_none(), "quarantine reset workspace & lock_root")
+  match mcore.switch_account_db(ws_db, "u-multi") {
+    Ok(_) => ()
+    Err(e) => panic("same-sub re-login switch_account_db failed: " + e)
+  }
+  mcore.switch_workspace(saved_quarantined_ws)
+  let _ = mcore.membership.bind_station_checked(ULID_WS2, "st-2")
+  debug_assert(mcore.workspace == ULID_WS2, "restored prior active quarantined_workspace ULID_WS2")
+  let ws2_ls = base_codec::json_stringify(mt_expect_ok_json(mt_call(mcore, 91L, "lock.status", base_codec::json_obj([])), "ws2 lock.status"))
+  debug_assert(ws2_ls.contains("\"locked\":true") && ws2_ls.contains(ws2_root), "WS2 pinned lock root restored with locked:true")
+  mcore.attach_station_transport(ULID_WS2 + "/st-2", core_offline_transport(), workspace=ULID_WS2)
+  mcore.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS2 + "/st-2",
+    55,
+    store::Entry::{
+      n: 1, kind: "message", author_kind: "person", author: "m",
+      text: "WS2_POST_RELOGIN_DELIVERED", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let drained_ws2 = mcore.drain_frame()
+  let mut saw_ws2_frame = false
+  for i in 0..<drained_ws2.length() {
+    match drained_ws2[i] {
+      CoreEvent::EntryAdded(_, _, ent, _) => if ent.text == "WS2_POST_RELOGIN_DELIVERED" { saw_ws2_frame = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_ws2_frame, "station transport & frame delivery restored on ULID_WS2 after same-sub re-login")
 }
