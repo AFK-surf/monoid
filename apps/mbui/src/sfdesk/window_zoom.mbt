@@ -12,8 +12,11 @@ fn zoom_do(src : Source, action : String, kept? : Bool = true) -> Unit {
   // (a window of its own's: from its own size, none of the device's kept size: zoom_actions's `kept`)
   let at = if kept {
     zoom_at(src)
+  } else if window_zoom_levels.is_empty() {
+    5
   } else {
-    window_zoom_levels.search_by(fn(z) { z.1 == @ui.window_zoom() }).unwrap_or(5)
+    let cur = @ui.window_zoom()
+    window_zoom_levels.search_by(fn(z) { z.1 == cur }).unwrap_or(5)
   }
   let next = if action == "zoom.reset" {
     5

@@ -297,7 +297,8 @@ fn rail_adder_node(v : @view.View, src : Source) -> Unit {
 /// places of it left out of the rail; a kind with none left out, none.
 fn rail_adder_kinds(src : Source, w : Workspace) -> Array[(String, Array[String])] {
   let kept = rail_items(src, w.id)
-  items(rail_view(src), "groups").filter_map(fn(g) {
+  let out : Array[(String, Array[String])] = []
+  for g in items(rail_view(src), "groups") {
     let places = words_in(items(Some(g), "places"))
     if @sfbase.board_feature.get() && text(Some(g), "kind") == "lists" {
       match places.search_by(fn(p) { p == "chats" }) {
@@ -306,10 +307,9 @@ fn rail_adder_kinds(src : Source, w : Workspace) -> Array[(String, Array[String]
       }
     }
     let hidden = places.filter(fn(i) { !kept.contains(i) })
-    if hidden.length() == 0 {
-      None
-    } else {
-      Some((text(Some(g), "label"), hidden))
+    if !hidden.is_empty() {
+      out.push((text(Some(g), "label"), hidden))
     }
-  })
+  }
+  out
 }

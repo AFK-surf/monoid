@@ -41,8 +41,7 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
       }
     Some(Profile(_, _) as r) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
-        Some(_) as v if !items(v, "items").iter().any(fn(e) { profile_route(Some(e)) == r }) =>
-          place_route_first(src, w, place)
+        Some(_) as v if !has_profile_route(items(v, "items"), r) => place_route_first(src, w, place)
         _ => Some(r)
       }
     Some(r) => Some(r)
@@ -82,7 +81,7 @@ fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.R
           match was {
             Some(Some(ProfilesOverview | Profiles(""))) => Some(Route::ProfilesOverview)
             Some(Some(ProfilesManage(_))) if flag(v, "manages") => Some(Route::ProfilesManage(""))
-            Some(Some(r)) if list.iter().any(fn(e) { profile_route(Some(e)) == r }) => Some(r)
+            Some(Some(r)) if has_profile_route(list, r) => Some(r)
             _ => Some(Route::ProfilesOverview)
           }
         },
@@ -171,6 +170,16 @@ fn place_rig_at(src : Source, w : Workspace, address : String) -> Json? {
 /// stations.
 fn profile_route(e : Json?) -> @settings.Route {
   Route::Profile(text(e, "station"), text(field(e, "profile"), "id"))
+}
+
+///|
+fn has_profile_route(list : Array[Json], target : @settings.Route) -> Bool {
+  for e in list {
+    if profile_route(Some(e)) == target {
+      return true
+    }
+  }
+  false
 }
 
 ///|
