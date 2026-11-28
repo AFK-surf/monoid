@@ -17,6 +17,7 @@ import { grantChatTitle } from "../adb/title.ts";
 import { shortCode } from "../../../shared/lock.ts";
 import type { Rig } from "../cloud/state.ts";
 import { Refused as PeerRefused } from "../mesh/bus.ts";
+import { PeerStopped } from "../mesh/peer.ts";
 import { managesStation } from "../mesh/credential.ts";
 import { nameOf } from "../mesh/peer-http.ts";
 import { personChainsOf } from "../mesh/serve.ts";
@@ -62,6 +63,24 @@ const describedOf = (answer: Json): Described | null => {
 
 /// Drops stale out-of-order rig snapshots (`rig.hello`, `rig.describe`, `rig.changed`) that arrive over concurrent
 /// streams after a newer `rig.grant` or `rig.changed` from the same rig process, or from a superseded previous process.
+/// What only reads a rig and changes nothing there: asked again as it was, a repeat is the same.
+const READS = new Set(["rig.describe", "rig.proof", "rig.log"]);
+
+/// `request` of rig `rig` by `ask`; one that only reads (`READS`) asked again once, on a connection dialed anew, where
+/// the rig's process stopped or handed over to its next as it was asked (mesh/peer.ts `PeerStopped`): a whole station
+/// made one that only runs tasks hands over to its rig process just after it is listed so, which a read of its record
+/// then met as "no station reached" (side rigs, made so, 2026-11-26..28). Anything else is not asked again, as whether
+/// the process that stopped took it is not known.
+export async function askRig(ask: (rig: string, request: Json) => Promise<Json>, rig: string, request: Json): Promise<Json> {
+  try {
+    return await ask(rig, request);
+  } catch (error) {
+    if (!(error instanceof PeerStopped) || !READS.has(String(request?.method ?? ""))) throw error;
+    log.info("rigs", "a read of a rig met its process stopping or handing over: asked again once, dialed anew", { rig: rig.slice(0, 12), method: String(request?.method ?? "") });
+    return ask(rig, request);
+  }
+}
+
 export class RigSnapshotOrder {
   readonly #seen = new Map<string, { boot: string; rev: number; retired: string[] }>();
 
@@ -113,7 +132,7 @@ export const RigsLive = Layer.effectDiscard(
     const heard = new Map<string, Heard>();
     const order = new RigSnapshotOrder();
     const key = (ws: string, rig: string) => `${ws}\0${rig}`;
-    const ask = (rig: string, request: Json): Promise<Json> => remote.ask(rig, request);
+    const ask = (rig: string, request: Json): Promise<Json> => askRig(remote.ask.bind(remote), rig, request);
 
     // What waits for a rig that was away: brought in order as it is heard, each gone once the rig took or refused it.
     const queue = (ws: string, rig: string, kind: "revoke" | "release" | "settings" | "added" | "device", body: Json) => {
