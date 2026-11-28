@@ -864,7 +864,8 @@ pub fn on_mcp_fsync_done(
     None => return false
   }
   if !mcp_pending.is_active(entry.conn_id, entry.req_gen) {
-    if rc != 0 && rc != -5 {
+    // Do NOT unlink on rc == 0 (published), rc == -5 (replaced staging), or rc == -9 (worker already cleaned up).
+    if rc != 0 && rc != -5 && rc != -9 {
       let _ = station_sys::unlink_under_nofollow(entry.ws_root, entry.part_rel)
     }
     return true
@@ -945,42 +946,15 @@ pub fn settle_session_close_reply(
   }
 }
 
-/// Check whether `peer_id` is still known in `ws`'s live `CloudStore` membership (peers or rigs).
-fn is_peer_in_cloud_roster(ctx : DaemonCtx, ws : String, peer_id : String, now_wall_ms : Int64) -> Bool {
-  let now_secs = (now_wall_ms / 1000L).to_double()
-  match ctx.cloud.membership(ws, now_secs) {
-    None => false
-    Some(m) => {
-      for i in 0..<m.peers.length() {
-        if dm_json_str(m.peers[i], "id") == peer_id {
-          return true
-        }
-      }
-      match m.rigs {
-        Some(rigs) => {
-          for i in 0..<rigs.length() {
-            if rigs[i].id == peer_id {
-              return true
-            }
-          }
-        }
-        None => ()
-      }
-      false
-    }
-  }
-}
-
 /// Dispatch all due persistent `session.close` retries to remote peers (called on archive, startup, and tick).
-/// Prunes peers older than 7 days or no longer present in the workspace roster.
+/// Respects 30-day max age without cloud roster pruning (works cleanly while cloud is down).
 pub fn dispatch_pending_session_closes(
   ctx : DaemonCtx,
   remote_outbox : station_whole::RemoteTaskOutbox,
   now_mono_ms : Int64,
   now_wall_ms : Int64,
 ) -> Unit {
-  let roster_check = fn(ws : String, pid : String) -> Bool { is_peer_in_cloud_roster(ctx, ws, pid, now_wall_ms) }
-  let due = remote_outbox.due_session_closes(now_mono_ms, now_wall_ms=now_wall_ms, is_peer_in_roster=Some(roster_check))
+  let due = remote_outbox.due_session_closes(now_mono_ms, now_wall_ms=now_wall_ms)
   for i in 0..<due.length() {
     let (session, ws, peer_id) = due[i]
     let close_req = build_session_close_rpc_payload(ws, session)
@@ -1056,9 +1030,10 @@ pub fn process_task_changed_get_reply(
           remote_outbox.unfollow(ref_id)
           return TaskChangedOutcome::Settled
         }
-        remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
+        let _ = remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
         return TaskChangedOutcome::RetryLater
       }
+      remote_outbox.clear_task_get_retry_attempts(ref_id)
       if was_dirty {
         TaskChangedOutcome::RequeryNow
       } else {
@@ -1066,7 +1041,7 @@ pub fn process_task_changed_get_reply(
       }
     }
     Err(_) => {
-      remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
+      let _ = remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
       TaskChangedOutcome::RetryLater
     }
   }
@@ -1161,9 +1136,18 @@ pub fn sweep_expired_mcp_pending(
   mcp_pending : station_whole::McpPendingTable,
   now_mono_ms : Int64,
 ) -> Unit {
-  let expired = mcp_pending.sweep_expired(now_mono_ms)
+  let expired = mcp_pending.sweep_expired_where(now_mono_ms, fn(r : station_whole::McpPendingReq) -> Bool {
+    if r.fsync_ev_id > 0L {
+      // 3-state CAS: evict ONLY if cancel won PENDING -> CANCELLED; if worker already entered COMMITTING,
+      // keep active so `on_mcp_fsync_done` returns the real publish result without a contradictory timeout!
+      return station_sys::fsync_cancel(r.fsync_ev_id)
+    }
+    true
+  })
   for i in 0..<expired.length() {
     let p = expired[i]
+    // Already cancelled fsync_ev_id in `can_evict`; avoid duplicate cancel call.
+    p.fsync_ev_id = 0L
     cleanup_aborted_mcp_req(ctx, fs, p)
     let reply = station_tools::error_reply("MCP tool " + p.tool + " timed out waiting for remote response")
     let body_str = station_whole::encode_mcp_tool_jsonrpc(p.rpc_id, reply)

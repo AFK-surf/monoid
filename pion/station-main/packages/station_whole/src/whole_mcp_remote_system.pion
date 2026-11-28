@@ -617,15 +617,19 @@ pub fn McpPendingTable::on_conn_closed(self : McpPendingTable, conn_id : Int) ->
   }
 }
 
-/// Evict all expired pending requests (`now_mono_ms >= deadline_mono_ms`) and return them.
-pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_mono_ms : Int64) -> Array[McpPendingReq] {
+/// Evict all expired pending requests (`now_mono_ms >= deadline_mono_ms`) for which `can_evict(req)` is true.
+pub fn McpPendingTable::sweep_expired_where(
+  self : McpPendingTable,
+  now_mono_ms : Int64,
+  can_evict : (McpPendingReq) -> Bool,
+) -> Array[McpPendingReq] {
   let expired : Array[McpPendingReq] = []
   let keys = self.by_conn.keys()
   for i in 0..<keys.length() {
     let cid = keys[i]
     match self.by_conn.get(cid) {
       Some(r) => {
-        if now_mono_ms >= r.deadline_mono_ms {
+        if now_mono_ms >= r.deadline_mono_ms && can_evict(r) {
           expired.push(r)
         }
       }
@@ -636,6 +640,11 @@ pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_mono_ms : Int6
     let _ = self.by_conn.remove(expired[i].conn_id)
   }
   expired
+}
+
+/// Evict all expired pending requests (`now_mono_ms >= deadline_mono_ms`) and return them.
+pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_mono_ms : Int64) -> Array[McpPendingReq] {
+  self.sweep_expired_where(now_mono_ms, fn(_r : McpPendingReq) -> Bool { true })
 }
 
 /// Evict and return ALL pending requests on daemon shutdown so caller can cancel every mesh RPC
@@ -2700,8 +2709,8 @@ pub struct RemoteOutgoingTask {
   pub name : String
 }
 
-/// Maximum retry window for persistent `session.close` deliveries (7 days).
-pub let SESSION_CLOSE_MAX_AGE_MS : Int64 = 7L * 24L * 3600L * 1000L
+/// Maximum retry window for persistent `session.close` deliveries (30 days, aligned with `remote_source.mbt:753`).
+pub let SESSION_CLOSE_MAX_AGE_MS : Int64 = 30L * 24L * 3600L * 1000L
 
 pub struct PendingSessionClose {
   pub session : String
@@ -2720,8 +2729,10 @@ pub struct RemoteTaskOutbox {
   outgoing : Map[String, RemoteOutgoingTask]
   /// Presence = in-flight `task.get`; value `true` = dirty (another `task.changed` arrived while in-flight).
   inflight_gets : Map[String, Bool]
-  /// Backoff retry schedule `(next_retry_mono_ms, attempts)` for failed `task.get` or transient delivery failure.
-  retry_gets : Map[String, (Int64, Int)]
+  /// Due timestamp (`next_retry_mono_ms`) for scheduled `task.get` retries.
+  retry_gets : Map[String, Int64]
+  /// Consecutive retry attempt counter preserved across dispatches until settled/unfollowed.
+  retry_attempts : Map[String, Int]
   used_peers : Map[String, Array[(String, String)]]
   used_loaded : Map[String, Bool]
   closing : Map[String, PendingSessionClose]
@@ -2735,6 +2746,7 @@ pub fn RemoteTaskOutbox::new(data_dir : String, fs : station_jobs::FsPort) -> Re
     outgoing: Map::new(),
     inflight_gets: Map::new(),
     retry_gets: Map::new(),
+    retry_attempts: Map::new(),
     used_peers: Map::new(),
     used_loaded: Map::new(),
     closing: Map::new(),
@@ -2853,12 +2865,12 @@ pub fn RemoteTaskOutbox::schedule_task_get_retry(
   self : RemoteTaskOutbox,
   push_ref : String,
   now_mono_ms : Int64,
-) -> Unit {
+) -> Int64 {
   if self.lookup_outgoing(push_ref) is None {
-    return
+    return 0L
   }
-  let prev_attempts = match self.retry_gets.get(push_ref) {
-    Some((_, a)) => a
+  let prev_attempts = match self.retry_attempts.get(push_ref) {
+    Some(a) => a
     None => 0
   }
   let next_attempts = prev_attempts + 1
@@ -2871,7 +2883,15 @@ pub fn RemoteTaskOutbox::schedule_task_get_retry(
   } else {
     60000L
   }
-  self.retry_gets.set(push_ref, (now_mono_ms + backoff, next_attempts))
+  self.retry_attempts.set(push_ref, next_attempts)
+  let due = now_mono_ms + backoff
+  self.retry_gets.set(push_ref, due)
+  backoff
+}
+
+pub fn RemoteTaskOutbox::clear_task_get_retry_attempts(self : RemoteTaskOutbox, push_ref : String) -> Unit {
+  let _ = self.retry_attempts.remove(push_ref)
+  let _ = self.retry_gets.remove(push_ref)
 }
 
 pub fn RemoteTaskOutbox::due_task_get_retries(
@@ -2883,8 +2903,9 @@ pub fn RemoteTaskOutbox::due_task_get_retries(
   for i in 0..<ks.length() {
     let pref = ks[i]
     match self.retry_gets.get(pref) {
-      Some((due_at, _)) => {
+      Some(due_at) => {
         if now_mono_ms >= due_at && !self.inflight_gets.contains(pref) {
+          // Remove only the due timer; keep `retry_attempts` until settled so backoff escalates 5/15/30/60s.
           let _ = self.retry_gets.remove(pref)
           match self.lookup_outgoing(pref) {
             Some(rec) => {
@@ -2969,6 +2990,7 @@ pub fn RemoteTaskOutbox::unfollow(self : RemoteTaskOutbox, push_ref : String) ->
   let _ = self.outgoing.remove(push_ref)
   let _ = self.inflight_gets.remove(push_ref)
   let _ = self.retry_gets.remove(push_ref)
+  let _ = self.retry_attempts.remove(push_ref)
   if self.data_dir.length() > 0 && station_jobs::is_hex64(push_ref) {
     let _ = (self.fs.remove_file)(outbox_outgoing_path(self, push_ref))
   }
@@ -3138,13 +3160,14 @@ pub fn RemoteTaskOutbox::begin_session_close(
   merged
 }
 
-/// Reload persisted `closing/*.json` records from disk on daemon startup AND reconcile `used/*.json`
-/// for sessions already archived in SQLite (covers crash between SQLite archive commit and hook run).
+/// Reload persisted `closing/*.json` records from disk AFTER `WholeStore` opens AND reconcile `used/*.json`
+/// (both `{ session, peers }` and legacy array `<sha256(session)>.json`) for sessions already archived in SQLite.
 pub fn RemoteTaskOutbox::load_pending_closes(
   self : RemoteTaskOutbox,
   now_mono_ms : Int64,
   now_wall_ms : Int64 = 0L,
   is_session_archived : Option[(String) -> Bool] = None,
+  archived_session_keys : Array[String] = [],
 ) -> Unit {
   if self.data_dir.length() == 0 {
     return
@@ -3202,27 +3225,51 @@ pub fn RemoteTaskOutbox::load_pending_closes(
     }
     None => ()
   }
-  match is_session_archived {
-    Some(check_archived) => {
-      let udir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "used"])
-      match (self.fs.read_dir)(udir) {
-        Some(names) => {
-          for i in 0..<names.length() {
-            let fname = names[i]
-            if !fname.ends_with(".json") {
-              continue
-            }
-            let pth = nodepath::join(self.fs.sep, [udir, fname])
-            let (sess, peers) = read_used_entry_from_disk(self.fs, pth)
-            if sess.length() > 0 && peers.length() > 0 && check_archived(sess) {
-              let _ = self.begin_session_close(sess, now_mono_ms, now_wall_ms=now_wall_ms)
-            }
-          }
-        }
-        None => ()
+  if is_session_archived is Some(_) || archived_session_keys.length() > 0 {
+    let archived_by_file : Map[String, String] = Map::new()
+    for i in 0..<archived_session_keys.length() {
+      let k = archived_session_keys[i]
+      if k.length() > 0 {
+        let fname_k = crypto::sha256_hex(k.to_bytes()) + ".json"
+        archived_by_file.set(fname_k, k)
       }
     }
-    None => ()
+    let udir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "used"])
+    match (self.fs.read_dir)(udir) {
+      Some(names) => {
+        for i in 0..<names.length() {
+          let fname = names[i]
+          if !fname.ends_with(".json") {
+            continue
+          }
+          let pth = nodepath::join(self.fs.sep, [udir, fname])
+          let (disk_sess, peers) = read_used_entry_from_disk(self.fs, pth)
+          let sess = if disk_sess.length() > 0 {
+            disk_sess
+          } else {
+            match archived_by_file.get(fname) {
+              Some(k) => k
+              None => ""
+            }
+          }
+          if sess.length() == 0 || peers.length() == 0 {
+            continue
+          }
+          let archived = if archived_by_file.contains(fname) {
+            true
+          } else {
+            match is_session_archived {
+              Some(check_archived) => check_archived(sess)
+              None => false
+            }
+          }
+          if archived {
+            let _ = self.begin_session_close(sess, now_mono_ms, now_wall_ms=now_wall_ms)
+          }
+        }
+      }
+      None => ()
+    }
   }
 }
 
@@ -3234,7 +3281,6 @@ pub fn RemoteTaskOutbox::due_session_closes(
   self : RemoteTaskOutbox,
   now_mono_ms : Int64,
   now_wall_ms : Int64 = 0L,
-  is_peer_in_roster : Option[(String, String) -> Bool] = None,
 ) -> Array[(String, String, String)] {
   let out : Array[(String, String, String)] = []
   let drop_pairs : Array[(String, String, String)] = []
@@ -3254,14 +3300,6 @@ pub fn RemoteTaskOutbox::due_session_closes(
         if now_mono_ms >= entry.next_retry_mono_ms {
           for j in 0..<entry.peers.length() {
             let (w, p) = entry.peers[j]
-            let known = match is_peer_in_roster {
-              Some(check) => check(w, p)
-              None => true
-            }
-            if !known {
-              drop_pairs.push((entry.session, w, p))
-              continue
-            }
             let ik = close_inflight_key(entry.session, w, p)
             if !self.closing_inflight.contains(ik) {
               self.closing_inflight.set(ik, true)

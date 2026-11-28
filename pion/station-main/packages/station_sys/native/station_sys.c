@@ -11761,9 +11761,14 @@ int32_t sts_resolve_host_all_async(uint64_t event_id, const char *host) {
 static atomic_int g_sts_fsync_inflight = 0;
 #define STS_FSYNC_MAX_INFLIGHT 32
 
+// 3-state atomic CAS gate: 0=PENDING, 1=COMMITTING, 2=CANCELLED
+#define STS_FSYNC_PENDING    0
+#define STS_FSYNC_COMMITTING 1
+#define STS_FSYNC_CANCELLED  2
+
 typedef struct {
     uint64_t event_id;
-    atomic_int cancelled;
+    atomic_int state;
     int active;
 } sts_fsync_slot_t;
 
@@ -11776,7 +11781,7 @@ static int sts_fsync_slot_alloc(uint64_t event_id) {
         if (!g_sts_fsync_slots[i].active) {
             g_sts_fsync_slots[i].active = 1;
             g_sts_fsync_slots[i].event_id = event_id;
-            atomic_store_explicit(&g_sts_fsync_slots[i].cancelled, 0, memory_order_release);
+            atomic_store_explicit(&g_sts_fsync_slots[i].state, STS_FSYNC_PENDING, memory_order_release);
             idx = i;
             break;
         }
@@ -11790,23 +11795,43 @@ static void sts_fsync_slot_release(int idx) {
     ht_lock();
     g_sts_fsync_slots[idx].active = 0;
     g_sts_fsync_slots[idx].event_id = 0;
-    atomic_store_explicit(&g_sts_fsync_slots[idx].cancelled, 0, memory_order_release);
+    atomic_store_explicit(&g_sts_fsync_slots[idx].state, STS_FSYNC_PENDING, memory_order_release);
     ht_unlock();
 }
 
+// Atomically transition PENDING -> CANCELLED via CAS.
+// Returns 1 ONLY if cancel won before the worker entered COMMITTING; returns 0 if already committing/absent.
 int32_t sts_fsync_cancel(uint64_t event_id) {
     if (event_id == 0) return 0;
-    int found = 0;
+    int won = 0;
     ht_lock();
     for (int i = 0; i < STS_FSYNC_MAX_INFLIGHT; i++) {
         if (g_sts_fsync_slots[i].active && g_sts_fsync_slots[i].event_id == event_id) {
-            atomic_store_explicit(&g_sts_fsync_slots[i].cancelled, 1, memory_order_release);
-            found = 1;
+            int expected = STS_FSYNC_PENDING;
+            if (atomic_compare_exchange_strong_explicit(
+                    &g_sts_fsync_slots[i].state,
+                    &expected,
+                    STS_FSYNC_CANCELLED,
+                    memory_order_acq_rel,
+                    memory_order_acquire)) {
+                won = 1;
+            }
             break;
         }
     }
     ht_unlock();
-    return found;
+    return won;
+}
+
+static int sts_fsync_try_enter_committing(int slot_idx) {
+    if (slot_idx < 0 || slot_idx >= STS_FSYNC_MAX_INFLIGHT) return 1;
+    int expected = STS_FSYNC_PENDING;
+    return atomic_compare_exchange_strong_explicit(
+        &g_sts_fsync_slots[slot_idx].state,
+        &expected,
+        STS_FSYNC_COMMITTING,
+        memory_order_acq_rel,
+        memory_order_acquire) ? 1 : 0;
 }
 
 typedef struct {
@@ -11826,7 +11851,7 @@ typedef struct {
 static void sts_fsync_run_task(sts_fsync_task_t *task) {
     int32_t rc = 0;
     int is_cancelled = (task->slot_idx >= 0 &&
-        atomic_load_explicit(&g_sts_fsync_slots[task->slot_idx].cancelled, memory_order_acquire) != 0);
+        atomic_load_explicit(&g_sts_fsync_slots[task->slot_idx].state, memory_order_acquire) == STS_FSYNC_CANCELLED);
 #ifdef _WIN32
     if (is_cancelled) {
         if (task->do_publish) {
@@ -11838,47 +11863,44 @@ static void sts_fsync_run_task(sts_fsync_task_t *task) {
     } else if (!FlushFileBuffers(task->f->h)) {
         rc = -1;
     } else if (task->do_publish) {
-        // Re-check atomic cancel gate immediately before handle-bound rename!
-        if (task->slot_idx >= 0 &&
-            atomic_load_explicit(&g_sts_fsync_slots[task->slot_idx].cancelled, memory_order_acquire) != 0) {
-            FILE_DISPOSITION_INFO fdi;
-            fdi.DeleteFile = TRUE;
-            (void)SetFileInformationByHandle(task->f->h, FileDispositionInfo, &fdi, sizeof(fdi));
-            rc = -9;
+        HANDLE dst_parents[128];
+        size_t n_dst = 0;
+        char *dst_full = sts_win_walk_lock_parents(task->root, task->dst_rel, 1, dst_parents, 128, &n_dst);
+        if (dst_full == NULL) {
+            rc = -5;
         } else {
-            HANDLE dst_parents[128];
-            size_t n_dst = 0;
-            char *dst_full = sts_win_walk_lock_parents(task->root, task->dst_rel, 1, dst_parents, 128, &n_dst);
-            if (dst_full == NULL) {
-                rc = -5;
+            wchar_t *wdst = utf8_to_wide(dst_full);
+            free(dst_full);
+            if (wdst == NULL) {
+                rc = -1;
             } else {
-                wchar_t *wdst = utf8_to_wide(dst_full);
-                free(dst_full);
-                if (wdst == NULL) {
+                size_t wlen = wcslen(wdst);
+                size_t buf_sz = sizeof(FILE_RENAME_INFO) + (wlen + 1) * sizeof(wchar_t);
+                FILE_RENAME_INFO *fri = (FILE_RENAME_INFO *)calloc(1, buf_sz);
+                if (fri == NULL) {
                     rc = -1;
                 } else {
-                    size_t wlen = wcslen(wdst);
-                    size_t buf_sz = sizeof(FILE_RENAME_INFO) + (wlen + 1) * sizeof(wchar_t);
-                    FILE_RENAME_INFO *fri = (FILE_RENAME_INFO *)calloc(1, buf_sz);
-                    if (fri == NULL) {
-                        rc = -1;
-                    } else {
-                        fri->ReplaceIfExists = FALSE;
-                        fri->RootDirectory = NULL;
-                        fri->FileNameLength = (DWORD)(wlen * sizeof(wchar_t));
-                        memcpy(fri->FileName, wdst, (wlen + 1) * sizeof(wchar_t));
-                        if (!SetFileInformationByHandle(task->f->h, FileRenameInfo, fri, (DWORD)buf_sz)) {
-                            DWORD gle = GetLastError();
-                            if (gle == ERROR_ALREADY_EXISTS || gle == ERROR_FILE_EXISTS) rc = -7;
-                            else if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) rc = -2;
-                            else rc = -1;
-                        }
-                        free(fri);
+                    fri->ReplaceIfExists = FALSE;
+                    fri->RootDirectory = NULL;
+                    fri->FileNameLength = (DWORD)(wlen * sizeof(wchar_t));
+                    memcpy(fri->FileName, wdst, (wlen + 1) * sizeof(wchar_t));
+                    // 3-state CAS(PENDING -> COMMITTING) immediately before handle-bound rename!
+                    if (!sts_fsync_try_enter_committing(task->slot_idx)) {
+                        FILE_DISPOSITION_INFO fdi;
+                        fdi.DeleteFile = TRUE;
+                        (void)SetFileInformationByHandle(task->f->h, FileDispositionInfo, &fdi, sizeof(fdi));
+                        rc = -9;
+                    } else if (!SetFileInformationByHandle(task->f->h, FileRenameInfo, fri, (DWORD)buf_sz)) {
+                        DWORD gle = GetLastError();
+                        if (gle == ERROR_ALREADY_EXISTS || gle == ERROR_FILE_EXISTS) rc = -7;
+                        else if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) rc = -2;
+                        else rc = -1;
                     }
-                    free(wdst);
+                    free(fri);
                 }
-                sts_win_close_handles(dst_parents, n_dst);
+                free(wdst);
             }
+            sts_win_close_handles(dst_parents, n_dst);
         }
     }
     if (!CloseHandle(task->f->h) && rc == 0) rc = -1;
@@ -11891,9 +11913,8 @@ static void sts_fsync_run_task(sts_fsync_task_t *task) {
         } while (frc < 0 && errno == EINTR);
         if (frc != 0) rc = -1;
     }
-    // Re-check atomic cancel gate immediately before publish!
     if (task->slot_idx >= 0 &&
-        atomic_load_explicit(&g_sts_fsync_slots[task->slot_idx].cancelled, memory_order_acquire) != 0) {
+        atomic_load_explicit(&g_sts_fsync_slots[task->slot_idx].state, memory_order_acquire) == STS_FSYNC_CANCELLED) {
         is_cancelled = 1;
     }
     if (is_cancelled) {
@@ -11923,61 +11944,88 @@ static void sts_fsync_run_task(sts_fsync_task_t *task) {
             if (dst_dirfd < 0) {
                 rc = -5;
             } else {
-                int linked = 0;
-#ifdef __linux__
-                // Linux: directly hard-link the open `fd` via `/proc/self/fd/<fd>` (zero source-path lookup race).
-                char proc_fd[64];
-                snprintf(proc_fd, sizeof(proc_fd), "/proc/self/fd/%d", task->f->fd);
-                if (linkat(AT_FDCWD, proc_fd, dst_dirfd, dst_leaf, AT_SYMLINK_FOLLOW) == 0) {
-                    linked = 1;
-                } else {
-                    int se = errno;
-                    if (se == EEXIST) {
-                        rc = -7;
-                    } else if (se == ELOOP) {
-                        rc = -5;
+                // Prepare source dirfd before CAS so the CAS->publish window is minimal.
+                char src_leaf[512];
+                int src_dirfd = sts_open_dir_nofollow_walk(task->root, task->part_rel, 0, src_leaf, sizeof(src_leaf));
+                // 3-state CAS(PENDING -> COMMITTING) immediately before publishing!
+                if (!sts_fsync_try_enter_committing(task->slot_idx)) {
+                    if (src_dirfd >= 0) {
+                        struct stat path_st;
+                        if (fstatat(src_dirfd, src_leaf, &path_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                            path_st.st_dev == fd_st.st_dev &&
+                            path_st.st_ino == fd_st.st_ino) {
+                            (void)unlinkat(src_dirfd, src_leaf, 0);
+                        }
                     }
-                    // On ENOENT/EPERM/EACCES/EXDEV (/proc unavailable or protected_hardlinks), fall back below.
-                }
-#endif
-                if (!linked && rc == 0) {
-                    char src_leaf[512];
-                    int src_dirfd = sts_open_dir_nofollow_walk(task->root, task->part_rel, 0, src_leaf, sizeof(src_leaf));
-                    if (src_dirfd < 0) {
-                        rc = -5;
+                    rc = -9;
+                } else {
+                    int linked = 0;
+                    int already_unlinked = 0;
+#ifdef __linux__
+                    // Linux: directly hard-link the open `fd` via `/proc/self/fd/<fd>` (zero source-path lookup race).
+                    char proc_fd[64];
+                    snprintf(proc_fd, sizeof(proc_fd), "/proc/self/fd/%d", task->f->fd);
+                    if (linkat(AT_FDCWD, proc_fd, dst_dirfd, dst_leaf, AT_SYMLINK_FOLLOW) == 0) {
+                        linked = 1;
                     } else {
+                        int se = errno;
+                        if (se == EEXIST) rc = -7;
+                        else if (se == ELOOP) rc = -5;
+                    }
+#elif defined(__APPLE__)
+                    // macOS: single-syscall atomic no-replace rename via `renameatx_np(..., RENAME_EXCL)` after inode verify.
+                    if (src_dirfd >= 0) {
                         struct stat path_st;
                         if (fstatat(src_dirfd, src_leaf, &path_st, AT_SYMLINK_NOFOLLOW) != 0 ||
                             !S_ISREG(path_st.st_mode) ||
                             path_st.st_dev != fd_st.st_dev ||
                             path_st.st_ino != fd_st.st_ino) {
                             rc = -5;
-                        } else if (linkat(src_dirfd, src_leaf, dst_dirfd, dst_leaf, 0) != 0) {
+                        } else if (renameatx_np(src_dirfd, src_leaf, dst_dirfd, dst_leaf, RENAME_EXCL) == 0) {
+                            linked = 1;
+                            already_unlinked = 1;
+                        } else {
                             int se = errno;
                             if (se == EEXIST) rc = -7;
                             else if (se == ENOENT) rc = -2;
                             else if (se == ELOOP) rc = -5;
                             else rc = -1;
-                        } else {
-                            linked = 1;
                         }
-                        close(src_dirfd);
+                    } else {
+                        rc = -5;
                     }
-                }
-                if (linked && rc == 0) {
-                    // Only unlink `part_rel` if it still points to the exact same inode as `fd`.
-                    char src_leaf[512];
-                    int src_dirfd = sts_open_dir_nofollow_walk(task->root, task->part_rel, 0, src_leaf, sizeof(src_leaf));
-                    if (src_dirfd >= 0) {
+#endif
+                    if (!linked && rc == 0) {
+                        if (src_dirfd < 0) {
+                            rc = -5;
+                        } else {
+                            struct stat path_st;
+                            if (fstatat(src_dirfd, src_leaf, &path_st, AT_SYMLINK_NOFOLLOW) != 0 ||
+                                !S_ISREG(path_st.st_mode) ||
+                                path_st.st_dev != fd_st.st_dev ||
+                                path_st.st_ino != fd_st.st_ino) {
+                                rc = -5;
+                            } else if (linkat(src_dirfd, src_leaf, dst_dirfd, dst_leaf, 0) != 0) {
+                                int se = errno;
+                                if (se == EEXIST) rc = -7;
+                                else if (se == ENOENT) rc = -2;
+                                else if (se == ELOOP) rc = -5;
+                                else rc = -1;
+                            } else {
+                                linked = 1;
+                            }
+                        }
+                    }
+                    if (linked && !already_unlinked && rc == 0 && src_dirfd >= 0) {
                         struct stat after_st;
                         if (fstatat(src_dirfd, src_leaf, &after_st, AT_SYMLINK_NOFOLLOW) == 0 &&
                             after_st.st_dev == fd_st.st_dev &&
                             after_st.st_ino == fd_st.st_ino) {
                             (void)unlinkat(src_dirfd, src_leaf, 0);
                         }
-                        close(src_dirfd);
                     }
                 }
+                if (src_dirfd >= 0) close(src_dirfd);
                 close(dst_dirfd);
             }
         }

@@ -424,9 +424,9 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
         fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
       )
       r2_assert(out_stopping is TaskChangedOutcome::StillRunning && outbox_reload.lookup_outgoing(push_ref) is Some(_), "stopping must not unfollow")
-      // Transient delivery failure schedules backoff retry and does NOT unfollow!
+      // Transient delivery failure #1 -> 5s backoff; #2 -> 15s backoff; #3 -> 30s backoff!
       r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "re-mark for delivery test")
-      let failed_deliv = process_task_changed_get_reply(
+      let failed_deliv1 = process_task_changed_get_reply(
         outbox_reload,
         push_ref,
         found,
@@ -434,10 +434,23 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
         1000L,
         fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { false },
       )
-      r2_assert(failed_deliv is TaskChangedOutcome::RetryLater && outbox_reload.lookup_outgoing(push_ref) is Some(_), "failed delivery retains outgoing & schedules retry")
-      // Backoff retry becomes due at 1000 + 5000 = 6000ms
-      let due_retries = outbox_reload.due_task_get_retries(6500L)
-      r2_assert(due_retries.length() == 1 && due_retries[0].push_ref == push_ref, "retry due after backoff")
+      r2_assert(failed_deliv1 is TaskChangedOutcome::RetryLater, "1st failure schedules 5s retry")
+      r2_assert(outbox_reload.due_task_get_retries(5999L).length() == 0, "not due before 5s")
+      let due_r1 = outbox_reload.due_task_get_retries(6000L)
+      r2_assert(due_r1.length() == 1 && due_r1[0].push_ref == push_ref, "1st retry due at +5s")
+      // 2nd consecutive failure -> MUST escalate to 15s (6000 + 15000 = 21000ms), NOT reset to 5s!
+      let failed_deliv2 = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Err("mesh timeout"),
+        6000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(failed_deliv2 is TaskChangedOutcome::RetryLater, "2nd failure schedules 15s retry")
+      r2_assert(outbox_reload.due_task_get_retries(20999L).length() == 0, "must NOT fire at +5s; escalates to +15s")
+      let due_r2 = outbox_reload.due_task_get_retries(21000L)
+      r2_assert(due_r2.length() == 1 && due_r2[0].push_ref == push_ref, "2nd retry due at +15s")
       // Successful internal notice delivery settles and unfollows!
       let mut delivered_text = ""
       let ok_deliv = process_task_changed_get_reply(
@@ -445,7 +458,7 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
         push_ref,
         found,
         Ok(wire_reply),
-        6500L,
+        21000L,
         fn(_r : station_whole::RemoteOutgoingTask, n : String) -> Bool {
           delivered_text = n
           true
@@ -489,15 +502,19 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
   r2_assert(outbox_reload.pending_close_count() == 1, "rig-1 still pending in closing")
   // Simulate crash after SQLite archive for `sess-crashed` (still in `used/`, not yet in `closing/`)
   outbox_reload.record_use("ws-1", "sess-crashed", "rig-3")
-  // Simulate daemon restart: reload closing/*.json AND reconcile archived `used/` entries!
+  // Simulate daemon restart: BEFORE store opens (archived list empty), `sess-crashed` stays in `used/`;
+  // AFTER store opens (archived keys known), `load_pending_closes` reconciles `sess-crashed` into `closing/`!
   let outbox_restart = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  outbox_restart.load_pending_closes(20000L, now_wall_ms=120000L, is_session_archived=Some(fn(_s : String) -> Bool { false }))
+  r2_assert(outbox_restart.pending_close_count() == 1, "before store open only existing closing/ loaded")
   outbox_restart.load_pending_closes(
     20000L,
     now_wall_ms=120000L,
     is_session_archived=Some(fn(s : String) -> Bool { s == "sess-crashed" }),
+    archived_session_keys=["sess-crashed"],
   )
   let due2 = outbox_restart.due_session_closes(20000L, now_wall_ms=120000L)
-  r2_assert(due2.length() == 2, "restarted outbox reloads rig-1 and reconciles archived sess-crashed/rig-3")
+  r2_assert(due2.length() == 2, "after store open outbox reloads rig-1 and reconciles archived sess-crashed/rig-3")
   r2_assert(
     settle_session_close_reply(
       outbox_restart,
@@ -509,10 +526,14 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
     ),
     "retry closed:true clears rig-1",
   )
-  // Simulate peer `rig-3` expiring past 7-day cap -> automatically dropped!
+  // 30-day max age: still retained at 29 days (no cloud roster pruning!), dropped only at >= 30 days!
   r2_assert(!settle_session_close_reply(outbox_restart, "sess-crashed", "ws-1", "rig-3", Err("offline"), 20000L), "offline retries")
-  let due3 = outbox_restart.due_session_closes(90000L, now_wall_ms=120000L + station_whole::SESSION_CLOSE_MAX_AGE_MS + 1L)
-  r2_assert(due3.length() == 0 && outbox_restart.pending_close_count() == 0, "7-day cap prunes permanently offline peer")
+  let day29 = 120000L + 29L * 24L * 3600L * 1000L
+  let due_29 = outbox_restart.due_session_closes(90000L, now_wall_ms=day29)
+  r2_assert(due_29.length() == 1 && outbox_restart.pending_close_count() == 1, "still retried at 29 days even when cloud is down")
+  r2_assert(!settle_session_close_reply(outbox_restart, "sess-crashed", "ws-1", "rig-3", Err("offline"), 90000L), "offline retries 2")
+  let due3 = outbox_restart.due_session_closes(200000L, now_wall_ms=120000L + station_whole::SESSION_CLOSE_MAX_AGE_MS + 1L)
+  r2_assert(due3.length() == 0 && outbox_restart.pending_close_count() == 0, "30-day cap prunes permanently offline peer")
 
   // 4. Dual-path `task.prepare`:
   // (a) Supported target: prepare -> upload -> start succeeds cleanly

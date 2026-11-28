@@ -7258,19 +7258,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_pending = station_whole::McpPendingTable::new()
       let remote_outbox = station_whole::RemoteTaskOutbox::new(ctx.data, core.agents.jobs.fs)
-      remote_outbox.load_pending_closes(
-        host_shim::now_ms(),
-        now_wall_ms=host_shim::wall_ms(),
-        is_session_archived=Some(fn(sk : String) -> Bool {
-          match core.store.require_open() {
-            Ok(st) => match st.get_session(sk) {
-              Ok(Some(r)) => r.archived_at is Some(_)
-              _ => false
-            }
-            Err(_) => false
-          }
-        }),
-      )
       let mcp_defer_capture = station_whole::DeferredMcpCapture::new()
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
       mcp_srv.set_conn_closed_hook(
@@ -7951,6 +7938,37 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           ) {
             Ok(_) => {
               st.replica.after_store(home_ws, ctx.station_key.id, host_shim::wall_ms())
+              // Reconcile persisted `closing/*.json` and archived `used/*.json` AFTER `WholeStore` opens primary DB.
+              let archived_keys : Array[String] = match st.core.store.require_open() {
+                Ok(sdb) => match sdb.db.all("SELECT key FROM sessions WHERE archived_at IS NOT NULL", []) {
+                  Ok(rows) => {
+                    let ks : Array[String] = []
+                    for ri in 0..<rows.length() {
+                      match rows[ri].get("key") {
+                        Some(base_codec::Json::Str(k)) => if k.length() > 0 { ks.push(k) }
+                        _ => ()
+                      }
+                    }
+                    ks
+                  }
+                  Err(_) => []
+                }
+                Err(_) => []
+              }
+              st.remote_outbox.load_pending_closes(
+                host_shim::now_ms(),
+                now_wall_ms=host_shim::wall_ms(),
+                is_session_archived=Some(fn(sk : String) -> Bool {
+                  match st.core.store.require_open() {
+                    Ok(sdb) => match sdb.get_session(sk) {
+                      Ok(Some(r)) => r.archived_at is Some(_)
+                      _ => false
+                    }
+                    Err(_) => false
+                  }
+                }),
+                archived_session_keys=archived_keys,
+              )
               // Load persisted cross-station `remote-connects.json` and start all enabled local external
               // connects (Slack / Feishu / Comma / Group) directly onto `WholeCore` `Hub`!
               load_remote_connects_file(
