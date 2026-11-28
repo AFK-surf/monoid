@@ -891,10 +891,14 @@ fn vault_card_ts_format(now_ms : Int64, n : Int64) -> String {
 }
 
 /// Post a vault approval card into the session's thread via `Store::insert_message`,
-/// emitting a `"thread"` SSE event on `events_opt`, and returning `Some(card_ts)`.
+/// emitting a `"thread"` SSE event on `events_opt`, queuing outbound Connects delivery
+/// for non-`chat` surfaces, and returning `Some(card_ts)`.
 fn vault_mcp_post_card(
+  whole_store : WholeStore,
   st : station_store::Store,
   events_opt : Option[station_api::EventsHub],
+  ws : String,
+  req_id : String,
   session : String,
   thr : VaultSessionThread,
   text : String,
@@ -932,6 +936,19 @@ fn vault_mcp_post_card(
   let (n, _) = match st.insert_message(msg) {
     Ok(res) => res
     Err(e) => return Err("vault card insert_message failed: " + e.message)
+  }
+  if thr.surface != "chat" {
+    whole_store.pending_vault_connect_posts.push(
+      PendingVaultConnectPost::{
+        ws: ws,
+        req_id: req_id,
+        session: session,
+        thread_id: thr.id,
+        n_seq: n,
+        text: text,
+        card: card_opt,
+      },
+    )
   }
   match events_opt {
     Some(ev) => {
@@ -1527,6 +1544,12 @@ pub fn vault_rebox_for_cert(
     Ok(vs) => vs
     Err(_) => return true
   }
+  let lv = station_vault::lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  match vault::cert_ok(lv, Some(cert_form), false, vc) {
+    Some(_) => return true
+    None => ()
+  }
   let cert_dev = match form::json_field(Some(cert_form), "device") { Some(form::Json::Str(s)) => s, _ => return true }
   let cert_box = match form::json_field(Some(cert_form), "box") { Some(form::Json::Str(s)) => s, _ => return true }
   let sub = match l.devices.get(cert_dev) {
@@ -1694,9 +1717,208 @@ pub fn vault_safe_secret_filename(name_opt : Option[String]) -> String {
   n
 }
 
+fn vault_normalize_path(sep : String, raw : String) -> String {
+  let is_abs = raw.starts_with(sep)
+  let parts = raw.split(sep)
+  let stack : Array[String] = []
+  for i in 0..<parts.length() {
+    let seg = parts[i]
+    if seg.length() == 0 || seg == "." {
+      continue
+    }
+    if seg == ".." {
+      if stack.length() > 0 && stack[stack.length() - 1] != ".." {
+        let _ = stack.pop()
+      } else if !is_abs {
+        stack.push("..")
+      }
+    } else {
+      stack.push(seg)
+    }
+  }
+  let joined = vd_join_strs(stack, sep)
+  if is_abs { sep + joined } else { joined }
+}
+
+/// Validate that `raw_cwd` resolves inside `workspace` (no `..` escape, no out-of-workspace absolute path).
+pub fn vault_resolve_cwd_in_workspace(workspace : String, raw_cwd : Option[String]) -> Result[String, String] {
+  let ws_norm = workspace.trim()
+  if ws_norm.length() == 0 {
+    return Err("session workspace is empty")
+  }
+  let sep = if ws_norm.contains("\\") { "\\" } else { "/" }
+  let candidate = match raw_cwd {
+    Some(c) => {
+      let tr = c.trim()
+      if tr.length() == 0 {
+        return Ok(ws_norm)
+      }
+      if tr.starts_with("/") || tr.starts_with("\\") || (tr.length() >= 2 && tr.code_unit_at(1) == 58) {
+        tr
+      } else {
+        nodepath::join(sep, [ws_norm, tr])
+      }
+    }
+    None => return Ok(ws_norm)
+  }
+  let ws_clean = vault_normalize_path(sep, ws_norm)
+  let cand_clean = vault_normalize_path(sep, candidate)
+  if cand_clean == ws_clean || cand_clean.starts_with(ws_clean + sep) {
+    Ok(cand_clean)
+  } else {
+    Err("cwd must be inside the session workspace")
+  }
+}
+
+/// Live grant-active check for `VaultProxy` / `SshAgentServer` (immediately reflects
+/// archive/revocation/expiry, not just a stale expiry copy).
+pub fn vault_is_grant_active_live(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  now_sec : Int64,
+) -> Bool {
+  match whole_store.vault_grants.get_record(grant_id) {
+    Some(rec) => {
+      if rec.session != session || rec.revoked || rec.expires_sec <= now_sec {
+        return false
+      }
+      match whole_store.require_open() {
+        Ok(st) => {
+          if vault_is_session_ended(st, session) {
+            return false
+          }
+          true
+        }
+        Err(_) => false
+      }
+    }
+    None => false
+  }
+}
+
+/// Record a `vault_audit` row (`kind`: `"use"` or `"run"`, matching Node `secrets.ts:2642-2646`).
+pub fn vault_record_audit_by_grant(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  kind : String,
+  detail : String,
+  now_sec : Int64,
+) -> Unit {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(_) => return
+  }
+  let (ws, vault_id, item_id) = match whole_store.vault_held_meta.get(grant_id) {
+    Some((req_j, _, _)) => (
+      match json_field_str(req_j, "ws") { Some(s) => s, None => "" },
+      match json_field_str(req_j, "vault") { Some(s) => s, None => "" },
+      match json_field_str(req_j, "item") { Some(s) => s, None => "" },
+    )
+    None => ("", "", "")
+  }
+  let clipped = if detail.length() > 500 { detail.slice(0, 500) } else { detail }
+  let _ = st.db.run(
+    "INSERT INTO vault_audit(ws, at, kind, session, vault, item, request, detail) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    [
+      base_codec::json_str(ws),
+      sql_db::int64_to_json(now_sec),
+      base_codec::json_str(kind),
+      base_codec::json_str(session),
+      base_codec::json_str(vault_id),
+      base_codec::json_str(item_id),
+      base_codec::json_str(grant_id),
+      base_codec::json_str(clipped),
+    ],
+  )
+}
+
+/// Renew an idle grant on real proxy/SSH use and record a `"use"` audit row.
+pub fn vault_renew_and_audit_use(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  detail : String,
+  now_sec : Int64,
+) -> Unit {
+  match whole_store.vault_grants.get_record(grant_id) {
+    Some(rec) => {
+      if rec.session == session && !rec.revoked && rec.idle_sec > 0L {
+        rec.expires_sec = now_sec + rec.idle_sec
+      }
+    }
+    None => ()
+  }
+  vault_record_audit_by_grant(whole_store, session, grant_id, "use", detail, now_sec)
+}
+
+/// Atomic SQLite CAS spend for plain grants (`secrets.ts:355-377`), preventing crash/handover
+/// resurrection of a spent one-use plain grant.
+fn vault_spend_plain_grant_cas(
+  st : station_store::Store,
+  ws : String,
+  grant_id : String,
+  is_once : Bool,
+  idle_sec : Int64,
+  now_sec : Int64,
+) -> Result[Unit, String] {
+  let row = match st.db.first(
+    "SELECT body FROM vault_grants WHERE ws = ?1 AND id = ?2",
+    [base_codec::json_str(ws), base_codec::json_str(grant_id)],
+  ) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(()) // non-persisted plain grant
+    Err(e) => return Err("plain grant lookup failed: " + e.message)
+  }
+  let raw_body = match row.get("body") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("malformed persisted plain grant")
+  }
+  let stored = match base_codec::json_parse(raw_body) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return Err("malformed persisted plain grant JSON")
+  }
+  let cur_uses = match vd_safe_int64(stored, "uses") { Some(u) => u, None => 0L }
+  if is_once && cur_uses != 0L {
+    return Err("this grant was for one use and is used: ask again")
+  }
+  let exp_sec : Int64 = match vd_safe_int64(stored, "until") {
+    Some(u) => u
+    None => match base_codec::json_get(stored, "grant") {
+      Some(gj) => match vd_safe_int64(gj, "exp") { Some(e) => e, None => 0L }
+      None => 0L
+    }
+  }
+  if exp_sec <= now_sec {
+    return Err("this grant ran out: ask again")
+  }
+  let mut next_obj = json_obj_set(stored, "uses", Some(sql_db::int64_to_json(cur_uses + 1L)))
+  if idle_sec > 0L {
+    next_obj = json_obj_set(next_obj, "until", Some(sql_db::int64_to_json(now_sec + idle_sec)))
+  }
+  let next_body = base_codec::json_stringify(next_obj)
+  let changed = match st.db.run(
+    "UPDATE vault_grants SET body = ?1 WHERE ws = ?2 AND id = ?3 AND body = ?4",
+    [
+      base_codec::json_str(next_body),
+      base_codec::json_str(ws),
+      base_codec::json_str(grant_id),
+      base_codec::json_str(raw_body),
+    ],
+  ) {
+    Ok(n) => n
+    Err(e) => return Err("plain grant CAS failed: " + e.message)
+  }
+  if changed == 0 {
+    return Err("this grant was concurrently spent or revoked: ask again")
+  }
+  Ok(())
+}
+
 /// Validate a `secret_run` call, enforce all security preconditions BEFORE consuming the grant
-/// (including rejecting `browser` grants and remote `runOn` grants), spend the grant, and return
-/// a `PreparedSecretRun` for non-blocking execution.
+/// (including rejecting `browser` grants, remote/unverified `runOn` grants, unsupported SSH key
+/// formats, and out-of-workspace `cwd`), atomically spend the grant, and return a `PreparedSecretRun`.
 pub fn prepare_secret_run(
   whole_store : WholeStore,
   session : String,
@@ -1761,13 +1983,14 @@ pub fn prepare_secret_run(
     let _ = whole_store.vault_grants.revoke(grant_id)
     return Err("this grant ran out: ask again")
   }
-  match g.grant_scope {
+  let is_once = match g.grant_scope {
     station_vault::GrantScope::Once => {
       if g.uses > 0 {
         return Err("this grant was for one use and is used: ask again")
       }
+      true
     }
-    _ => ()
+    _ => false
   }
   // Security check BEFORE spending: `browser` grants are NEVER run with `secret_run`!
   match g.mode {
@@ -1776,18 +1999,28 @@ pub fn prepare_secret_run(
     }
     _ => ()
   }
-  // Security check BEFORE spending: grants bound to another station (`runOn`) MUST NOT run locally!
+  // Security check BEFORE spending: grants bound to another station (`runOn: { id, name }` or legacy)
+  // MUST NOT run locally, and unverified `runOn` is refused!
+  let mut req_vault = ""
   match whole_store.vault_held_meta.get(grant_id) {
     Some((req_j, _, _)) => {
+      req_vault = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
       match base_codec::json_get(req_j, "runOn") {
+        Some(base_codec::Json::Null) | None => ()
         Some(ro) => {
-          let ro_station = match json_field_str(ro, "station") { Some(s) => s, None => "" }
-          let ro_name = match json_field_str(ro, "name") { Some(s) => s, None => ro_station }
-          if ro_station.length() > 0 && ro_station != this_station_id {
-            return Err("This grant is for commands on " + ro_name + ": remote secret_run is not wired on this station yet.")
+          let ro_id = match json_field_str(ro, "id") {
+            Some(s) if s.trim().length() > 0 => s.trim()
+            _ => match json_field_str(ro, "station") {
+              Some(s) if s.trim().length() > 0 => s.trim()
+              _ => ""
+            }
+          }
+          let ro_name = match json_field_str(ro, "name") { Some(s) if s.trim().length() > 0 => s.trim(), _ => ro_id }
+          if ro_id.length() == 0 || ro_id != this_station_id {
+            let label = if ro_name.length() > 0 { ro_name } else { "another station" }
+            return Err("This grant is for commands on " + label + ": remote secret_run is not supported on this station yet.")
           }
         }
-        None => ()
       }
     }
     None => ()
@@ -1805,6 +2038,16 @@ pub fn prepare_secret_run(
     Some(v) => v
     None => return Err("the grant's secret has no value to use")
   }
+  // Security check BEFORE spending: SSH mode requires a supported unencrypted Ed25519 key.
+  match g.mode {
+    station_vault::DeliveryMode::Ssh => {
+      match station_vault::parse_openssh_ed25519_key(secret_val) {
+        Ok(_) => ()
+        Err(e) => return Err("SSH agent currently supports unencrypted Ed25519 keys only: " + e)
+      }
+    }
+    _ => ()
+  }
   // Resolve timeout_seconds (default 600s, min 1s, max 3600s).
   let timeout_ms : Int64 = match base_codec::json_get(args, "timeout_seconds") {
     Some(base_codec::Json::Num(n, raw)) => {
@@ -1818,27 +2061,29 @@ pub fn prepare_secret_run(
     }
     _ => VAULT_RUN_DEFAULT_MS
   }
-  // Resolve cwd (default session workspace, relative paths joined under workspace).
-  let sep = if srow.workspace.contains("\\") { "\\" } else { "/" }
-  let cwd = match mcp_arg_str(args, "cwd") {
-    Some(c) => {
-      let tr = c.trim()
-      if tr.length() == 0 {
-        srow.workspace
-      } else if tr.starts_with("/") || tr.starts_with("\\") || (tr.length() >= 2 && tr.code_unit_at(1) == 58) {
-        tr
-      } else {
-        nodepath::join(sep, [srow.workspace, tr])
-      }
-    }
-    None => srow.workspace
+  // Security check BEFORE spending: `cwd` MUST be strictly inside the session workspace.
+  let cwd = match vault_resolve_cwd_in_workspace(srow.workspace, mcp_arg_str(args, "cwd")) {
+    Ok(c) => c
+    Err(e) => return Err(e)
   }
-  // Resolve default env variable from grant or item listing.
+  // Resolve & validate default env variable from grant or item listing.
   let eff_env : Option[String] = match env_opt {
     Some(e) => Some(e)
-    None => g.env_var
+    None => match g.env_var {
+      Some(ev) if ev.trim().length() > 0 => {
+        if vd_is_valid_env_var(ev.trim()) { Some(ev.trim()) } else { None }
+      }
+      _ => None
+    }
   }
-  // All preconditions satisfied -> spend the grant now!
+  // For plain grants, atomically CAS-spend in SQLite (`secrets.ts:355-377`).
+  if req_vault == "plain" {
+    match vault_spend_plain_grant_cas(st, ws, grant_id, is_once, g.idle_sec, now_sec) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // All preconditions satisfied -> spend the in-memory grant now!
   g.uses = g.uses + 1
   if g.idle_sec > 0L {
     let next_exp = now_sec + g.idle_sec
@@ -1984,7 +2229,7 @@ pub fn handle_vault_mcp_tool(
           chat_addr = thr.channel + "/" + thr.thread_ts
           req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(chat_addr)))
           let (text, card_opt) = vault_build_browse_card_and_text(req_body, thr.surface == "chat")
-          match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+          match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
             Ok(cts) => {
               thr_id_opt = Some(thr.id)
               card_ts_opt = cts
@@ -2044,10 +2289,6 @@ pub fn handle_vault_mcp_tool(
       match l.vault_scope {
         Some(sc) => fs.push(("scope", base_codec::json_str(sc)))
         None => ()
-      }
-      match l.owner {
-        Some(ow) if ow.length() > 0 => fs.push(("owner", base_codec::json_str(ow)))
-        _ => ()
       }
       match l.cross {
         Some((cws, cws_name, _)) => {
@@ -2146,7 +2387,7 @@ pub fn handle_vault_mcp_tool(
       Some(f) => f
       None => return station_tools::error_reply("No secret named " + base_codec::json_stringify(base_codec::json_str(item_arg)) + " may be asked for here: secret_list lists those that may.")
     }
-    // Determine card assignee (decider): named person > vault member starter > vault owner (1:1 `secrets.ts:1265-1275`).
+    // Determine card assignee (decider): named person > vault member starter (shared vault) > vault owner (1:1 `secrets.ts:1265-1275`).
     let decider_opt : Option[String] = match person_opt {
       Some(p) if p.trim().length() > 0 => email_opt
       _ => {
@@ -2162,15 +2403,23 @@ pub fn handle_vault_mcp_tool(
           }
           _ => ()
         }
-        if starter_in_vault && found.owner.is_none() {
+        if starter_in_vault {
           email_opt
         } else if found.owner.is_some() {
-          // Always prefer vault owner when present (unless explicit person was named), matching prompt requirement.
           found.owner
         } else {
           email_opt
         }
       }
+    }
+    // Reject remote `station` requests up front at `secret_use` time until cross-station execution is wired.
+    match mcp_arg_str(args, "station") {
+      Some(stn) if stn.trim().length() > 0 && stn.trim() != deps.station_id => {
+        return station_tools::error_reply(
+          "Remote station execution (" + stn.trim() + ") is not supported yet on this station; omit station to run locally.",
+        )
+      }
+      _ => ()
     }
     let listing_modes = match vd_str_arr(found.listing, "modes") { Some(ms) => ms, None => [] }
     let listing_hosts = match vd_str_arr(found.listing, "hosts") { Some(hs) => hs, None => [] }
@@ -2255,7 +2504,7 @@ pub fn handle_vault_mcp_tool(
         let s_clean = stn.trim()
         req_fs.push((
           "runOn",
-          base_codec::json_obj([("station", base_codec::json_str(s_clean)), ("name", base_codec::json_str(s_clean))]),
+          base_codec::json_obj([("id", base_codec::json_str(s_clean)), ("name", base_codec::json_str(s_clean))]),
         ))
       }
       _ => ()
@@ -2293,7 +2542,7 @@ pub fn handle_vault_mcp_tool(
           found.vault_lasts,
           thr.surface == "chat",
         )
-        match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
           Ok(cts) => {
             thr_id_opt = Some(thr.id)
             card_ts_opt = cts
@@ -2487,12 +2736,20 @@ pub fn handle_vault_mcp_tool(
               filename = parts[parts.length() - 1]
             }
           }
-          match station_sys::read_file_strict(full_p) {
-            Ok(raw_bytes) => {
-              if raw_bytes.length() > VAULT_FILE_MOST {
-                return station_tools::error_reply("The file is more than 64 KB; nothing was kept.")
+          // Single-handle bounded read (max `64 KiB + 1` bytes, O_NOFOLLOW + S_ISREG; never reads unbounded files).
+          match station_sys::file_open_ro(full_p) {
+            Ok(rof) => {
+              let read_res = rof.pread(0L, (VAULT_FILE_MOST + 1).to_int64())
+              rof.close()
+              match read_res {
+                Ok(raw_bytes) => {
+                  if raw_bytes.length() > VAULT_FILE_MOST {
+                    return station_tools::error_reply("The file is more than 64 KB; nothing was kept.")
+                  }
+                  secret_val = base64::encode(raw_bytes)
+                }
+                Err(_) => return station_tools::error_reply("The file could not be read; nothing was kept.")
               }
-              secret_val = base64::encode(raw_bytes)
             }
             Err(_) => return station_tools::error_reply("The file could not be read; nothing was kept.")
           }
@@ -2638,7 +2895,7 @@ pub fn handle_vault_mcp_tool(
       Some(thr) => {
         req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
         let (text, card_opt) = vault_build_save_card_and_text(req_body, thr.surface == "chat")
-        match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
           Ok(cts) => {
             thr_id_opt = Some(thr.id)
             card_ts_opt = cts
@@ -2767,7 +3024,7 @@ pub fn handle_vault_mcp_tool(
       Some(thr) => {
         req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
         let (text, card_opt) = vault_build_describe_card_and_text(req_body, decider_opt, thr.surface == "chat")
-        match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
           Ok(cts) => { thr_id_opt = Some(thr.id); card_ts_opt = cts }
           Err(e) => return station_tools::error_reply(e)
         }
@@ -2846,7 +3103,7 @@ pub fn handle_vault_mcp_tool(
       Some(thr) => {
         req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
         let (text, card_opt) = vault_build_remove_card_and_text(req_body, decider_opt, thr.surface == "chat")
-        match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
           Ok(cts) => { thr_id_opt = Some(thr.id); card_ts_opt = cts }
           Err(e) => return station_tools::error_reply(e)
         }
@@ -2969,7 +3226,50 @@ pub fn handle_vault_mcp_tool(
       Some(t) => t
       None => return station_tools::error_reply("This request has no card in the chat to ask again.")
     }
-    // Close old card via `card_outbox` BEFORE posting the new card.
+    // Align with Node `secrets.ts:1395-1406` (`cardPlace`): check if the latest card in this thread
+    // is still open (`same` -> return already pending without reposting; `other` -> refuse CARD_OCCUPIED).
+    let latest_card_row = match st.db.first(
+      "SELECT n, ts, card FROM entries WHERE thread = ?1 AND card IS NOT NULL ORDER BY n DESC LIMIT 1",
+      [sql_db::int64_to_json(thr.id)],
+    ) {
+      Ok(r) => r
+      Err(_) => None
+    }
+    match latest_card_row {
+      Some(lcr) => {
+        let l_ts = match lcr.get("ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+        let l_n = match lcr.get("n") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+        let l_card_raw = match lcr.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+        let has_newer_human = match st.db.first(
+          "SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND author_kind IN ('person', 'human') LIMIT 1",
+          [sql_db::int64_to_json(thr.id), sql_db::int64_to_json(l_n)],
+        ) {
+          Ok(Some(_)) => true
+          _ => false
+        }
+        let has_closed_edit = match st.db.first(
+          "SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'edit' AND ts = ?3 LIMIT 1",
+          [sql_db::int64_to_json(thr.id), sql_db::int64_to_json(l_n), base_codec::json_str(l_ts)],
+        ) {
+          Ok(Some(_)) => true
+          _ => false
+        }
+        let card_still_open = !has_newer_human && !has_closed_edit && l_card_raw.length() > 0 && !l_card_raw.contains("\"closed\":true")
+        if card_still_open {
+          let is_same = match old_cts_opt {
+            Some(octs) if octs == l_ts => true
+            _ => l_card_raw.contains("\"request\":\"" + req_id + "\"")
+          }
+          if is_same {
+            return station_tools::text_reply("The card for request " + req_id + " is already pending in the chat.")
+          } else {
+            return station_tools::error_reply("Another card is already waiting in this chat; wait for it to be answered first.")
+          }
+        }
+      }
+      None => ()
+    }
+    // Close old card via `card_outbox` BEFORE posting the new card (if any).
     match (old_tid_opt, old_cts_opt) {
       (Some(otid), Some(octs)) => {
         match st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
@@ -3046,20 +3346,24 @@ pub fn handle_vault_mcp_tool(
       }
       vault_build_use_card_and_text(whole_store, st, ws, req_j, listing, decider_opt, None, thr.surface == "chat")
     }
-    let new_cts = match vault_mcp_post_card(st, deps.events, session, thr, text, card_opt, now_ms) {
+    let new_cts = match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
       Ok(cts) => cts
       Err(e) => return station_tools::error_reply(e)
     }
     let new_cts_j = match new_cts { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }
+    let old_tid_j = match old_tid_opt { Some(id) => sql_db::int64_to_json(id), None => base_codec::json_null() }
+    let old_cts_j = match old_cts_opt { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }
     let updated = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int, sql_db::SqlError] {
       txdb.run(
-        "UPDATE vault_requests SET thread = ?1, card_ts = ?2 WHERE ws = ?3 AND id = ?4 AND status = 'pending' AND body = ?5",
+        "UPDATE vault_requests SET thread = ?1, card_ts = ?2 WHERE ws = ?3 AND id = ?4 AND status = 'pending' AND body = ?5 AND thread IS ?6 AND card_ts IS ?7",
         [
           sql_db::int64_to_json(thr.id),
           new_cts_j,
           base_codec::json_str(ws),
           base_codec::json_str(req_id),
           base_codec::json_str(raw_body),
+          old_tid_j,
+          old_cts_j,
         ],
       )
     }) {
@@ -3067,6 +3371,20 @@ pub fn handle_vault_mcp_tool(
       Err(_) => 0
     }
     if updated == 0 {
+      // Withdraw the newly posted card on CAS conflict (`secrets.ts:1435-1437`).
+      match new_cts {
+        Some(ncts) => {
+          let _ = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+            match station_store::install_card_outbox(txdb) { Ok(_) => (), Err(e) => return Err(e) }
+            match station_store::enqueue_card_outcome(txdb, thr.id, ncts, session, "vault", true, "{\"status\":\"withdrawn\"}", dedup=true) {
+              Ok(_) => Ok(())
+              Err(e) => Err(e)
+            }
+          })
+          let _ = drain_card_outbox_once(whole_store, deps.events, now_ms)
+        }
+        None => ()
+      }
       return station_tools::error_reply("Request " + req_id + " changed while the card was posted; try again.")
     }
     return station_tools::text_reply(
@@ -3076,16 +3394,19 @@ pub fn handle_vault_mcp_tool(
 
   // ── 8. secret_run ──
   if tool == "secret_run" {
+    // Check executor availability BEFORE calling `prepare_secret_run` so we NEVER spend a grant
+    // when no synchronous executor is wired!
+    let exec_fn = match deps.secret_run_exec {
+      Some(f) => f
+      None => return station_tools::error_reply("secret_run requires the async daemon runtime (not available in synchronous handler)")
+    }
     let prep = match prepare_secret_run(whole_store, session, home_ws, deps.station_id, args, now_ms) {
       Ok(p) => p
       Err(e) => return station_tools::error_reply(e)
     }
-    match deps.secret_run_exec {
-      Some(exec_fn) => match exec_fn(prep) {
-        Ok(out) => return station_tools::text_reply(out)
-        Err(e) => return station_tools::error_reply(e)
-      }
-      None => return station_tools::error_reply("secret_run requires the async daemon runtime (not available in synchronous handler)")
+    match exec_fn(prep) {
+      Ok(out) => return station_tools::text_reply(out)
+      Err(e) => return station_tools::error_reply(e)
     }
   }
 
@@ -3510,7 +3831,30 @@ pub fn run_vault_mcp_sqlite_selftest() -> Result[Unit, String] {
     _ => ()
   }
 
-  // 4. `secret_reask` closes old card before posting new card; `secret_cancel` withdraws & closes card!
+  // 4. `secret_reask`: while card is still open (`same`), returns "already pending" without reposting;
+  //    once a human message closes the card's wait, `secret_reask` closes old card via `card_outbox` and reposts with CAS;
+  //    `secret_cancel` withdraws & closes card!
+  let reask_same = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_reask", base_codec::json_obj([("request", base_codec::json_str(save_req_id))]), now_ms + 1500L)
+  if reask_same.is_error || !vmcp_reply_text(reask_same).contains("already pending") {
+    let _ = ws_store.close()
+    return Err("secret_reask on open same card must return already pending, got: " + vmcp_reply_text(reask_same))
+  }
+  let _ = st.insert_message(station_store::NewMessage::{
+    thread: 800L,
+    ts: Some("1795800002.000100"),
+    author_kind: "person",
+    author: "alice@example.com",
+    agent_identity: None,
+    text: Some("hold on, checking"),
+    attachments: None,
+    quotes: None,
+    declared: None,
+    client: None,
+    card: None,
+    options: None,
+    proposal: None,
+    at: now_ms + 1800L,
+  })
   let reask_res = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_reask", base_codec::json_obj([("request", base_codec::json_str(save_req_id))]), now_ms + 2000L)
   if reask_res.is_error {
     let _ = ws_store.close()
@@ -3527,6 +3871,25 @@ pub fn run_vault_mcp_sqlite_selftest() -> Result[Unit, String] {
   if cancel_res.is_error || ws_store.vault_unsaved.contains(save_req_id) {
     let _ = ws_store.close()
     return Err("secret_cancel failed or left unsaved secret in memory")
+  }
+  // 4b. `secret_use` refuses remote `station` up front.
+  let remote_use = handle_vault_mcp_tool(
+    ws_store,
+    station_sys::random_bytes,
+    ws,
+    deps,
+    "s-mcp",
+    "secret_use",
+    base_codec::json_obj([
+      ("item", base_codec::json_str("GitHub PAT")),
+      ("reason", base_codec::json_str("remote test")),
+      ("station", base_codec::json_str("other-station")),
+    ]),
+    now_ms + 3500L,
+  )
+  if !remote_use.is_error {
+    let _ = ws_store.close()
+    return Err("secret_use must refuse unsupported remote station up front")
   }
 
   // 5. `prepare_secret_run` refuses `browser` and remote `runOn` BEFORE spending grant!

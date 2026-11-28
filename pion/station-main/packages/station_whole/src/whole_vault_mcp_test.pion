@@ -90,3 +90,68 @@ test "wired_mcp_tool_names includes all 8 vault secret tools" {
     vmcp_assert(found, "missing tool " + required[i])
   }
 }
+
+test "w17e1 R2: vault_resolve_cwd_in_workspace rejects escape & out-of-workspace paths" {
+  match vault_resolve_cwd_in_workspace("/tmp/ws-1", None) {
+    Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1", "default cwd")
+    Err(e) => panic("expected default cwd ok, got: " + e)
+  }
+  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("sub/dir")) {
+    Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1/sub/dir", "subdir cwd")
+    Err(e) => panic("expected subdir cwd ok, got: " + e)
+  }
+  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("../ws-2")) {
+    Ok(p) => panic("must reject .. escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("/etc")) {
+    Ok(p) => panic("must reject absolute path outside workspace, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("/tmp/ws-10")) {
+    Ok(p) => panic("must reject prefix-sibling path, got: " + p)
+    Err(_) => ()
+  }
+}
+
+test "w17e1 R2: McpServer::handle_or_defer returns 202 for notification without id on secret_run" {
+  let srv = station_tools::McpServer::new()
+  let mut called = false
+  let host = station_tools::ToolsHost::{
+    resolve_token: fn(tok : String) -> Option[String] {
+      if tok == "tok-1" { Some("s-1") } else { None }
+    },
+    call_context: fn(s : String) -> station_tools::CallContext {
+      station_tools::CallContext::{ session: s, unbound_reason: None }
+    },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
+    dynamic_tools: fn(_s : String) -> Array[station_tools::ToolDecl] { [] },
+    listing_of: fn(_s : String) -> Option[station_tools::Listing] { None },
+    call_tool: fn(_s : String, _t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      called = true
+      station_tools::text_reply("should-not-run")
+    },
+  }
+  // 1. Notification (NO `id`) -> MUST return Immediate(202), NEVER DeferredCall, NEVER call_tool!
+  let notif_body = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"secret_run\",\"arguments\":{\"grant\":\"r_01\",\"command\":\"echo hi\"}}}"
+  match srv.handle_or_defer("POST", Some("Bearer tok-1"), notif_body, host, ["secret_run"]) {
+    station_tools::McpResolveResult::Immediate(r) => {
+      vmcp_assert(r.status == 202, "notification without id must return HTTP 202, got " + r.status.to_string())
+      vmcp_assert(!called, "notification must not invoke call_tool")
+    }
+    station_tools::McpResolveResult::DeferredCall(_, _, _, _, _) => {
+      panic("notification without id must NEVER defer/execute secret_run")
+    }
+  }
+  // 2. Valid request WITH `id` -> returns DeferredCall("s-1", "secret_run", ...)
+  let req_body = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"secret_run\",\"arguments\":{\"grant\":\"r_01\",\"command\":\"echo hi\"}}}"
+  match srv.handle_or_defer("POST", Some("Bearer tok-1"), req_body, host, ["secret_run"]) {
+    station_tools::McpResolveResult::DeferredCall(s, t, _, _, _) => {
+      vmcp_assert_eq_str(s, "s-1", "deferred session")
+      vmcp_assert_eq_str(t, "secret_run", "deferred tool")
+    }
+    station_tools::McpResolveResult::Immediate(_) => {
+      panic("valid secret_run request with id must return DeferredCall")
+    }
+  }
+}

@@ -417,6 +417,7 @@ pub struct SshAgentServer {
   pub key : SshEd25519Key
   mut listener_id : Int
   mut closed : Bool
+  pub mut run_seq : Int64
   mut start_error : Option[String]
   mut sign_count : Int
   mut conns : Map[Int, AgentConn]
@@ -433,6 +434,7 @@ pub fn SshAgentServer::new(socket_path : String, key : SshEd25519Key) -> SshAgen
     key: key,
     listener_id: -1,
     closed: false,
+    run_seq: 0L,
     start_error: None,
     sign_count: 0,
     conns: Map::new(),
@@ -467,6 +469,7 @@ pub fn SshAgentServer::new_in_private_dir(
     key: key,
     listener_id: -1,
     closed: false,
+    run_seq: 0L,
     start_error: None,
     sign_count: 0,
     conns: Map::new(),
@@ -492,7 +495,7 @@ fn SshAgentServer::issue_unix_listen(self : SshAgentServer, mux : builders_core:
   ])
   mux_call(
     mux,
-    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, self.run_seq),
     "unix.listen",
     args,
     None,
@@ -513,7 +516,7 @@ pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMu
       ])
       mux_call(
         mux,
-        builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+        builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, self.run_seq),
         "fs.mkdir",
         args,
         None,
@@ -535,7 +538,7 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
     self.listener_id = -1
     let _ = mux_call(
       mux,
-      builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
+      builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, self.run_seq),
       "listen.close",
       base_codec::json_obj([("id", base_codec::json_int(lid))]),
       None,
@@ -550,7 +553,7 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
           conn.closed = true
           let _ = mux_call(
             mux,
-            builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+            builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, self.run_seq),
             "tcp.close",
             base_codec::json_obj([("id", base_codec::json_int(cid))]),
             None,
@@ -568,7 +571,7 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
   if may_remove_sock {
     let _ = mux_call(
       mux,
-      builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+      builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, self.run_seq),
       "fs.remove",
       base_codec::json_obj([("path", base_codec::json_str(self.socket_path))]),
       None,
@@ -580,7 +583,7 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
       Some(dir) => {
         let _ = mux_call(
           mux,
-          builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+          builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, self.run_seq),
           "fs.remove",
           base_codec::json_obj([
             ("path", base_codec::json_str(dir)),
@@ -617,7 +620,7 @@ fn SshAgentServer::arm_accept(self : SshAgentServer, mux : builders_core::ShellM
   }
   let _ = mux_call(
     mux,
-    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, self.listener_id, 0.to_int64()),
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, self.listener_id, self.run_seq),
     "tcp.accept",
     base_codec::json_obj([("id", base_codec::json_int(self.listener_id))]),
     None,
@@ -630,7 +633,7 @@ fn SshAgentServer::arm_read(self : SshAgentServer, mux : builders_core::ShellMux
   }
   let _ = mux_call(
     mux,
-    builders_core::MuxToken::Tagged(SSH_MUX_TAG_READ, cid, 0.to_int64()),
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_READ, cid, self.run_seq),
     "tcp.read",
     base_codec::json_obj([("id", base_codec::json_int(cid))]),
     None,
@@ -644,7 +647,7 @@ fn SshAgentServer::close_conn(self : SshAgentServer, mux : builders_core::ShellM
         c.closed = true
         let _ = mux_call(
           mux,
-          builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+          builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, self.run_seq),
           "tcp.close",
           base_codec::json_obj([("id", base_codec::json_int(cid))]),
           None,
@@ -666,7 +669,10 @@ pub fn SshAgentServer::on_shell_done(
   allowed : Bool,
 ) -> Bool {
   match token {
-    builders_core::MuxToken::Tagged(tag, arg, _) => {
+    builders_core::MuxToken::Tagged(tag, arg, extra) => {
+      if self.run_seq != 0L && extra != self.run_seq {
+        return false
+      }
       if tag == SSH_MUX_TAG_MKDIR {
         if done.error.length() > 0 {
           self.start_error = Some("ssh-agent mkdir failed: " + done.error)
@@ -678,7 +684,7 @@ pub fn SshAgentServer::on_shell_done(
             Some(dir) => {
               let _ = mux_call(
                 mux,
-                builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, self.run_seq),
                 "fs.remove",
                 base_codec::json_obj([
                   ("path", base_codec::json_str(dir)),
@@ -696,7 +702,7 @@ pub fn SshAgentServer::on_shell_done(
           Some(dir) => {
             let _ = mux_call(
               mux,
-              builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
+              builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, self.run_seq),
               "fs.chmod",
               base_codec::json_obj([
                 ("path", base_codec::json_str(dir)),
@@ -717,7 +723,7 @@ pub fn SshAgentServer::on_shell_done(
               Some(dir) => {
                 let _ = mux_call(
                   mux,
-                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, self.run_seq),
                   "fs.remove",
                   base_codec::json_obj([
                     ("path", base_codec::json_str(dir)),
@@ -746,7 +752,7 @@ pub fn SshAgentServer::on_shell_done(
             Some(lid) => {
               let _ = mux_call(
                 mux,
-                builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, self.run_seq),
                 "listen.close",
                 base_codec::json_obj([("id", base_codec::json_int(lid))]),
                 None,
@@ -772,7 +778,7 @@ pub fn SshAgentServer::on_shell_done(
               Some(cid) => {
                 let _ = mux_call(
                   mux,
-                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, self.run_seq),
                   "tcp.close",
                   base_codec::json_obj([("id", base_codec::json_int(cid))]),
                   None,
@@ -822,7 +828,7 @@ pub fn SshAgentServer::on_shell_done(
                   let framed = frame_agent_message(reply)
                   let _ = mux_call(
                     mux,
-                    builders_core::MuxToken::Tagged(SSH_MUX_TAG_WRITE, arg, 0.to_int64()),
+                    builders_core::MuxToken::Tagged(SSH_MUX_TAG_WRITE, arg, self.run_seq),
                     "tcp.write",
                     base_codec::json_obj([("id", base_codec::json_int(arg))]),
                     Some(framed),

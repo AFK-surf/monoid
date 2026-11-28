@@ -650,6 +650,11 @@ pub struct VaultProxy {
   pub leaf_cache : LeafCache
   pub policy : NonAllowlistedPolicy
   pub mut upstream_ca_pem : Option[String]
+  /// Optional live grant-active check `(grant_id) -> Bool` evaluated on CONNECT and
+  /// immediately before credential injection so archive/revocation takes effect immediately.
+  pub mut check_active : Option[(String) -> Bool]
+  /// Optional callback `(grant_id, host) -> Unit` invoked when a secret is actually injected.
+  pub mut on_use : Option[(String, String) -> Unit]
   mut listener_id : Int
   mut port : Int
   mut closed : Bool
@@ -687,6 +692,8 @@ pub fn VaultProxy::new_with_seed(
     leaf_cache: LeafCache::new(ca),
     policy: policy,
     upstream_ca_pem: None,
+    check_active: None,
+    on_use: None,
     listener_id: -1,
     port: 0,
     closed: false,
@@ -695,6 +702,16 @@ pub fn VaultProxy::new_with_seed(
     runs: Map::new(),
     conns: Map::new(),
   })
+}
+
+fn VaultProxy::is_run_allowed(self : VaultProxy, run : ProxyRun, now_sec : Int64) -> Bool {
+  if !run.is_allowed(now_sec) {
+    return false
+  }
+  match self.check_active {
+    Some(f) => f(run.grant_id)
+    None => true
+  }
 }
 
 pub fn VaultProxy::port(self : VaultProxy) -> Int {
@@ -1270,7 +1287,7 @@ fn VaultProxy::handle_client_bytes(
         }
       }
       // Enforce grant expiry/revocation BEFORE passthrough tunneling so expired tokens cannot proxy at all.
-      if !run.is_allowed(now_sec) {
+      if !self.is_run_allowed(run, now_sec) {
         let _ = self.revoke_token(run_token)
         self.reply_and_close(
           mux,
@@ -1358,7 +1375,7 @@ fn VaultProxy::handle_client_bytes(
           return
         }
       }
-      if !run.is_allowed(now_sec) {
+      if !self.is_run_allowed(run, now_sec) {
         let _ = self.revoke_token(run_token)
         self.reply_and_close(
           mux,
@@ -1610,7 +1627,7 @@ fn VaultProxy::handle_tls_connect_done(
       return
     }
   }
-  if !run.is_allowed(now_sec) {
+  if !self.is_run_allowed(run, now_sec) {
     let _ = self.revoke_token(run_token)
     let _ = mux_call(
       mux,
@@ -1644,6 +1661,10 @@ fn VaultProxy::handle_tls_connect_done(
   }
   if swapped {
     run.uses = run.uses + 1
+    match self.on_use {
+      Some(cb) => cb(run.grant_id, host)
+      None => ()
+    }
   }
   let _ = mux_call(
     mux,

@@ -697,3 +697,47 @@ test "w17d3 R5: feedback signed_post_headers matches independent Cloud Ed25519 +
     panic("independent Ed25519 verification of feedback signature failed")
   }
 }
+
+test "w17e1 R2: all daemon event_id segments are pairwise disjoint & sensitive env prefixes filtered" {
+  let step : Int64 = 4294967296L // 1 << 32
+  let bases : Array[(String, Int64)] = [
+    ("jobs", 4294967296L),
+    ("browser", 8589934592L),
+    ("terminals", 12884901888L),
+    ("logins", 17179869184L),
+    ("adb", 21474836480L),
+    ("restore", 25769803776L),
+    ("dns", 30064771072L),
+    ("live_runner", LIVE_RUNNER_EV_BASE),
+    ("upkeep", UPKEEP_EVENT_ID_BASE),
+    ("secret_run", SECRET_RUN_EVENT_BASE),
+  ]
+  if SECRET_RUN_EVENT_BASE == UPKEEP_EVENT_ID_BASE {
+    panic("SECRET_RUN_EVENT_BASE must NOT collide with UPKEEP_EVENT_ID_BASE")
+  }
+  if SECRET_RUN_EVENT_END != SECRET_RUN_EVENT_BASE + step {
+    panic("SECRET_RUN_EVENT_END must equal SECRET_RUN_EVENT_BASE + (1 << 32)")
+  }
+  for i in 0..<bases.length() {
+    for j in (i + 1)..<bases.length() {
+      let a = bases[i].1
+      let b = bases[j].1
+      if a == b || (a >= b && a < b + step) || (b >= a && b < a + step) {
+        panic("event_id segment collision between " + bases[i].0 + " and " + bases[j].0)
+      }
+    }
+  }
+  // Verify Node `incoming.ts:28-30` sensitive env prefix filter.
+  let blocked = ["STILLFAIL_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH", "OPENAI_API_KEY", "CODEX_HOME"]
+  for i in 0..<blocked.length() {
+    if !is_sensitive_station_env_key(blocked[i]) {
+      panic("expected sensitive env key to be filtered: " + blocked[i])
+    }
+  }
+  let allowed = ["PATH", "HOME", "USER", "MY_API_KEY", "GITHUB_TOKEN"]
+  for i in 0..<allowed.length() {
+    if is_sensitive_station_env_key(allowed[i]) {
+      panic("expected normal env key to be preserved: " + allowed[i])
+    }
+  }
+}

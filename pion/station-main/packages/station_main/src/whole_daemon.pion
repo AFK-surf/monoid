@@ -7259,6 +7259,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
       let secret_runs = SecretRunManager::new(ctx.data, ctx.sep)
+      secret_runs.attach_store(core.store)
       let mcp_cb_cell : Array[Option[station_http::ServerCallbacks]] = [None]
       let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
         if req.method == "GET" && req.path == "/healthz" {
@@ -7476,123 +7477,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
-          // Async non-blocking `secret_run` interception (Wave 17E-1): strictly AFTER `core.ready`,
-          // local-origin guard, and Bearer token authentication; returns `HandlerAction::Defer` so
-          // the main event loop stays 100% responsive (`GET /status` immediate 200) while running.
-          if req.method == "POST" && req.path == "/mcp" && core.ready && !core.shut_down {
-            let mut is_secret_run = false
-            let mut sr_args : base_codec::Json = base_codec::json_obj([])
-            let mut sr_rpc_id : base_codec::Json = base_codec::json_null()
-            match base_codec::json_parse(req_body) {
-              base_codec::JsonParseResult::Ok(j) => {
-                let is_tools_call = match base_codec::json_get(j, "method") {
-                  Some(base_codec::Json::Str(s)) => s == "tools/call"
-                  _ => false
-                }
-                if is_tools_call {
-                  match base_codec::json_get(j, "id") {
-                    Some(id_v) => sr_rpc_id = id_v
-                    None => ()
-                  }
-                  match base_codec::json_get(j, "params") {
-                    Some(p) => {
-                      let tname = match base_codec::json_get(p, "name") {
-                        Some(base_codec::Json::Str(s)) => s
-                        _ => ""
-                      }
-                      if tname == "secret_run" {
-                        is_secret_run = true
-                        match base_codec::json_get(p, "arguments") {
-                          Some(a) => sr_args = a
-                          None => ()
-                        }
-                      } else if tname == "station_tool" {
-                        match base_codec::json_get(p, "arguments") {
-                          Some(a) => {
-                            let st_is_sr = match base_codec::json_get(a, "name") {
-                              Some(base_codec::Json::Str(s)) => s == "secret_run"
-                              _ => false
-                            }
-                            if st_is_sr {
-                              match base_codec::json_get(a, "arguments") {
-                                Some(base_codec::Json::Obj(fs)) => {
-                                  is_secret_run = true
-                                  sr_args = base_codec::Json::Obj(fs)
-                                }
-                                _ => ()
-                              }
-                            }
-                          }
-                          None => ()
-                        }
-                      }
-                    }
-                    None => ()
-                  }
-                }
-              }
-              _ => ()
-            }
-            let sr_origin_ok = match origin_hdr {
-              Some(o) => o.trim().length() == 0
-              None => match host_hdr {
-                Some(h) => {
-                  let hl = jscase::lower(h.trim())
-                  hl == "127.0.0.1"
-                  || hl.starts_with("127.0.0.1:")
-                  || hl == "localhost"
-                  || hl.starts_with("localhost:")
-                  || hl == "[::1]"
-                  || hl.starts_with("[::1]:")
-                }
-                None => true
-              }
-            }
-            if is_secret_run && sr_origin_ok {
-              let sr_sess_opt : Option[String] = match auth_hdr {
-                Some(ah) => {
-                  let tr = ah.trim()
-                  if tr.starts_with("Bearer ") || tr.starts_with("bearer ") {
-                    let tok = station_connects::str_slice(tr, 7, tr.to_bytes().length()).trim()
-                    core.agents.resolve_token_ct(tok)
-                  } else {
-                    None
-                  }
-                }
-                None => None
-              }
-              match (sr_sess_opt, mcp_cb_cell[0]) {
-                (Some(sr_sess), Some(cb_ref)) => {
-                  let now_m = host_shim::now_ms()
-                  let wall_m = host_shim::wall_ms()
-                  match station_whole::prepare_secret_run(
-                    core.store,
-                    sr_sess,
-                    core.config.home_workspace,
-                    core.config.station_id,
-                    sr_args,
-                    wall_m,
-                  ) {
-                    Ok(prep) => {
-                      match secret_runs.start_run(mcp_srv, cb_ref, ctx.mux_role, req.conn_id, sr_rpc_id, prep, now_m, wall_m) {
-                        Ok(_) => return station_http::HandlerAction::Defer
-                        Err(e) => {
-                          let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
-                          return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
-                        }
-                      }
-                    }
-                    Err(e) => {
-                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
-                      return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
-                    }
-                  }
-                }
-                _ => ()
-              }
-            }
-          }
-          let mresp = core.handle_mcp_http(
+          // Unified `/mcp` gate (Wave 17E-1 R2): EVERY request (including `secret_run` and
+          // `station_tool` forwarding `secret_run`) goes through `WholeCore::handle_mcp_http_or_defer`
+          // -> `McpServer::handle_or_defer`, guaranteeing identical HTTP method/path,
+          // `check_local_origin`, Bearer auth, notification 202 (no `id` -> no exec, no grant spend),
+          // `bump_heard`, `station_tool` unwrap, schema coercion, and `outward` `UNBOUND_REFUSAL`!
+          let mut mresp_opt : Option[station_whole::McpHttpResponse] = None
+          match core.handle_mcp_http_or_defer(
             req.method,
             req.path,
             host_hdr,
@@ -7600,7 +7491,99 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             auth_hdr,
             req_body,
             host_shim::wall_ms(),
-          )
+            ["secret_run"],
+          ) {
+            station_whole::McpHttpOrDefer::DeferredCall(sr_sess, _sr_tool, sr_args, sr_rpc_id, _ended_meta) => {
+              let now_m = host_shim::now_ms()
+              let wall_m = host_shim::wall_ms()
+              match station_whole::prepare_secret_run(
+                core.store,
+                sr_sess,
+                core.config.home_workspace,
+                core.config.station_id,
+                sr_args,
+                wall_m,
+              ) {
+                Ok(prep) => {
+                  match secret_runs.start_run(ctx.mux_role, req.conn_id, sr_rpc_id, prep, now_m, wall_m) {
+                    Ok(_) => return station_http::HandlerAction::Defer
+                    Err(e) => {
+                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                      return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                    }
+                  }
+                }
+                Err(e) => {
+                  let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                  return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                }
+              }
+            }
+            station_whole::McpHttpOrDefer::Immediate(r) => mresp_opt = Some(r)
+          }
+          let mresp = match mresp_opt {
+            Some(r) => r
+            None => return station_http::HandlerAction::Respond(station_http::HttpResponse::json(500, "{\"error\":\"missing mcp response\"}"))
+          }
+          // Drain outbound Vault approval cards queued on non-`chat` surfaces (Slack/Feishu/Comma/Group)
+          // through the exact same Connects / `connect.call` path as `chat_post`.
+          if core.store.pending_vault_connect_posts.length() > 0 {
+            let vposts : Array[station_whole::PendingVaultConnectPost] = []
+            for vi in 0..<core.store.pending_vault_connect_posts.length() {
+              vposts.push(core.store.pending_vault_connect_posts[vi])
+            }
+            core.store.pending_vault_connect_posts.clear()
+            match core.store.require_open() {
+              Ok(st_db) => {
+                for vi in 0..<vposts.length() {
+                  let vp = vposts[vi]
+                  match st_db.db.first(
+                    "SELECT t.channel AS ch, t.thread_ts AS tts, ts.connect AS cid FROM threads t JOIN thread_sessions ts ON ts.thread = t.id WHERE t.id = ?1 AND ts.left_at IS NULL LIMIT 1",
+                    [sql_db::int64_to_json(vp.thread_id)],
+                  ) {
+                    Ok(Some(row)) => {
+                      let ch = match row.get("ch") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                      let tts = match row.get("tts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                      let cid = match row.get("cid") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                      if cid.length() > 0 {
+                        if connects.has_connect(cid) {
+                          let tref = station_connects::ThreadRef::new(ch, tts, reply_to=None)
+                          let pkey = vp.thread_id.to_string() + ":" + vp.n_seq.to_string()
+                          let _ = connects.send_message(cid, tref, vp.text, post_key=pkey, card=vp.card)
+                        } else {
+                          match remote_connects.get(cid) {
+                            Some(rec) => {
+                              let at_idx = station_connects::str_index_of(cid, "@", 0)
+                              let raw_id = if at_idx > 0 { station_connects::str_slice(cid, 0, at_idx) } else { cid }
+                              let raw_origin = if at_idx > 0 { station_connects::str_slice(cid, at_idx + 1, cid.to_bytes().length()) } else { rec.station }
+                              let ws_for = match connect_meta.get(cid) {
+                                Some(m) => m.ws
+                                None => core.config.home_workspace
+                              }
+                              let call_req = build_connect_call_post_request(
+                                ws_for,
+                                raw_id,
+                                raw_origin,
+                                ch,
+                                tts,
+                                None,
+                                vp.text,
+                                vp.card,
+                              )
+                              ctx.ask_peer_rpc(rec.station, ws_for, call_req, fn(_res : Result[base_codec::Json, String]) -> Unit { () })
+                            }
+                            None => ()
+                          }
+                        }
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+              }
+              Err(_) => ()
+            }
+          }
           // Forward successful `chat_post` (including card-only posts with empty/omitted text!)
           // to local external connects or via `connect.call` peer RPC to the origin station,
           // and apply `#9052` Feishu status-card gating on `chat_post` / `chat_state`.
@@ -9199,7 +9182,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.live_runners.handle_sys_event(ctx, st.core, ev_id, sev, now_sys, host_shim::wall_ms()) {
             return
           }
-          if st.secret_runs.handle_sys_event(st.mcp_srv, st.mcp_cb, ctx.mux_role, ev_id, sev) {
+          if st.secret_runs.handle_sys_event(st.mcp_srv, st.mcp_cb, ctx.mux_role, ev_id, sev, host_shim::wall_ms()) {
             return
           }
           let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
@@ -9292,7 +9275,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
-          st.secret_runs.tick(now, wall)
+          st.secret_runs.tick(st.mcp_srv, st.mcp_cb, ctx.mux_role, now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
