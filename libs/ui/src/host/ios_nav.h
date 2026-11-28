@@ -1602,6 +1602,10 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self.view layoutIfNeeded];
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
+    if (self.overflowCheckProvisional) {
+      __weak MBTabs *weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf checkOverflowAfterLayout]; });
+    }
   }
   BOOL washInWindow = self.actionWash.window != nil;
   BOOL washInkMatches = (self.actionWashInk == self.actionInk) || [self.actionWashInk isEqual:self.actionInk];
