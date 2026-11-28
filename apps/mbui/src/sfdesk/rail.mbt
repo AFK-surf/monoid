@@ -90,7 +90,7 @@ fn board_rail_at(src : Source, ws : String, places : Array[String]) -> Int? {
 /// Where 看板 stands among the rail's other places `places` where nothing else is said: after 对话, else after the
 /// first of the chats' lists the rail has (我参与的 in 对话's place: the board is one of the chats' views), else first.
 fn board_rail_default(places : Array[String]) -> Int {
-  let list = fn(p) { p is ("chats" | "mine" | "watching" | "hidden" | "archive") }
+  let list = fn(p : String) { p is ("chats" | "mine" | "watching" | "hidden" | "archive") }
   match places.search_by(fn(p) { p == "chats" }) {
     Some(i) => i + 1
     None =>

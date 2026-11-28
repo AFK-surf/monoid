@@ -189,7 +189,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
                 None => []
               }
             },
-            fn(e) { e },
+            fn(e) { (if e.0 { "1:" } else { "0:" }) + e.1 },
             fn(item, entry) {
               let (added, place) = entry.untracked()
               rail_place_node(item, src, tips, place, added, at, under?)
