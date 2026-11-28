@@ -332,10 +332,11 @@ export class Account extends DurableObject<Env> {
   private async prune(data: AccountData) {
     const now = nowSeconds();
     const ended = data.sessions.filter((s) => s.expires <= now || s.idle <= now).map((s) => s.id);
+    if (ended.length === 0) return;
     data.sessions = data.sessions.filter((s) => s.expires > now && s.idle > now);
     this.#liveSockets();
     // Keep the ended ids until the Directory has taken them: a failed call must leave the next alarm able to retry.
-    if (ended.length) await this.env.DIRECTORY.getByName("primary").revokeSessions(data.sub, ended);
+    await this.env.DIRECTORY.getByName("primary").revokeSessions(data.sub, ended);
     this.save(data);
   }
   private async schedule(data: AccountData) {

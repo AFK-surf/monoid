@@ -175,3 +175,9 @@ test "w17e1 R2: McpServer::handle_or_defer returns 202 for notification without 
     }
   }
 }
+
+test "w17e1 R4: vault_is_this_station matches station_id and case-insensitive station_name" {
+  vmcp_assert(vault_is_this_station("st-id-1", "st-id-1", "MyStation"), "match by id")
+  vmcp_assert(vault_is_this_station("mystation", "st-id-1", "MyStation"), "match by name case-insensitive")
+  vmcp_assert(!vault_is_this_station("other-box", "st-id-1", "MyStation"), "reject remote station")
+}

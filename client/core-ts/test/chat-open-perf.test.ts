@@ -209,3 +209,47 @@ test("an_edited_message_is_the_object_it_was_while_its_edits_are_so_the_chat_sho
   assert.equal(u.value.messages[2].text, "第 3 条（又改）");
   t.store.runner.shutdown();
 });
+
+test("chat_view_settles_only_mine_outbox_entries_and_marks_waiting_tail_across_many_person_messages", async () => {
+  const t = setup();
+  const u = ui();
+  try {
+    const entries: J[] = [];
+    for (let n = 1; n <= 1200; n++) {
+      const isMine = n % 2 === 0;
+      const text = n === 1 || n === 600 ? "shared text" : `person msg ${n}`;
+      entries.push({
+        thread: 7,
+        n,
+        kind: "message",
+        ts: `${n}.0`,
+        authorKind: "person",
+        author: isMine ? "me@x.com" : "other@x.com",
+        authorName: isMine ? "Me" : "Other",
+        text,
+        attachments: [],
+        quotes: [],
+        at: n,
+      });
+    }
+    t.views.local.outboxAdd(ST, 7, { text: "shared text", attachments: [], quotes: [] }, 0);
+    const keepId = t.views.local.outboxAdd(ST, 7, { text: "still unsent", attachments: [], quotes: [] }, 599);
+    t.subscribe(1, chatTopic);
+    t.set(threads(ST), [thread(t.host.nowMs())]);
+    t.set(pageOf, { first: 1, last: 1200, entries, end: true, thread: thread(t.host.nowMs()) });
+    t.set(sessionOf("k"), { session: fullSession("k", { pending: 2 }), threads: [thread(t.host.nowMs())], turns: [] });
+    t.set(overview(ST), overviewOf());
+    t.set(link(ST), { state: "online" });
+    await t.read(u, 1);
+
+    assert.equal(u.value.messages.length, 1200);
+    assert.equal(u.value.messages[0].mine, false);
+    assert.equal(u.value.messages[599].mine, true);
+    assert.deepEqual(t.views.local.outbox(ST, 7).map((m: J) => m.id), [keepId]);
+    assert.deepEqual(u.value.outbox.map((m: J) => m.id), [keepId]);
+    const waitingSeqs = u.value.messages.filter((m: J) => m.waiting === true).map((m: J) => m.seq);
+    assert.deepEqual(waitingSeqs, [1199, 1200]);
+  } finally {
+    t.store.runner.shutdown();
+  }
+});

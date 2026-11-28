@@ -39,6 +39,7 @@ struct SimAccountDb {
   thread_reads : Map[String, (Int, Int)]
   sessions : Map[String, String]
   jobs : Map[String, String]
+  job_open : Map[String, Int]
   outbox_rows : Map[String, String]
   pending_rows : Map[String, String]
   changing_rows : Map[String, String]
@@ -81,6 +82,7 @@ fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
     thread_reads: Map::new(),
     sessions: Map::new(),
     jobs: Map::new(),
+    job_open: Map::new(),
     outbox_rows: Map::new(),
     pending_rows: Map::new(),
     changing_rows: Map::new(),
@@ -411,7 +413,18 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
     self.sessions.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 9))
     changed = 1
   } else if stmt == sql_job_upsert() {
-    self.jobs.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 6))
+    let jk = p_str(p, 0) + ":" + p_str(p, 1)
+    self.jobs.set(jk, p_str(p, 6))
+    self.job_open.set(jk, p_int(p, 3))
+    changed = 1
+  } else if stmt == "UPDATE job SET open = 0 WHERE station = ? AND id = ?" {
+    let jk = p_str(p, 0) + ":" + p_str(p, 1)
+    self.job_open.set(jk, 0)
+    changed = 1
+  } else if stmt == "DELETE FROM job WHERE station = ? AND id = ?" {
+    let jk = p_str(p, 0) + ":" + p_str(p, 1)
+    self.jobs.remove(jk)
+    self.job_open.remove(jk)
     changed = 1
   } else if stmt == sql_outbox_put() {
     self.outbox_rows.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 2))
@@ -455,7 +468,10 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
   } else if stmt == "SELECT ord, json, chat, open FROM job WHERE station = ? AND id = ?" {
     let k = p_str(p, 0) + ":" + p_str(p, 1)
     match self.jobs.get(k) {
-      Some(j) => rows.push(base_codec::json_arr([base_codec::json_num(0.0), base_codec::json_str(j), base_codec::json_null(), base_codec::json_int(1)]))
+      Some(j) => {
+        let ov = match self.job_open.get(k) { Some(v) => v; None => 1 }
+        rows.push(base_codec::json_arr([base_codec::json_num(0.0), base_codec::json_str(j), base_codec::json_null(), base_codec::json_int(ov)]))
+      }
       None => ()
     }
   } else if stmt == "SELECT listed, json, last, read, unread FROM thread WHERE station = ? AND id = ?" {
@@ -769,6 +785,19 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
     }
   } else if stmt == "SELECT session, thread FROM thread_member WHERE station = ?" {
     ()
+  } else if stmt == "SELECT id, session, chat FROM job WHERE station = ? AND open = 1" {
+    let pref = p_str(p, 0) + ":"
+    let jks = self.jobs.keys()
+    for i in 0..<jks.length() {
+      let jk = jks[i]
+      if jk.starts_with(pref) {
+        let ov = match self.job_open.get(jk) { Some(v) => v; None => 1 }
+        if ov == 1 {
+          let jid = jk.slice(pref.length(), jk.length())
+          rows.push(base_codec::json_arr([base_codec::json_str(jid), base_codec::json_null(), base_codec::json_null()]))
+        }
+      }
+    }
   } else if stmt == "SELECT id, session, chat FROM job WHERE station = ?" {
     let pref = p_str(p, 0) + ":"
     let jks = self.jobs.keys()
@@ -1503,7 +1532,7 @@ fn SimStation::transport(self : SimStation) -> StationTransport {
         }
         let payload = match self.thread_entries.get(th) {
           Some(j) => j
-          None => base_codec::json_obj([("entries", base_codec::json_arr([]))])
+          None => base_codec::json_obj([("last", base_codec::json_int(0)), ("entries", base_codec::json_arr([]))])
         }
         let out = base_codec::json_stringify(payload).to_bytes()
         sleep_reply_k(delay, effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: out }), k)
@@ -2042,6 +2071,7 @@ test "E2E 5: foreground client.focus preempts running idle sync task and finishe
   station.thread_entries.set(
     99,
     base_codec::json_obj([
+      ("last", base_codec::json_int(1)),
       (
         "entries",
         base_codec::json_arr([
@@ -2060,6 +2090,7 @@ test "E2E 5: foreground client.focus preempts running idle sync task and finishe
   station.thread_entries.set(
     5,
     base_codec::json_obj([
+      ("last", base_codec::json_int(1)),
       (
         "entries",
         base_codec::json_arr([
@@ -3086,6 +3117,7 @@ test "E2E 15: ClientCore wires missed -> fetch_snapshot_k, chat-mark -> viewer_m
   station.thread_entries.set(
     7,
     base_codec::json_obj([
+      ("last", base_codec::json_int(5)),
       (
         "entries",
         base_codec::json_arr([

@@ -1009,7 +1009,8 @@ test "Slice 2B-1: exchange_auth_code_k, cred_epoch fail-open retry, and strict s
   debug_assert(is_valid_chats_snapshot_payload(base_codec::json_obj([("chats", base_codec::json_arr([]))])), "object {chats:[]} valid")
   debug_assert(!is_valid_chats_snapshot_payload(base_codec::json_obj([("error", base_codec::json_str("denied"))])), "error object rejected")
   debug_assert(!is_valid_thread_entries_payload(base_codec::json_arr([]), 0), "bare array thread entries rejected")
-  debug_assert(is_valid_thread_entries_payload(base_codec::json_obj([("entries", base_codec::json_arr([]))]), 0), "object {entries:[]} valid")
+  debug_assert(!is_valid_thread_entries_payload(base_codec::json_obj([("entries", base_codec::json_arr([]))]), 0), "missing last rejected")
+  debug_assert(is_valid_thread_entries_payload(base_codec::json_obj([("last", base_codec::json_int(0)), ("entries", base_codec::json_arr([]))]), 0), "object {last:0, entries:[]} valid")
   debug_assert(!is_valid_thread_entries_payload(base_codec::json_obj([("ok", base_codec::json_bool(true))]), 0), "missing entries rejected")
 }
 

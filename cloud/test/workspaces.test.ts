@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { importJWK, jwtVerify } from "jose";
+import { DirectoryDb } from "../src/directory/db.ts";
+import { initSchema } from "../src/directory/schema.ts";
+import type { Env } from "../src/env.ts";
 import { harness } from "./harness.ts";
 
 const hex = (bytes: ArrayBuffer) => Buffer.from(bytes).toString("hex");
@@ -386,5 +390,104 @@ test("a credential is one call of the Directory, and one asked by a non-member k
     assert.deepEqual(devices.map((d: any) => [d.email, d.device, d.kind, d.label]), [["alice@example.test", device.id, "app", "alice's Mac"]]);
   } finally {
     await h.close();
+  }
+});
+
+test("mutators return WorkspaceView matching GET /v1/workspaces/:id without changing call accounting", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const bob = h.as(await h.login("bob"));
+    const ws = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    const directory = await h.object("DIRECTORY", "primary");
+    const countCalls = async () => ((await directory.adminLoad()).calls.families.workspaces ?? []).reduce((a: number, b: number) => a + b, 0);
+
+    const expectSameView = async (mutated: { status: number; json(): Promise<unknown> }, callDelta: number, before: number) => {
+      assert.equal(mutated.status, 200);
+      const returned = await mutated.json();
+      const fetched = await (await alice("GET", `/v1/workspaces/${ws}`)).json();
+      assert.deepEqual(returned, fetched);
+      assert.equal((await countCalls()) - before, callDelta + 1);
+    };
+
+    const beforeRename = await countCalls();
+    await expectSameView(await alice("PATCH", `/v1/workspaces/${ws}`, { name: "Studio", emoji: "🏠" }), 1, beforeRename);
+
+    const beforeRelays = await countCalls();
+    await expectSameView(await alice("PUT", `/v1/workspaces/${ws}/relays`, { relays: ["https://relay-one.example"] }), 1, beforeRelays);
+
+    const beforeWay = await countCalls();
+    await expectSameView(await alice("PUT", `/v1/workspaces/${ws}/ways`, { way: "https://relay-one.example", on: false }), 1, beforeWay);
+
+    const beforeAdd = await countCalls();
+    const added = await alice("POST", `/v1/workspaces/${ws}/members`, { role: "member", emails: ["pending@example.test"] });
+    assert.equal(added.status, 200);
+    const addedBody = (await added.json()) as any;
+    assert.deepEqual(addedBody.view, await (await alice("GET", `/v1/workspaces/${ws}`)).json());
+    assert.equal((await countCalls()) - beforeAdd, 2);
+
+    const beforeRemoveAdded = await countCalls();
+    await expectSameView(await alice("DELETE", `/v1/workspaces/${ws}/added/${encodeURIComponent("pending@example.test")}`), 1, beforeRemoveAdded);
+
+    const invite = (await (await alice("POST", `/v1/workspaces/${ws}/invitations`, { role: "member", email: "bob@example.test" })).json()) as any;
+    const accepted = await bob("POST", `/v1/invitations/${invite.id}/accept`);
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), await (await bob("GET", `/v1/workspaces/${ws}`)).json());
+
+    const bobMe = (await (await bob("GET", "/v1/me")).json()) as any;
+    const beforeRole = await countCalls();
+    await expectSameView(await alice("PATCH", `/v1/workspaces/${ws}/members/${bobMe.user.sub}`, { role: "admin" }), 1, beforeRole);
+  } finally {
+    await h.close();
+  }
+});
+
+test("initSchema creates indexes for hot Directory lookups and stays idempotent", () => {
+  const sqlite = new DatabaseSync(":memory:");
+  try {
+    const sql = {
+      exec(query: string, ...args: unknown[]) {
+        if (args.length === 0 && !/^\s*(SELECT|PRAGMA)\b/i.test(query)) {
+          sqlite.exec(query);
+          return { toArray: () => [] };
+        }
+        const stmt = sqlite.prepare(query);
+        if (/^\s*(SELECT|PRAGMA)\b/i.test(query)) {
+          const rows = stmt.all(...(args as any[]));
+          return { toArray: () => rows };
+        }
+        stmt.run(...(args as any[]));
+        return { toArray: () => [] };
+      },
+    };
+    const db = new DirectoryDb({ storage: { sql } } as unknown as DurableObjectState, {} as Env);
+    const migrations = { freePlan() {}, stationMembers() {} };
+    initSchema(db, migrations);
+    initSchema(db, migrations);
+
+    const indexes = new Set(
+      (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((r) => r.name),
+    );
+    for (const name of [
+      "workspaces_by_creator",
+      "invitations_by_email",
+      "invitations_by_workspace",
+      "feedback_by_station",
+    ]) {
+      assert.ok(indexes.has(name), `missing index ${name}`);
+    }
+
+    const plans = [
+      ["workspaces_by_creator", "SELECT COUNT(*) AS n FROM workspaces WHERE created_by = 'u1' AND max_members IS NULL"],
+      ["invitations_by_email", "SELECT id FROM invitations WHERE email = 'a@b.c' AND expires_at > 100 ORDER BY expires_at"],
+      ["invitations_by_workspace", "SELECT COUNT(*) AS n FROM invitations WHERE workspace = 'w1' AND expires_at > 100"],
+      ["feedback_by_station", "SELECT id FROM feedback WHERE station = 's1' AND fixed_in IS NOT NULL AND told_at IS NULL AND status = 'fixed' ORDER BY number"],
+    ] as const;
+    for (const [index, query] of plans) {
+      const detail = (sqlite.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+      assert.match(detail, new RegExp(`USING (?:COVERING )?INDEX ${index}`), `${query}: ${detail}`);
+    }
+  } finally {
+    sqlite.close();
   }
 });

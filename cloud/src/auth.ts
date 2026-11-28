@@ -276,3 +276,17 @@ export async function googleIdentity(env: Env, code: string, verifier: string, n
   const said = payload[env.OIDC_ROLE_CLAIM];
   return { ...identity, role: typeof said !== "string" ? null : said === "owner" || said === "admin" ? said : "member" };
 }
+
+/** RFC 9110 weak ETag comparison for GET If-None-Match headers. */
+export function etagMatches(ifNoneMatch: string | null, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const target = etag.startsWith("W/") ? etag.slice(2) : etag;
+  for (const raw of ifNoneMatch.split(",")) {
+    const token = raw.trim();
+    if (!token) continue;
+    if (token === "*") return true;
+    const bare = token.startsWith("W/") ? token.slice(2) : token;
+    if (bare === target) return true;
+  }
+  return false;
+}

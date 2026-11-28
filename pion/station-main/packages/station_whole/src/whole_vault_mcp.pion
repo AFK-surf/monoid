@@ -906,55 +906,86 @@ fn vault_session_thread_by_id(
 }
 
 /// Authoritative pending-card check in `thread_id` (1:1 Node `card-place.ts:17-25` +
-/// `whole_vault_runtime.pion:303-350`): returns `Some(ts)` of the open card in `thread_id`,
-/// or `None` if no card is currently open. Uses real `closed_cards` + `entries` (NEVER
-/// string-matching `"closed":true` or same-ts edits!).
+/// `station/src/store/card-kinds.ts` + `store.ts:4439-4463`):
+/// Checks waiting system cards (`vault`/`login`/`rig`/`phone`/`signIn`, which are NEVER closed
+/// by human messages) BEFORE conversational cards, so a newer answered conversational card
+/// can NEVER shadow an earlier waiting system card!
 fn vault_pending_card_ts_in_db(db : sql_db::Db, thread_id : Int64) -> Result[Option[String], sql_db::SqlError] {
-  // Check the latest card-bearing message in `thread_id` that is NOT in `closed_cards`.
-  let row_opt = match db.first(
+  let tid_j = sql_db::int64_to_json(thread_id)
+  // 1. Check `pending_system_cards` projection first when installed.
+  match db.has_schema("table", "pending_system_cards") {
+    Ok(true) => {
+      match db.first(
+        "SELECT e.ts FROM pending_system_cards p JOIN entries e ON e.thread = p.thread AND e.n = p.n" +
+        " WHERE p.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards cc WHERE cc.thread = p.thread AND cc.n = p.n)" +
+        " ORDER BY p.n DESC LIMIT 1",
+        [tid_j],
+      ) {
+        Ok(Some(r)) => match r.get("ts") {
+          Some(base_codec::Json::Str(ts)) if ts.length() > 0 => return Ok(Some(ts))
+          _ => ()
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    _ => ()
+  }
+  // 2. Scan unclosed card-bearing messages in `thread_id` (system cards take precedence over conversational).
+  let rows = match db.all(
     "SELECT e.n, e.ts, e.card FROM entries e" +
     " WHERE e.thread = ?1 AND e.kind = 'message' AND e.card IS NOT NULL" +
     " AND NOT EXISTS (SELECT 1 FROM closed_cards cc WHERE cc.thread = e.thread AND cc.n = e.n)" +
-    " ORDER BY e.n DESC LIMIT 1",
-    [sql_db::int64_to_json(thread_id)],
+    " ORDER BY e.n DESC LIMIT 32",
+    [tid_j],
   ) {
-    Ok(r) => r
+    Ok(rs) => rs
     Err(e) => return Err(e)
   }
-  match row_opt {
-    None => Ok(None)
-    Some(r) => {
-      let msg_n = match r.get("n") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
-      let msg_ts = match r.get("ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      let card_raw = match r.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      if msg_n <= 0L || msg_ts.length() == 0 {
-        return Ok(None)
+  let mut conv_ts : Option[String] = None
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let msg_n = match r.get("n") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+    let msg_ts = match r.get("ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let card_raw = match r.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if msg_n <= 0L || msg_ts.length() == 0 {
+      continue
+    }
+    let is_system_card = match base_codec::json_parse(card_raw) {
+      base_codec::JsonParseResult::Ok(cj) => {
+        base_codec::json_get(cj, "vault").is_some()
+        || base_codec::json_get(cj, "login").is_some()
+        || base_codec::json_get(cj, "rig").is_some()
+        || base_codec::json_get(cj, "phone").is_some()
+        || base_codec::json_get(cj, "signIn").is_some()
       }
-      // System cards (vault / login / rig / phone / sign-in) wait until closed in `closed_cards`
-      // regardless of human messages; conversational cards close when a newer person message arrives.
-      let is_system_card = match base_codec::json_parse(card_raw) {
-        base_codec::JsonParseResult::Ok(cj) => {
-          base_codec::json_get(cj, "vault").is_some()
-          || base_codec::json_get(cj, "login").is_some()
-          || base_codec::json_get(cj, "rig").is_some()
-          || base_codec::json_get(cj, "phone").is_some()
-          || base_codec::json_get(cj, "signIn").is_some()
-        }
-        _ => false
+      _ => false
+    }
+    if is_system_card {
+      return Ok(Some(msg_ts))
+    }
+    if conv_ts.is_none() {
+      match db.first(
+        "SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'message' AND author_kind IN ('person', 'human') LIMIT 1",
+        [tid_j, sql_db::int64_to_json(msg_n)],
+      ) {
+        Ok(Some(_)) => ()
+        Ok(None) => conv_ts = Some(msg_ts)
+        Err(e) => return Err(e)
       }
-      if !is_system_card {
-        match db.first(
-          "SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'message' AND author_kind IN ('person', 'human') LIMIT 1",
-          [sql_db::int64_to_json(thread_id), sql_db::int64_to_json(msg_n)],
-        ) {
-          Ok(Some(_)) => return Ok(None)
-          Ok(None) => ()
-          Err(e) => return Err(e)
-        }
-      }
-      Ok(Some(msg_ts))
     }
   }
+  Ok(conv_ts)
+}
+
+/// Shared local-station matcher for `secret_use` and `secret_run` (matches either `station_id`
+/// or case-insensitive `station_name`).
+pub fn vault_is_this_station(given : String, station_id : String, station_name : String) -> Bool {
+  let tr = given.trim()
+  if tr.length() == 0 {
+    return true
+  }
+  tr == station_id || (station_name.length() > 0 && jscase::lower(tr) == jscase::lower(station_name))
 }
 
 fn vault_card_ts_format(now_ms : Int64, n : Int64) -> String {
@@ -1793,6 +1824,7 @@ pub struct PreparedSecretRun {
   pub account : Option[String]
   pub target_env : Option[String]
   pub command : String
+  pub workspace : String
   pub cwd : String
   pub timeout_ms : Int64
   pub expires_sec : Int64
@@ -2006,8 +2038,8 @@ pub fn vault_record_audit_by_grant(
   )
 }
 
-/// Renew an idle grant on real proxy/SSH use (persisting `until` for plain grants via SQLite CAS)
-/// and record a `"use"` audit row.
+/// Renew an idle grant on real proxy/SSH use (for plain grants, SQLite CAS MUST commit BEFORE
+/// updating in-memory `expires_sec`!) and record a `"use"` audit row.
 pub fn vault_renew_and_audit_use(
   whole_store : WholeStore,
   session : String,
@@ -2015,60 +2047,75 @@ pub fn vault_renew_and_audit_use(
   detail : String,
   now_sec : Int64,
 ) -> Unit {
-  let mut renewed_until : Option[Int64] = None
   match whole_store.vault_grants.get_record(grant_id) {
     Some(rec) => {
       if rec.session == session && !rec.revoked && rec.idle_sec > 0L {
         let next_exp = now_sec + rec.idle_sec
-        rec.expires_sec = next_exp
-        renewed_until = Some(next_exp)
-      }
-    }
-    None => ()
-  }
-  match (renewed_until, whole_store.require_open(), whole_store.vault_held_meta.get(grant_id)) {
-    (Some(next_exp), Ok(st), Some((req_j, _, _))) => {
-      let req_vault = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
-      let req_ws = match json_field_str(req_j, "ws") { Some(s) => s, None => "" }
-      if req_vault == "plain" && req_ws.length() > 0 {
-        match st.db.first(
-          "SELECT body FROM vault_grants WHERE ws = ?1 AND id = ?2",
-          [base_codec::json_str(req_ws), base_codec::json_str(grant_id)],
-        ) {
-          Ok(Some(row)) => match row.get("body") {
-            Some(base_codec::Json::Str(raw_body)) => match base_codec::json_parse(raw_body) {
-              base_codec::JsonParseResult::Ok(stored) => {
-                let next_obj = json_obj_set(stored, "until", Some(sql_db::int64_to_json(next_exp)))
-                let _ = st.db.run(
-                  "UPDATE vault_grants SET body = ?1 WHERE ws = ?2 AND id = ?3 AND body = ?4",
-                  [
-                    base_codec::json_str(base_codec::json_stringify(next_obj)),
-                    base_codec::json_str(req_ws),
-                    base_codec::json_str(grant_id),
-                    base_codec::json_str(raw_body),
-                  ],
-                )
-              }
-              _ => ()
-            }
-            _ => ()
+        let mut is_plain = false
+        let mut req_ws = ""
+        match whole_store.vault_held_meta.get(grant_id) {
+          Some((req_j, _, _)) => {
+            is_plain = match json_field_str(req_j, "vault") { Some("plain") => true, _ => false }
+            req_ws = match json_field_str(req_j, "ws") { Some(s) => s, None => "" }
           }
-          _ => ()
+          None => ()
+        }
+        if is_plain {
+          // SQLite CAS is authoritative for plain grants: only advance memory expiry if CAS commits!
+          let persisted_ok = match whole_store.require_open() {
+            Ok(st) if req_ws.length() > 0 => {
+              match st.db.first(
+                "SELECT body FROM vault_grants WHERE ws = ?1 AND id = ?2",
+                [base_codec::json_str(req_ws), base_codec::json_str(grant_id)],
+              ) {
+                Ok(Some(row)) => match row.get("body") {
+                  Some(base_codec::Json::Str(raw_body)) => match base_codec::json_parse(raw_body) {
+                    base_codec::JsonParseResult::Ok(stored) => {
+                      let next_obj = json_obj_set(stored, "until", Some(sql_db::int64_to_json(next_exp)))
+                      match st.db.run(
+                        "UPDATE vault_grants SET body = ?1 WHERE ws = ?2 AND id = ?3 AND body = ?4",
+                        [
+                          base_codec::json_str(base_codec::json_stringify(next_obj)),
+                          base_codec::json_str(req_ws),
+                          base_codec::json_str(grant_id),
+                          base_codec::json_str(raw_body),
+                        ],
+                      ) {
+                        Ok(n) => n > 0
+                        Err(_) => false
+                      }
+                    }
+                    _ => false
+                  }
+                  _ => false
+                }
+                _ => false
+              }
+            }
+            _ => false
+          }
+          if persisted_ok {
+            rec.expires_sec = next_exp
+          }
+        } else {
+          rec.expires_sec = next_exp
         }
       }
     }
-    _ => ()
+    None => ()
   }
   vault_record_audit_by_grant(whole_store, session, grant_id, "use", detail, now_sec)
 }
 
 /// Atomic SQLite CAS spend for plain grants (`secrets.ts:355-377`), fail-closed on missing row,
-/// malformed `uses`, or identity mismatch, preventing crash/handover resurrection.
+/// malformed `uses`/`until`, or identity mismatch (`ws`/`session`/`id`/`vault`/`item`/`mode`).
 fn vault_spend_plain_grant_cas(
   st : station_store::Store,
   ws : String,
   session : String,
   grant_id : String,
+  expected_item : String,
+  expected_mode : String,
   is_once : Bool,
   renew_now_idle_sec : Int64,
   now_sec : Int64,
@@ -2089,18 +2136,36 @@ fn vault_spend_plain_grant_cas(
     base_codec::JsonParseResult::Ok(j) => j
     _ => return Err("malformed persisted plain grant JSON")
   }
-  // Verify stored request identity matches `(ws, session, grant_id, "plain")`.
+  // Verify stored request & grant identity matches `(ws, session, grant_id, "plain", item, mode)`.
   match base_codec::json_get(stored, "request") {
     Some(rj) => {
       let r_id = match json_field_str(rj, "id") { Some(s) => s, None => "" }
       let r_ws = match json_field_str(rj, "ws") { Some(s) => s, None => "" }
       let r_sess = match json_field_str(rj, "session") { Some(s) => s, None => "" }
       let r_vault = match json_field_str(rj, "vault") { Some(s) => s, None => "" }
-      if r_id != grant_id || r_ws != ws || r_sess != session || r_vault != "plain" {
+      let r_item = match json_field_str(rj, "item") { Some(s) => s, None => "" }
+      if r_id != grant_id
+      || r_ws != ws
+      || r_sess != session
+      || r_vault != "plain"
+      || (expected_item.length() > 0 && r_item != expected_item) {
         return Err("persisted plain grant identity mismatch")
       }
     }
     None => return Err("malformed persisted plain grant (missing request)")
+  }
+  let grant_exp : Int64 = match base_codec::json_get(stored, "grant") {
+    Some(gj) => {
+      let gm = match json_field_str(gj, "mode") { Some(s) => s, None => "" }
+      if gm != expected_mode {
+        return Err("persisted plain grant mode mismatch")
+      }
+      match vd_safe_int64(gj, "exp") {
+        Some(e) if e > 0L => e
+        _ => return Err("malformed persisted plain grant exp")
+      }
+    }
+    None => return Err("malformed persisted plain grant (missing grant)")
   }
   let cur_uses = match vd_safe_int64(stored, "uses") {
     Some(u) if u >= 0L => u
@@ -2109,11 +2174,12 @@ fn vault_spend_plain_grant_cas(
   if is_once && cur_uses != 0L {
     return Err("this grant was for one use and is used: ask again")
   }
-  let exp_sec : Int64 = match vd_safe_int64(stored, "until") {
-    Some(u) => u
-    None => match base_codec::json_get(stored, "grant") {
-      Some(gj) => match vd_safe_int64(gj, "exp") { Some(e) => e, None => 0L }
-      None => 0L
+  // Treat malformed `until` as corrupt (fail-closed) rather than falling back to `grant.exp`!
+  let exp_sec : Int64 = match base_codec::json_get(stored, "until") {
+    None => grant_exp
+    Some(_) => match vd_safe_int64(stored, "until") {
+      Some(u) if u > 0L => u
+      _ => return Err("malformed persisted plain grant until")
     }
   }
   if exp_sec <= now_sec {
@@ -2152,6 +2218,7 @@ pub fn prepare_secret_run(
   this_station_id : String,
   args : base_codec::Json,
   now_ms : Int64,
+  this_station_name : String = "",
 ) -> Result[PreparedSecretRun, String] {
   let st = match whole_store.require_open() {
     Ok(s) => s
@@ -2228,9 +2295,11 @@ pub fn prepare_secret_run(
   // Security check BEFORE spending: grants bound to another station (`runOn: { id, name }` or legacy)
   // MUST NOT run locally, and unverified `runOn` is refused!
   let mut req_vault = ""
+  let mut req_item = ""
   match whole_store.vault_held_meta.get(grant_id) {
     Some((req_j, _, _)) => {
       req_vault = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
+      req_item = match json_field_str(req_j, "item") { Some(s) => s, None => "" }
       match base_codec::json_get(req_j, "runOn") {
         Some(base_codec::Json::Null) | None => ()
         Some(ro) => {
@@ -2242,7 +2311,7 @@ pub fn prepare_secret_run(
             }
           }
           let ro_name = match json_field_str(ro, "name") { Some(s) if s.trim().length() > 0 => s.trim(), _ => ro_id }
-          if ro_id.length() == 0 || ro_id != this_station_id {
+          if ro_id.length() == 0 || !vault_is_this_station(ro_id, this_station_id, this_station_name) {
             let label = if ro_name.length() > 0 { ro_name } else { "another station" }
             return Err("This grant is for commands on " + label + ": remote secret_run is not supported on this station yet.")
           }
@@ -2254,7 +2323,7 @@ pub fn prepare_secret_run(
   match mcp_arg_str(args, "station") {
     Some(st_req) => {
       let tr = st_req.trim()
-      if tr.length() > 0 && tr != this_station_id {
+      if tr.length() > 0 && !vault_is_this_station(tr, this_station_id, this_station_name) {
         return Err("This grant is for commands on this station: to run them on " + tr + ", ask again with secret_use {station: \"" + tr + "\"}.")
       }
     }
@@ -2314,7 +2383,7 @@ pub fn prepare_secret_run(
   }
   // For plain grants, atomically CAS-spend in SQLite (`secrets.ts:355-377`).
   if req_vault == "plain" {
-    match vault_spend_plain_grant_cas(st, ws, session, grant_id, is_once, renew_now_idle, now_sec) {
+    match vault_spend_plain_grant_cas(st, ws, session, grant_id, req_item, g.mode.as_str(), is_once, renew_now_idle, now_sec) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
@@ -2338,6 +2407,7 @@ pub fn prepare_secret_run(
     account: g.secret.account(),
     target_env: eff_env,
     command: command,
+    workspace: srow.workspace,
     cwd: cwd,
     timeout_ms: timeout_ms,
     expires_sec: g.expires_sec,
@@ -3562,15 +3632,59 @@ pub fn handle_vault_mcp_tool(
       }
       vault_build_use_card_and_text(whole_store, st, ws, req_j, listing, decider_opt, None, thr.surface == "chat")
     }
-    let new_cts = match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
-      Ok(cts) => cts
-      Err(e) => return station_tools::error_reply(e)
+    // Atomic SQLite transaction (R4 P1-4): re-verify pending-card slot, insert the new card
+    // message via `insert_message_in_tx`, and CAS-update `vault_requests` in ONE transaction!
+    // On any conflict or error, the transaction rolls back with ZERO orphan unapprovable cards;
+    // SSE & Connects are emitted ONLY AFTER the transaction commits.
+    let card_str_opt : Option[String] = match card_opt {
+      Some(c) => Some(base_codec::json_stringify(c))
+      None => None
     }
-    let new_cts_j = match new_cts { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }
     let old_tid_j = match old_tid_opt { Some(id) => sql_db::int64_to_json(id), None => base_codec::json_null() }
     let old_cts_j = match old_cts_opt { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }
-    let updated = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int, sql_db::SqlError] {
-      txdb.run(
+    let mut committed_n = 0L
+    let mut committed_ts = ""
+    let mut tx_conflict_msg = ""
+    match st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      match vault_pending_card_ts_in_db(txdb, thr.id) {
+        Ok(Some(_)) => {
+          tx_conflict_msg = "Another card is pending in that conversation. Resolve or withdraw it before asking this again."
+          return Err(sql_db::SqlError::{ code: 19, message: "card_occupied" })
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      let next_n_est : Int64 = match txdb.first(
+        "SELECT COALESCE(MAX(n), 0) + 1 AS nn FROM entries WHERE thread = ?1",
+        [sql_db::int64_to_json(thr.id)],
+      ) {
+        Ok(Some(r)) => match r.get("nn") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 1L }
+        Ok(None) => 1L
+        Err(e) => return Err(e)
+      }
+      let ts_str = vault_card_ts_format(now_ms, next_n_est)
+      let msg = station_store::NewMessage::{
+        thread: thr.id,
+        ts: Some(ts_str),
+        author_kind: "agent",
+        author: session,
+        agent_identity: None,
+        text: Some(text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: card_str_opt,
+        options: None,
+        proposal: None,
+        at: now_ms,
+      }
+      let (ins_n, _) = match station_store::insert_message_in_tx(txdb, msg) {
+        Ok(res) => res
+        Err(e) => return Err(e)
+      }
+      let new_cts_j = if card_opt.is_some() { base_codec::json_str(ts_str) } else { base_codec::json_null() }
+      let changed = match txdb.run(
         "UPDATE vault_requests SET thread = ?1, card_ts = ?2 WHERE ws = ?3 AND id = ?4 AND status = 'pending' AND body = ?5 AND thread IS ?6 AND card_ts IS ?7",
         [
           sql_db::int64_to_json(thr.id),
@@ -3581,27 +3695,84 @@ pub fn handle_vault_mcp_tool(
           old_tid_j,
           old_cts_j,
         ],
-      )
-    }) {
-      Ok(n) => n
-      Err(_) => 0
-    }
-    if updated == 0 {
-      // Withdraw the newly posted card on CAS conflict (`secrets.ts:1435-1437`).
-      match new_cts {
-        Some(ncts) => {
-          let _ = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-            match station_store::install_card_outbox(txdb) { Ok(_) => (), Err(e) => return Err(e) }
-            match station_store::enqueue_card_outcome(txdb, thr.id, ncts, session, "vault", true, "{\"status\":\"withdrawn\"}", dedup=true) {
-              Ok(_) => Ok(())
-              Err(e) => Err(e)
-            }
-          })
-          let _ = drain_card_outbox_once(whole_store, deps.events, now_ms)
-        }
-        None => ()
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(e)
       }
-      return station_tools::error_reply("Request " + req_id + " changed while the card was posted; try again.")
+      if changed == 0 {
+        tx_conflict_msg = "Request " + req_id + " changed while the card was posted; try again."
+        return Err(sql_db::SqlError::{ code: 19, message: "reask_cas_conflict" })
+      }
+      committed_n = ins_n
+      committed_ts = ts_str
+      Ok(())
+    }) {
+      Ok(_) => ()
+      Err(e) => {
+        let msg = if tx_conflict_msg.length() > 0 { tx_conflict_msg } else { "secret_reask failed: " + e.message }
+        return station_tools::error_reply(msg)
+      }
+    }
+    // Transaction committed cleanly -> emit `"thread"` SSE & queue Connects outbound post!
+    if thr.surface != "chat" && thr.connect.length() > 0 {
+      whole_store.pending_vault_connect_posts.push(
+        PendingVaultConnectPost::{
+          ws: ws,
+          req_id: req_id,
+          session: session,
+          thread_id: thr.id,
+          channel: thr.channel,
+          thread_ts: thr.thread_ts,
+          connect_id: thr.connect,
+          n_seq: committed_n,
+          text: text,
+          card: card_opt,
+        },
+      )
+    }
+    match deps.events {
+      Some(ev) => {
+        let entry_fs : Array[(String, base_codec::Json)] = [
+          ("thread", sql_db::int64_to_json(thr.id)),
+          ("n", sql_db::int64_to_json(committed_n)),
+          ("kind", base_codec::json_str("message")),
+          ("ts", base_codec::json_str(committed_ts)),
+          ("authorKind", base_codec::json_str("agent")),
+          ("author", base_codec::json_str(session)),
+          ("text", base_codec::json_str(text)),
+          ("at", sql_db::int64_to_json(now_ms)),
+        ]
+        match card_opt {
+          Some(c) => entry_fs.push(("card", c))
+          None => ()
+        }
+        let ev_target = station_api::EventTarget::{
+          lang: None,
+          viewer: None,
+          device: None,
+          email: None,
+          workspace: None,
+          subs: None,
+          read_only: None,
+          managers: None,
+          vault: None,
+          sees_ws: None,
+          sees_session: None,
+          sees_thread: Some(thr.id.to_int()),
+          sees_job: None,
+        }
+        let _ = ev.emit(
+          "thread",
+          base_codec::json_obj([
+            ("id", sql_db::int64_to_json(thr.id)),
+            ("entries", base_codec::json_arr([base_codec::json_obj(entry_fs)])),
+          ]),
+          ev_target,
+          now_ms,
+          None,
+        )
+      }
+      None => ()
     }
     return station_tools::text_reply(
       "The card for request " + req_id + " is in the chat again. It is the same request; no secret was read again. " + VAULT_UNDECIDED_NOTICE,
@@ -4121,6 +4292,32 @@ pub fn run_vault_mcp_sqlite_selftest() -> Result[Unit, String] {
   match ws_store.vault_grants.get_record("r_browser_1") {
     Some(rec) if rec.uses == 0 => ()
     _ => { let _ = ws_store.close(); return Err("browser grant was consumed despite refusal!") }
+  }
+  // 6. R4 regression: verify `WholeAgents::build_domain_handlers` still dispatches `sign_in`
+  //    through `signin_tool_override` alongside all 8 Vault MCP tools!
+  let agents_r4 = WholeAgents::new(
+    WholeAgentsConfig::{
+      data_dir: tmp_dir,
+      assets_dir: tmp_dir,
+      runner_bin: "",
+      mcp_port: 0,
+      home_ws: ws,
+    },
+  )
+  let mut sign_in_seen = false
+  agents_r4.signin_tool_override = Some(
+    fn(_s : String, t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      if t == "sign_in" {
+        sign_in_seen = true
+      }
+      station_tools::text_reply("sign-in-ok")
+    },
+  )
+  let r4_handlers = agents_r4.build_domain_handlers(ws_store, now_ms)
+  let r4_reply = (r4_handlers.secret)("s-mcp", "sign_in", base_codec::json_obj([]))
+  if !sign_in_seen || r4_reply.is_error {
+    let _ = ws_store.close()
+    return Err("sign_in did not dispatch through signin_tool_override")
   }
   let _ = ws_store.close()
   Ok(())

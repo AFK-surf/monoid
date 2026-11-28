@@ -3009,20 +3009,20 @@ fn dispatch_screens_signins_logins_op(
         if admin_is_read_only(req.viewer) {
           return Some(Err(station_api::ApiError::new(403, "a read-only member does not open a browser screen")))
         }
-        let url = match json_field_str(body, "url") {
-          Some(u) if u.trim().length() > 0 => u.trim()
+        let raw_url = match base_codec::json_get(body, "url") {
+          Some(base_codec::Json::Str(u)) => u
           _ => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.screen.badUrl"))))
         }
-        match validate_browser_navigation_url(url, false) {
-          Ok(_) => ()
-          Err(msg) => return Some(Err(station_api::ApiError::new(400, msg)))
+        let _url_norm = match normalize_open_browser_url(raw_url) {
+          Ok(u) => u
+          Err(key) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, key))))
         }
         let tab_id : Option[String] = match base_codec::json_get(body, "id") {
           None | Some(base_codec::Json::Null) => None
           Some(base_codec::Json::Str(id)) if admin_is_user_tab_id(id) => Some(id)
           _ => return Some(Err(station_api::ApiError::new(400, "id: u_ and 12 hex digits")))
         }
-        match f(url, tab_id) {
+        match f(raw_url, tab_id) {
           Ok(screen_id) => return Some(Ok(base_codec::json_obj([("screen", base_codec::json_str(screen_id))])))
           Err(e) => return Some(Err(e))
         }

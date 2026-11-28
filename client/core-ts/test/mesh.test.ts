@@ -5716,6 +5716,42 @@ sim("non_handshake_conflict_errors_and_relay_only_never_trigger_handshake_rescue
   }
 });
 
+sim("healthChange_interrupt_removes_cancelled_waiters_without_disturbing_active_waiters", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a]);
+  try {
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+    await request(s, link, head("/admin/api/overview"));
+    await s.time.pass(2 * TICK_MS);
+    assert.equal(mesh.healthy(id), true);
+
+    station.deadBelow = Number.MAX_SAFE_INTEGER;
+    assert.equal(await s.settle(s.runner.run(mesh.healthChange(id, true))), false);
+    assert.equal(mesh.healthWaiters(id), 0);
+
+    for (let i = 0; i < 10; i++) {
+      const fiber = s.runner.fork(mesh.healthChange(id, false));
+      await s.time.pass(1);
+      assert.equal(mesh.healthWaiters(id), 1);
+      await s.run(Fiber.interrupt(fiber));
+      assert.equal(mesh.healthWaiters(id), 0);
+    }
+
+    const active = s.runner.fork(mesh.healthChange(id, false));
+    const transient = s.runner.fork(mesh.healthChange(id, false));
+    await s.time.pass(1);
+    assert.equal(mesh.healthWaiters(id), 2);
+    await s.run(Fiber.interrupt(transient));
+    assert.equal(mesh.healthWaiters(id), 1);
+
+    station.deadBelow = 0;
+    assert.equal(await s.settle(s.runner.run(Fiber.join(active))), true);
+    assert.equal(mesh.healthWaiters(id), 0);
+  } finally {
+    await close(s, station, mesh);
+  }
+});
+
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);
 });

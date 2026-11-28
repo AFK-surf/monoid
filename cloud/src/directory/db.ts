@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { MeshRelay } from "../mesh-relay-registry";
 import { ownRelay, type Relays } from "../relays";
 import type { AccountEvent, AdminList, InviteCodeView, LockHead, RigView, Role, StationEvent, StationView, WorkspaceView } from "../types";
-import { ROLES, fail, type AddedMail, type Delivery, type Row } from "./types";
+import { ROLES, fail, type AddedMail, type ChangedView, type Delivery, type Row } from "./types";
 
 /** Shared SQLite access and read-only queries used across directory domain modules. */
 export class DirectoryDb {
@@ -119,13 +119,13 @@ export interface DirectoryHost {
   setMayCreate(sub: string, on: boolean): { sub: string; may_create: boolean };
   inviteCodes(): InviteCodeView[];
   keepCounts(force?: boolean): void;
-  changed(workspace: string, list: boolean, also?: Iterable<string>, only?: "lock" | "requests" | null): void;
-  view(sub: string, id: string): WorkspaceView;
+  changed(workspace: string, list: boolean, also?: Iterable<string>, only?: "lock" | "requests" | null): ChangedView | null;
+  view(sub: string, id: string, kept?: ChangedView | null): WorkspaceView;
   removeWorkspace(id: string): void;
   standard(sub: string): boolean;
   memberCap(workspace: string): number;
   seats(workspace: string, invited?: boolean): number;
-  addEmails(by: string, workspace: string, role: Role, wanted: string[]): { joined: string[]; added: string[]; already: string[] };
+  addEmails(by: string, workspace: string, role: Role, wanted: string[]): { joined: string[]; added: string[]; already: string[]; view: ChangedView | null };
   toMail(by: string, workspace: string, joined: string[], added: string[], already: string[], reportsSent: boolean): AddedMail;
   forgetMailRetry(workspace: string, email: string): void;
   enrollment(sub: string, workspace: string, name: unknown, rig?: boolean): Promise<{ token: string; expires_at: number }>;

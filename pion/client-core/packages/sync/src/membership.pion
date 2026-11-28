@@ -1758,10 +1758,42 @@ pub fn build_merged_effective_me_json(
   }
 }
 
-// ── Single Authoritative `MembershipAuthority` (Non-Reentrant, Zero Slice 2B-2 State) ──
+// ── Single Authoritative `MembershipAuthority` (Non-Reentrant, Slice 2B-1 + 2B-2) ──
 
-/// Single authoritative membership, purge-latch, station-binding, read-gate, and
-/// async host-mirror controller owned uniquely by `ClientCore`.
+/// Post-downgrade / enter-Safe-Mode per-workspace confirmation gate (aligned with `core.ts:230, 355, 437, 1575-1594`).
+/// Installed BEFORE `auth.bump_workspace(ws)` so boundary subscribers immediately observe the gate.
+pub struct PendingAuthConfirm {
+  pub mut gen : Int64
+  pub mut required_cred_epoch : Int64
+  pub mut boundary_seq : Int64
+  pub confirmed_keys : Map[String, Bool]
+}
+
+/// Numeric rank of workspace roles for downgrade/upgrade classification (aligned with `core.ts:1475-1482`).
+pub fn workspace_role_rank(role : String) -> Int {
+  if role == "owner" {
+    3
+  } else if role == "admin" {
+    2
+  } else if role == "member" {
+    1
+  } else {
+    0
+  }
+}
+
+/// True iff transitioning `prev_role -> next_role` is a privilege downgrade (`owner/admin -> member`, `owner -> admin`).
+pub fn is_role_downgrade(prev_role : String, next_role : String) -> Bool {
+  workspace_role_rank(next_role) < workspace_role_rank(prev_role)
+}
+
+/// True iff transitioning `prev_role -> next_role` is a privilege upgrade (`member -> admin/owner`, `admin -> owner`).
+pub fn is_role_upgrade(prev_role : String, next_role : String) -> Bool {
+  workspace_role_rank(next_role) > workspace_role_rank(prev_role)
+}
+
+/// Single authoritative membership, purge-latch, station-binding, read-gate, downgrade confirmation,
+/// and async host-mirror controller owned uniquely by `ClientCore`.
 pub struct MembershipAuthority {
   pub mut account_sub : String
   revoked : Map[String, Bool]
@@ -1776,6 +1808,7 @@ pub struct MembershipAuthority {
   cred_epoch : Map[String, Int64]
   static_creds : Map[String, (String, Int64)]
   ws_roles : Map[String, String]
+  pending_auth_confirm : Map[String, PendingAuthConfirm]
   mut next_seq : Int64
   mut cloud_commit_seq : Int64
   ws_commit_seq : Map[String, Int64]
@@ -1805,6 +1838,7 @@ pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthorit
     cred_epoch: Map::new(),
     static_creds: Map::new(),
     ws_roles: Map::new(),
+    pending_auth_confirm: Map::new(),
     next_seq: 1L,
     cloud_commit_seq: 0L,
     ws_commit_seq: Map::new(),
@@ -1834,6 +1868,7 @@ pub fn MembershipAuthority::set_unauthenticated(self : MembershipAuthority, v : 
     self.mirror_session_gen += 1L
     self.mirror_pending_dirty = false
     self.static_creds.clear()
+    self.pending_auth_confirm.clear()
   }
 }
 
@@ -1853,6 +1888,7 @@ pub fn MembershipAuthority::reset_for_db_switch(self : MembershipAuthority) -> U
   self.cred_epoch.clear()
   self.static_creds.clear()
   self.ws_roles.clear()
+  self.pending_auth_confirm.clear()
   self.cloud_commit_seq = 0L
   self.ws_commit_seq.clear()
   self.unauthenticated = false
@@ -3215,6 +3251,9 @@ pub fn MembershipAuthority::advance_cloud_me_seq(self : MembershipAuthority, req
   } else if req_seq <= 0L {
     self.cloud_commit_seq += 1L
   }
+  if self.cloud_commit_seq >= self.next_seq {
+    self.next_seq = self.cloud_commit_seq + 1L
+  }
 }
 
 pub fn MembershipAuthority::advance_workspace_seq(
@@ -3225,6 +3264,9 @@ pub fn MembershipAuthority::advance_workspace_seq(
   let cur = self.ws_commit_seq_of(ws)
   let next = if req_seq > cur { req_seq } else if req_seq <= 0L { cur + 1L } else { cur }
   self.ws_commit_seq.set(ws, next)
+  if next >= self.next_seq {
+    self.next_seq = next + 1L
+  }
 }
 
 pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority) -> Unit {
@@ -3232,6 +3274,7 @@ pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority)
   self.mirror_session_gen += 1L
   self.mirror_pending_dirty = false
   self.static_creds.clear()
+  self.pending_auth_confirm.clear()
 }
 
 pub fn MembershipAuthority::clear_session_invalidated(self : MembershipAuthority) -> Unit {
@@ -3240,4 +3283,212 @@ pub fn MembershipAuthority::clear_session_invalidated(self : MembershipAuthority
 
 pub fn MembershipAuthority::is_session_invalidated(self : MembershipAuthority) -> Bool {
   self.session_invalidated
+}
+
+// ── Slice 2B-2: Downgrade / Safe-Mode `PendingAuthConfirm` Gate ──
+
+/// Install a fresh `PendingAuthConfirm` for workspace `ws` with empty `confirmed_keys` (plus any
+/// explicitly authorized `preconfirm_keys`). MUST be called AFTER `bump_cred_epoch(ws)` and BEFORE
+/// `auth.bump_workspace(ws)` so any boundary subscriber immediately observes the active gate.
+pub fn MembershipAuthority::install_pending_auth_confirm(
+  self : MembershipAuthority,
+  ws : String,
+  next_auth_gen : Int64,
+  required_cred_epoch : Int64,
+  boundary_seq : Int64 = 0L,
+  preconfirm_keys : Array[String] = [],
+) -> PendingAuthConfirm {
+  let keys : Map[String, Bool] = Map::new()
+  for i in 0..<preconfirm_keys.length() {
+    if preconfirm_keys[i].length() > 0 {
+      keys.set(preconfirm_keys[i], true)
+    }
+  }
+  let entry = PendingAuthConfirm::{
+    gen: next_auth_gen,
+    required_cred_epoch: required_cred_epoch,
+    boundary_seq: boundary_seq,
+    confirmed_keys: keys,
+  }
+  if ws.length() > 0 {
+    self.pending_auth_confirm.set(ws, entry)
+  }
+  entry
+}
+
+/// Re-anchor an active `PendingAuthConfirm` to a newer `workspace_auth_gen` after a non-downgrade
+/// lock change, preserving `required_cred_epoch`, `boundary_seq`, and all already-confirmed keys
+/// (aligned with `core.ts:1575-1589`). Returns `true` iff an active entry was re-anchored.
+pub fn MembershipAuthority::reanchor_pending_auth_confirm(
+  self : MembershipAuthority,
+  ws : String,
+  next_auth_gen : Int64,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => {
+      if next_auth_gen > p.gen {
+        p.gen = next_auth_gen
+        true
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+/// Re-anchor all active `PendingAuthConfirm` entries whose `gen < global_auth_gen` on a global bump.
+pub fn MembershipAuthority::reanchor_all_pending_auth_confirm(
+  self : MembershipAuthority,
+  global_auth_gen : Int64,
+) -> Unit {
+  let ks = self.pending_auth_confirm.keys()
+  for i in 0..<ks.length() {
+    let _ = self.reanchor_pending_auth_confirm(ks[i], global_auth_gen)
+  }
+}
+
+/// Clear `PendingAuthConfirm` for `ws` on role upgrade, rejoin, or purge/drop.
+pub fn MembershipAuthority::clear_pending_auth_confirm(self : MembershipAuthority, ws : String) -> Unit {
+  self.pending_auth_confirm.remove(ws)
+}
+
+/// Handle a lock-only Safe Mode exit aligned 1:1 with `client/core-ts/src/core.ts:1587-1592`:
+/// - If an unconfirmed Cloud downgrade is still pending (`workspace:<ws>` NOT in `confirmed_keys`),
+///   preserve the gate by re-anchoring `gen` to `next_auth_gen` and clearing `confirmed_keys`,
+///   returning `true` so callers re-fetch workspace & stations under the new gen!
+/// - Otherwise clear `PendingAuthConfirm` and return `false`.
+pub fn MembershipAuthority::exit_safe_mode_pending_auth(
+  self : MembershipAuthority,
+  ws : String,
+  next_auth_gen : Int64,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => {
+      if p.confirmed_keys.get("workspace:" + ws).is_none() {
+        p.gen = next_auth_gen
+        p.confirmed_keys.clear()
+        true
+      } else {
+        self.pending_auth_confirm.remove(ws)
+        false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn MembershipAuthority::pending_auth_confirm_of(
+  self : MembershipAuthority,
+  ws : String,
+) -> Option[PendingAuthConfirm] {
+  self.pending_auth_confirm.get(ws)
+}
+
+pub fn MembershipAuthority::has_pending_auth_confirm(self : MembershipAuthority, ws : String) -> Bool {
+  self.pending_auth_confirm.get(ws).is_some()
+}
+
+/// Immutable `boundary_seq` of the active `PendingAuthConfirm` for `ws` (`0L` when none).
+/// Unlike `cred_epoch` (which advances on mesh `fresh` credential fetches), `boundary_seq`
+/// stays constant for the lifetime of a confirmation boundary and advances only when a new
+/// downgrade/Safe-Mode boundary is installed.
+pub fn MembershipAuthority::pending_auth_boundary_id(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => p.boundary_seq
+    None => 0L
+  }
+}
+
+pub fn MembershipAuthority::required_cred_epoch_of(
+  self : MembershipAuthority,
+  ws : String,
+) -> Option[Int64] {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => Some(p.required_cred_epoch)
+    None => None
+  }
+}
+
+/// Whether `(ws, resource_key)` is permitted to emit cached data at `auth_gen` (aligned with `core.ts:437-440`).
+/// Returns `true` when no `PendingAuthConfirm` is active, when `auth_gen < pending.gen`, or when
+/// `resource_key` has been confirmed after the downgrade boundary.
+pub fn MembershipAuthority::is_auth_key_confirmed(
+  self : MembershipAuthority,
+  ws : String,
+  resource_key : String,
+  auth_gen : Int64,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    None => true
+    Some(p) => {
+      if auth_gen < p.gen {
+        true
+      } else {
+        p.confirmed_keys.get(resource_key).is_some()
+      }
+    }
+  }
+}
+
+/// Confirm a Cloud-side resource key (`workspace:<ws>` or `stations:<ws>`) after a full post-boundary
+/// `/v1/workspaces/<ws>` response. Rejects pre-boundary responses (`req_seq <= boundary_seq` or
+/// `captured_cred_epoch < required_cred_epoch`) and generation mismatches (`read_gen != pending.gen`).
+pub fn MembershipAuthority::confirm_cloud_auth_key(
+  self : MembershipAuthority,
+  ws : String,
+  resource_key : String,
+  read_gen : Int64,
+  req_seq : Int64 = 0L,
+  captured_cred_epoch : Int64 = 0L,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    None => false
+    Some(p) => {
+      if read_gen != p.gen {
+        return false
+      }
+      if captured_cred_epoch > 0L && captured_cred_epoch < p.required_cred_epoch {
+        return false
+      }
+      if req_seq > 0L && p.boundary_seq > 0L && req_seq <= p.boundary_seq {
+        return false
+      }
+      let has_epoch_proof = captured_cred_epoch > 0L && captured_cred_epoch >= p.required_cred_epoch
+      let has_seq_proof = req_seq > 0L && req_seq > p.boundary_seq
+      if !has_epoch_proof && !has_seq_proof {
+        return false
+      }
+      let was_new = p.confirmed_keys.get(resource_key).is_none()
+      p.confirmed_keys.set(resource_key, true)
+      was_new
+    }
+  }
+}
+
+/// Confirm a Station-side resource key (`chats:<st>`, `chat:<st>/<th>`, `chatJobs:<st>/<th>`, `jobs:<st>`)
+/// ONLY when BOTH `read_gen == pending.gen` AND the station link's real station-admitted credential epoch
+/// satisfies `admitted_cred_epoch >= pending.required_cred_epoch`.
+/// Responses from an older link (`admitted_cred_epoch < required_cred_epoch`) NEVER confirm any key.
+pub fn MembershipAuthority::confirm_station_auth_key(
+  self : MembershipAuthority,
+  ws : String,
+  resource_key : String,
+  read_gen : Int64,
+  admitted_cred_epoch : Int64,
+) -> Bool {
+  match self.pending_auth_confirm.get(ws) {
+    None => false
+    Some(p) => {
+      if read_gen != p.gen {
+        return false
+      }
+      if admitted_cred_epoch < p.required_cred_epoch {
+        return false
+      }
+      let was_new = p.confirmed_keys.get(resource_key).is_none()
+      p.confirmed_keys.set(resource_key, true)
+      was_new
+    }
+  }
 }

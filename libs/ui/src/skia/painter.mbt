@@ -41,6 +41,7 @@ priv struct RasterPipelineBlitter {
   mut blit_anti_h_rp : RasterPipeline?
   mut blit_rect_rp : RasterPipeline?
   mut blit_mask_rp : RasterPipeline?
+  mut scratch : PipelineScratch?
   is_mask : Bool
 }
 
@@ -213,6 +214,7 @@ fn RasterPipelineBlitter::new(paint : Paint, mask : MaskCtx?, pixmap : SubPixmap
     blit_anti_h_rp: None,
     blit_rect_rp: None,
     blit_mask_rp: None,
+    scratch: None,
     is_mask: false,
   })
 }
@@ -230,7 +232,20 @@ fn RasterPipelineBlitter::new_mask(pixmap : SubPixmap) -> RasterPipelineBlitter 
     blit_anti_h_rp: None,
     blit_rect_rp: None,
     blit_mask_rp: None,
+    scratch: None,
     is_mask: true,
+  }
+}
+
+///|
+fn RasterPipelineBlitter::get_scratch(self : RasterPipelineBlitter) -> PipelineScratch {
+  match self.scratch {
+    Some(s) => s
+    None => {
+      let s = PipelineScratch::new()
+      self.scratch = Some(s)
+      s
+    }
   }
 }
 
@@ -245,7 +260,7 @@ fn RasterPipelineBlitter::mask_ctx(self : RasterPipelineBlitter) -> MaskCtx {
 ///|
 fn RasterPipelineBlitter::blit_mask(self : RasterPipelineBlitter, image : (Int, Int), bounds : ScreenIntRect, row_bytes : Int, clip : ScreenIntRect) -> Unit {
   let aa : AAMaskCtx = { p0: image.0, p1: image.1, stride: row_bytes, shift: bounds.x + bounds.y * row_bytes }
-  self.get_mask_rp().run(clip, aa, self.mask_ctx(), self.pixmap_src, self.pixmap)
+  self.get_mask_rp().run(clip, aa, self.mask_ctx(), self.pixmap_src, self.pixmap, self.get_scratch())
 }
 
 ///|
@@ -267,7 +282,7 @@ fn RasterPipelineBlitter::blit_anti_h(self : RasterPipelineBlitter, x : Int, y :
       alpha => {
         let rp = self.get_anti_h_rp()
         rp.ctx.current_coverage = fi(alpha) * (1.0 / 255.0)
-        rp.run({ x, y, width, height: 1 }, aa_mask_none, mask_ctx, self.pixmap_src, self.pixmap)
+        rp.run({ x, y, width, height: 1 }, aa_mask_none, mask_ctx, self.pixmap_src, self.pixmap, self.get_scratch())
       }
     }
     x += width
@@ -322,7 +337,7 @@ fn RasterPipelineBlitter::blit_rect(self : RasterPipelineBlitter, rect : ScreenI
         }
       }
     }
-    None => self.get_rect_rp().run(rect, aa_mask_none, self.mask_ctx(), self.pixmap_src, self.pixmap)
+    None => self.get_rect_rp().run(rect, aa_mask_none, self.mask_ctx(), self.pixmap_src, self.pixmap, self.get_scratch())
   }
 }
 

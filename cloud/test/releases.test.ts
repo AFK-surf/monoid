@@ -443,3 +443,30 @@ test("the deltas, raw installers and kept station archives are served by their n
   // what changes stays uncached
   for (const file of ["station-beta.json", "mac/beta/latest.json", "beta/stillfail-station-linux-x64.tar.gz"]) assert.ok(!VERSIONED.test(file), file);
 });
+
+test("upstreamRelease cancels unread response bodies on non-200/206/416 answers", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = 0;
+  try {
+    for (const status of [404, 403, 429]) {
+      globalThis.fetch = async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("unused"));
+            },
+            cancel() {
+              cancelled++;
+            },
+          }),
+          { status },
+        );
+      const answer = await upstreamRelease(new Request("https://cloud.example/releases/station.json"), "https://upstream.test/releases", "station.json");
+      assert.equal(answer.status, 404);
+      assert.deepEqual(await answer.json(), { error: "release_not_found" });
+    }
+    assert.equal(cancelled, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

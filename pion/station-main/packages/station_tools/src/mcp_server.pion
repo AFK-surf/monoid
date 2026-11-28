@@ -163,7 +163,7 @@ fn rpc_error_reply(status : Int, id : base_codec::Json, code : Int, message : St
   }
 }
 
-fn tool_result_json(reply : ToolReply, ended_meta : Option[base_codec::Json]) -> base_codec::Json {
+pub fn tool_result_json(reply : ToolReply, ended_meta : Option[base_codec::Json]) -> base_codec::Json {
   let content_arr : Array[base_codec::Json] = []
   for i in 0..<reply.content.length() {
     content_arr.push(content_item_to_json(reply.content[i]))

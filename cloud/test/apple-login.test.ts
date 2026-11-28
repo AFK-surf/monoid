@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ulid } from "ulid";
+import { exportPKCS8, generateKeyPair } from "jose";
+import { appleIdentity, revokeAppleToken } from "../src/apple.ts";
 import { digest, randomSecret, type Tokens } from "../src/auth.ts";
+import type { Env } from "../src/env.ts";
 import { harness } from "./harness.ts";
 
 type H = Awaited<ReturnType<typeof harness>>;
@@ -392,5 +395,41 @@ test("device login with Apple works end-to-end and without Apple configured retu
     assert.equal(tokens.email, "only-apple@privaterelay.appleid.com");
   } finally {
     await appleOnly.close();
+  }
+});
+
+test("appleIdentity and revokeAppleToken cancel unread response bodies on success and error", async () => {
+  const { privateKey } = await generateKeyPair("ES256", { extractable: true });
+  const env = {
+    PUBLIC_ORIGIN: "https://relay.example",
+    APPLE_CLIENT_ID: "test-apple-services",
+    APPLE_TEAM_ID: "TEAMID1234",
+    APPLE_KEY_ID: "KEYID12345",
+    APPLE_PRIVATE_KEY: await exportPKCS8(privateKey),
+  } as unknown as Env;
+  const originalFetch = globalThis.fetch;
+  let cancelled = 0;
+  const unreadBody = () =>
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("unused"));
+      },
+      cancel() {
+        cancelled++;
+      },
+    });
+  try {
+    globalThis.fetch = async () => new Response(unreadBody(), { status: 400 });
+    await assert.rejects(() => appleIdentity(env, "bad-code", "nonce-1", ""), /apple_exchange_failed/);
+
+    globalThis.fetch = async () => new Response(unreadBody(), { status: 200 });
+    await revokeAppleToken(env, "rt-ok");
+
+    globalThis.fetch = async () => new Response(unreadBody(), { status: 500 });
+    await assert.rejects(() => revokeAppleToken(env, "rt-fail"), /apple_revoke_failed_500/);
+
+    assert.equal(cancelled, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

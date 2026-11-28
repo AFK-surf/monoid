@@ -261,6 +261,42 @@ fn f2u16(x : Float) -> Int {
 }
 
 ///|
+/// Per-blitter lazily allocated scratch buffers shared across all scanlines of one draw call.
+priv struct PipelineScratch {
+  mut highp : HighPScratch?
+  mut lowp : LowPScratch?
+}
+
+///|
+fn PipelineScratch::new() -> PipelineScratch {
+  { highp: None, lowp: None }
+}
+
+///|
+fn PipelineScratch::highp(self : PipelineScratch) -> HighPScratch {
+  match self.highp {
+    Some(s) => s
+    None => {
+      let s = HighPScratch::new()
+      self.highp = Some(s)
+      s
+    }
+  }
+}
+
+///|
+fn PipelineScratch::lowp(self : PipelineScratch) -> LowPScratch {
+  match self.lowp {
+    Some(s) => s
+    None => {
+      let s = LowPScratch::new()
+      self.lowp = Some(s)
+      s
+    }
+  }
+}
+
+///|
 priv struct RasterPipeline {
   stages : Array[Stage]
   low : Bool
@@ -284,13 +320,14 @@ fn RasterPipeline::run(
   mask_ctx : MaskCtx,
   pixmap_src : Pixmap,
   pixmap_dst : SubPixmap,
+  scratch : PipelineScratch,
 ) -> Unit {
   if self.stages.is_empty() {
     return
   }
   if self.low {
-    lowp_start(self.stages, rect, aa_mask_ctx, mask_ctx, self.ctx, pixmap_dst)
+    lowp_start(self.stages, rect, aa_mask_ctx, mask_ctx, self.ctx, pixmap_dst, scratch)
   } else {
-    highp_start(self.stages, rect, aa_mask_ctx, mask_ctx, self.ctx, pixmap_src, pixmap_dst)
+    highp_start(self.stages, rect, aa_mask_ctx, mask_ctx, self.ctx, pixmap_src, pixmap_dst, scratch)
   }
 }

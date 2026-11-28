@@ -2,7 +2,7 @@ import { ulid } from "ulid";
 import { digest, nowSeconds, randomSecret } from "../auth";
 import type { PendingInvitation, Role, WorkspaceView } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
-import { ADDED_MAIL_EVERY_SEC, INVITATION_TTL_SEC, LIMITS, LIST, MANAGERS, ROLES, emailsOf, fail, type AddedMail } from "./types";
+import { ADDED_MAIL_EVERY_SEC, INVITATION_TTL_SEC, LIMITS, LIST, MANAGERS, ROLES, emailsOf, fail, type AddedMail, type ChangedView } from "./types";
 
 // ── members, invitations, roles, and account deletion ───────────────────
 
@@ -23,8 +23,8 @@ export class DirectoryMembers {
     const mine = this.#db.role(sub, workspace, MANAGERS);
     if (!ROLES.includes(role)) fail(400, "invalid_role");
     if (role === "owner" && mine !== "owner") fail(403, "forbidden");
-    const { joined, added, already } = this.addEmails(sub, workspace, role, emailsOf(emails));
-    return { joined, added, already, view: this.#host.view(sub, workspace), mail: this.toMail(sub, workspace, joined, added, already, reportsSent) };
+    const { joined, added, already, view } = this.addEmails(sub, workspace, role, emailsOf(emails));
+    return { joined, added, already, view: this.#host.view(sub, workspace, view), mail: this.toMail(sub, workspace, joined, added, already, reportsSent) };
   }
 
   /**
@@ -79,7 +79,7 @@ export class DirectoryMembers {
   }
 
   /** addMembers once allowed: each email a member now, or as soon as it first signs in. */
-  addEmails(by: string, workspace: string, role: Role, wanted: string[]): { joined: string[]; added: string[]; already: string[] } {
+  addEmails(by: string, workspace: string, role: Role, wanted: string[]): { joined: string[]; added: string[]; already: string[]; view: ChangedView | null } {
     const joined: string[] = [];
     const added: string[] = [];
     const already: string[] = [];
@@ -110,8 +110,8 @@ export class DirectoryMembers {
         }
       }
     });
-    this.#host.changed(workspace, true, joined.flatMap((e) => this.#db.byEmail(e)));
-    return { joined, added, already };
+    const view = this.#host.changed(workspace, true, joined.flatMap((e) => this.#db.byEmail(e)));
+    return { joined, added, already, view };
   }
 
   /** Takes back an email added but not signed in yet. */
@@ -119,8 +119,7 @@ export class DirectoryMembers {
     this.#db.role(sub, workspace, MANAGERS);
     this.#db.run("DELETE FROM added WHERE workspace = ? AND email = ?", workspace, email.trim().toLowerCase());
     this.forgetMailRetry(workspace, email.trim().toLowerCase());
-    this.#host.changed(workspace, true);
-    return this.#host.view(sub, workspace);
+    return this.#host.view(sub, workspace, this.#host.changed(workspace, true));
   }
 
   async invite(sub: string, workspace: string, role: Role, email: string | null): Promise<{ token: string; id: string; expires_at: number }> {
@@ -169,8 +168,7 @@ export class DirectoryMembers {
       if (!existing) this.#db.run("INSERT INTO members (workspace, sub, role, added_at) VALUES (?, ?, ?, ?)", workspace, sub, row!.role, nowSeconds());
       else if (ROLES.indexOf(row!.role as Role) < ROLES.indexOf(existing.role as Role)) this.#db.run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", row!.role, workspace, sub);
     });
-    this.#host.changed(workspace, true);
-    return this.#host.view(sub, workspace);
+    return this.#host.view(sub, workspace, this.#host.changed(workspace, true));
   }
 
   /** Invitations waiting for this email: what someone sees right after signing in. */
@@ -195,8 +193,7 @@ export class DirectoryMembers {
       // As with the invitation's link, accepting grants its role without lowering one already held.
       else if (ROLES.indexOf(row!.role as Role) < ROLES.indexOf(existing.role as Role)) this.#db.run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", row!.role, workspace, sub);
     });
-    this.#host.changed(workspace, true);
-    return this.#host.view(sub, workspace);
+    return this.#host.view(sub, workspace, this.#host.changed(workspace, true));
   }
 
   declineById(email: string, id: string): void {
@@ -225,9 +222,9 @@ export class DirectoryMembers {
     this.#db.run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", role, workspace, target);
     // The credentials it holds name its old role: its stations take none of them from now on (it gets a new one).
     this.#host.revoke(workspace, "sub", target);
-    this.#host.changed(workspace, false);
+    const kept = this.#host.changed(workspace, false);
     this.#host.tell([target], LIST);
-    const view = this.#host.view(sub, workspace);
+    const view = this.#host.view(sub, workspace, kept);
     await this.#host.delivered();
     return view;
   }

@@ -1,0 +1,2741 @@
+// Slice 2B-2 unit & integration tests (R1 + R2 full coverage):
+// 1. Downgrade & real Ed25519 Safe-Mode `PendingAuthConfirm` hard install-order invariant
+//    (bump_cred_epoch -> install_pending_auth_confirm BEFORE auth.bump_workspace) + fail-closed reads.
+// 2. Mid-pending non-downgrade lock `authGen` bump re-anchoring (preserving confirmed_keys),
+//    Safe Mode exit preserving an unconfirmed Cloud downgrade (1:1 core.ts:1587-1592),
+//    second downgrade reset, and upgrade / drop clearing.
+// 3. Real `CloudSync::start_events_ws` partial patch suppression forcing full `/v1/workspaces/<ws>` reread +
+//    in-flight pre-Safe-Mode `/v1/workspaces/<ws>` (`req_seq <= boundary_seq` from `next_cloud_seq()`) rejection.
+// 4. Real `MeshStationTransport` monotonic `admitted_cred_epoch` vs per-live-link `live_admitted_cred_epoch`
+//    (initial `admitted_k`, in-place `exchange_k`, disconnect + reconnect) + SSE pause during un-admitted
+//    pending (20s virtual clock = 0 reconnects / 0 repeated `/chats`) + auto resume on admission.
+// 5. Strict `GET /threads/<id>/entries` `{last, entries}` validator across BOTH foreground `fetch_thread_k`
+//    and idle `prefetch_idle_k`, including integer overflow (`2147483648`, `99999999999999999999`).
+// 6. Independent `chatJobs` confirmation + event-driven post-admission on-demand refresh + real `/jobs?chats=0`
+//    `session` projection & authoritative empty `[]` replacing stale cached `agents[].jobs`.
+// 7. Cross-account `admitted_cred_epoch` isolation (Account A epoch 3 -> switch to Account B),
+//    canonical `address != id` Cloud roster confirmation, and native `extra_subs_provider` `(station, session)` refresh.
+
+import "base_codec"
+import "crypto"
+import "effect"
+import "form"
+import "lock"
+import "mesh"
+import "protocol"
+import "shell"
+import "sql"
+import "wire"
+
+let DA_WS1 : String = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+let DA_ST1 : String = "01ARZ3NDEKTSV4RRFFQ69G5FAV/st-da-1"
+
+fn da_arr_len(j : base_codec::Json, key : String) -> Int {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Arr(xs)) => xs.length()
+    _ => -1
+  }
+}
+
+fn da_seed_bytes(tag : Int) -> Bytes {
+  let out = Bytes::new(32)
+  for i in 0..<32 {
+    out[i] = ((tag + i * 13) & 0xFF) as Byte
+  }
+  out
+}
+
+struct DaLockKit {
+  alice_seed : Bytes
+  bob_dev_id : String
+  bob_key : String
+  genesis : form::Json
+  genesis_hash : String
+}
+
+fn da_make_lock_kit(ws_id : String) -> DaLockKit {
+  let alice_seed = da_seed_bytes(0x41)
+  let bob_seed = da_seed_bytes(0x42)
+  let alice_key = ed25519_key_id(alice_seed)
+  let bob_key = ed25519_key_id(bob_seed)
+  let alice_dev_id = hex_64("a")
+  let bob_dev_id = hex_64("b")
+  let g_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws_id)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("sub-alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("sub-alice")),
+              ("email", form::Json::Str("alice@still.fail")),
+              ("role", form::Json::Str("owner")),
+            ]),
+            form::Json::Obj([
+              ("sub", form::Json::Str("sub-bob")),
+              ("email", form::Json::Str("bob@still.fail")),
+              ("role", form::Json::Str("admin")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(alice_dev_id)),
+              ("sub", form::Json::Str("sub-alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Alice Mac")),
+              ("sign_key", form::Json::Str(alice_key)),
+            ]),
+            form::Json::Obj([
+              ("id", form::Json::Str(bob_dev_id)),
+              ("sub", form::Json::Str("sub-bob")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Bob Linux")),
+              ("sign_key", form::Json::Str(bob_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let genesis = match sign_lock_entry(alice_seed, g_unsigned) {
+    Ok(e) => e
+    Err(e) => panic("sign genesis failed: " + e)
+  }
+  let genesis_hash = match lock::entry_hash(genesis, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("genesis hash failed")
+  }
+  DaLockKit::{
+    alice_seed: alice_seed,
+    bob_dev_id: bob_dev_id,
+    bob_key: bob_key,
+    genesis: genesis,
+    genesis_hash: genesis_hash,
+  }
+}
+
+fn da_sign_entry(
+  kit : DaLockKit,
+  ws_id : String,
+  seq : Int,
+  prev_hash : String,
+  kind : String,
+  body : form::Json,
+) -> (form::Json, String) {
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws_id)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("prev", form::Json::Str(prev_hash)),
+    ("at", form::Json::Num((1790000000 + seq * 10).to_double())),
+    ("kind", form::Json::Str(kind)),
+    ("body", body),
+  ])
+  let signed = match sign_lock_entry(kit.alice_seed, unsigned) {
+    Ok(e) => e
+    Err(e) => panic("sign " + kind + " failed: " + e)
+  }
+  let h = match lock::entry_hash(signed, native_lock_crypto()) {
+    Ok(v) => v
+    Err(_) => panic("hash " + kind + " failed")
+  }
+  (signed, h)
+}
+
+fn da_seed_chat(
+  db : sql::Sql,
+  st : String,
+  cid : String,
+  th : Int,
+  sess : String,
+  raw_json : String,
+) -> Unit {
+  let _ = db.run(sql_chat_upsert(), params=[
+    base_codec::json_str(st),
+    base_codec::json_str(cid),
+    base_codec::json_int(0),
+    base_codec::json_num(1.0),
+    base_codec::json_int(th),
+    base_codec::json_str(sess),
+    base_codec::json_null(),
+    base_codec::json_int64(1700000005000L),
+    base_codec::json_null(),
+    base_codec::json_int(0),
+    base_codec::json_int(0),
+    base_codec::json_int(0),
+    base_codec::json_null(),
+    base_codec::json_int(0),
+    base_codec::json_int(0),
+    base_codec::json_str(raw_json),
+  ])
+}
+
+fn da_seed_core(rt : effect::Runtime, tr : StationTransport) -> (SimAccountDb, ClientCore, DaLockKit) {
+  let (sim, db) = make_sim_db(rt)
+  let kit = da_make_lock_kit(DA_WS1)
+  let core = ClientCore::new(DA_WS1, DA_ST1, rt, db, tr, fn() -> Unit {})
+  core.set_viewer("bob@still.fail", sub="sub-bob", role="admin", device_id=kit.bob_dev_id, device_sign_key=Some(kit.bob_key))
+  let _ = core.membership.set_account_sub("sub-bob")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "admin")]), req_seq=1L)
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "admin", [DA_ST1], sub="sub-bob"), req_seq=2L)
+  // Seed initial trusted lock chain (bob_dev_id is trusted!)
+  match core.apply_lock_chain([kit.genesis], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("seed genesis lock failed: " + e)
+  }
+  // Seed chat with stale pre-downgrade embedded `agents[].jobs`!
+  da_seed_chat(
+    db,
+    DA_ST1,
+    "c-admin-1",
+    7,
+    "sess-admin-1",
+    "{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 +
+    "\",\"thread\":7,\"title\":\"Admin Private Chat\",\"lastActive\":1700000005000," +
+    "\"agents\":[{\"id\":\"a1\",\"jobs\":[{\"id\":\"job-stale-cached\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"stale-admin-job\",\"command\":\"rm -rf\"}]}]}",
+  )
+  let _ = db.run(sql_entry_put(), params=[
+    base_codec::json_str(DA_ST1),
+    base_codec::json_int(7),
+    base_codec::json_int(1),
+    base_codec::json_str("{\"thread\":7,\"n\":1,\"ts\":1700000005000,\"role\":\"user\",\"body\":\"secret admin note\"}"),
+  ])
+  let _ = db.run(sql_job_upsert(), params=[
+    base_codec::json_str(DA_ST1),
+    base_codec::json_str("job-admin-1"),
+    base_codec::json_str("sess-admin-1"),
+    base_codec::json_int(1),
+    base_codec::json_int(1),
+    base_codec::json_int(7),
+    base_codec::json_str("{\"id\":\"job-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"state\":\"running\",\"command\":\"deploy\"}"),
+  ])
+  (sim, core, kit)
+}
+
+test "2B-2.1: Downgrade & real Ed25519 Safe Mode install PendingAuthConfirm BEFORE auth.bump_workspace and fail-closed suppress reads" {
+  let rt = effect::Runtime::new()
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
+
+  // Pre-downgrade reads succeed
+  debug_assert(!mt_is_waiting(mt_sub(core, 1L, "workspace", [("workspace", base_codec::json_str(DA_WS1))])), "workspace readable before downgrade")
+  debug_assert(!mt_is_waiting(mt_sub(core, 2L, "stations", [("scope", base_codec::json_str(DA_WS1))])), "stations readable before downgrade")
+  debug_assert(!mt_is_waiting(mt_sub(core, 3L, "chats", [("scope", base_codec::json_str(DA_WS1))])), "chats readable before downgrade")
+  debug_assert(!mt_is_waiting(mt_sub(core, 4L, "chat", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chat readable before downgrade")
+  debug_assert(!mt_is_waiting(mt_sub(core, 5L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chatJobs readable before downgrade")
+
+  // Register boundary observer BEFORE downgrade: inside callback, PendingAuthConfirm MUST ALREADY be active!
+  let mut observed_boundary_count = 0
+  let mut pending_installed_before_bump = false
+  let mut req_epoch_matches_cred_epoch = false
+  let mut reads_already_gated_in_cb = false
+  let _ = core.auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
+    match ev {
+      AuthBoundaryEvent::Workspace(ws, ag) | AuthBoundaryEvent::WorkspaceAndVault(ws, ag, _) => {
+        if ws == DA_WS1 {
+          observed_boundary_count += 1
+          match core.membership.pending_auth_confirm_of(DA_WS1) {
+            Some(p) => {
+              pending_installed_before_bump = p.gen == ag.to_int64()
+              req_epoch_matches_cred_epoch = p.required_cred_epoch == core.membership.cred_epoch_of(DA_WS1) && p.required_cred_epoch >= 2L
+              reads_already_gated_in_cb = !core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1) && !core.can_read_station_key(DA_ST1, "chats:" + DA_ST1)
+            }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  })
+
+  // Downgrade admin -> member via /v1/me
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  debug_assert(observed_boundary_count == 1, "auth.bump_workspace fired once on downgrade")
+  debug_assert(pending_installed_before_bump, "HARD INVARIANT: PendingAuthConfirm installed BEFORE auth.bump_workspace")
+  debug_assert(req_epoch_matches_cred_epoch, "HARD INVARIANT: cred_epoch bumped before PendingAuthConfirm")
+  debug_assert(reads_already_gated_in_cb, "HARD INVARIANT: reads already gated inside boundary subscriber")
+
+  // All unconfirmed topics & RPCs fail-closed while PendingAuthConfirm is active
+  debug_assert(mt_is_waiting(mt_sub(core, 11L, "workspace", [("workspace", base_codec::json_str(DA_WS1))])), "workspace gated")
+  debug_assert(mt_is_waiting(mt_sub(core, 12L, "stations", [("scope", base_codec::json_str(DA_WS1))])), "stations gated")
+  debug_assert(mt_is_waiting(mt_sub(core, 13L, "chats", [("scope", base_codec::json_str(DA_WS1))])), "chats gated")
+  debug_assert(mt_is_waiting(mt_sub(core, 14L, "chat", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chat gated")
+  debug_assert(mt_is_waiting(mt_sub(core, 15L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])), "chatJobs gated")
+  debug_assert(mt_is_waiting(mt_sub(core, 16L, "longJobs", [("scope", base_codec::json_str(DA_WS1))])), "longJobs gated")
+  mt_expect_err_code(
+    mt_call(core, 17L, "chat.open", base_codec::json_obj([("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])),
+    "auth_confirm_pending",
+    "chat.open gated while pending",
+  )
+  let win = mt_expect_ok_json(mt_call(core, 18L, "chats.window", base_codec::json_obj([("stations", base_codec::json_arr([base_codec::json_str(DA_ST1)]))])), "chats.window gated")
+  debug_assert(da_arr_len(win, "rows") == 0, "chats.window suppresses pre-downgrade rows")
+  let sc = mt_expect_ok_json(mt_call(core, 19L, "search.chats", base_codec::json_obj([("station", base_codec::json_str(DA_ST1)), ("query", base_codec::json_str("Admin"))])), "search.chats gated")
+  debug_assert(da_arr_len(sc, "items") == 0, "search.chats suppresses pre-downgrade chats")
+
+  // Real Ed25519 lock-driven Safe Mode entry (`device.remove` revoking bob_dev_id) ALSO obeys hard install-order invariant!
+  pending_installed_before_bump = false
+  req_epoch_matches_cred_epoch = false
+  reads_already_gated_in_cb = false
+  let (e1_revoke, _) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device.remove failed: " + e)
+  }
+  debug_assert(pending_installed_before_bump && req_epoch_matches_cred_epoch && reads_already_gated_in_cb, "Real lock Safe Mode installs PendingAuthConfirm BEFORE auth.bump_workspace")
+}
+
+test "2B-2.2: Mid-pending lock re-anchoring, Safe Mode exit preserving unconfirmed Cloud downgrade (core.ts:1587-1592), second downgrade reset, and upgrade/drop clear" {
+  let rt = effect::Runtime::new()
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
+
+  // 1. Enter Safe Mode via real lock (`device.remove` bob_dev_id)
+  let (e1_revoke, h1) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device.remove failed: " + e)
+  }
+  let p0 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("expected pending") }
+  let gen0 = p0.gen
+  let ep0 = p0.required_cred_epoch
+
+  // Confirm chats:<st> at (gen0, ep0)
+  debug_assert(core.confirm_station_auth_key(DA_WS1, "chats:" + DA_ST1, gen0, ep0), "confirm chats:<st>")
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> readable")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 still unconfirmed")
+
+  // 2. Mid-pending non-downgrade lock bump (`member` added): re-anchors gen preserving confirmed_keys!
+  let (e2_station, h2) = da_sign_entry(
+    kit,
+    DA_WS1,
+    2,
+    h1,
+    "member",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-carol")),
+      ("email", form::Json::Str("carol@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply station add failed: " + e)
+  }
+  let p1 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("pending still active") }
+  debug_assert(p1.gen == gen0 + 1L, "pending.gen re-anchored to new authGen")
+  debug_assert(p1.required_cred_epoch == ep0, "required_cred_epoch unchanged on non-downgrade lock change")
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "already confirmed key preserved across lock re-anchor")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "unconfirmed key stays gated across lock re-anchor")
+
+  // 3. Second downgrade (`admin -> member` via /v1/me) clears confirmed_keys and advances required_cred_epoch!
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  let p2 = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(p) => p; None => panic("pending reset") }
+  debug_assert(p2.required_cred_epoch > ep0, "second downgrade bumps required_cred_epoch")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "second downgrade clears confirmed_keys")
+  // Confirm chats:<st> (but NOT workspace:<ws>!) before exiting Safe Mode:
+  debug_assert(core.confirm_station_auth_key(DA_WS1, "chats:" + DA_ST1, p2.gen, p2.required_cred_epoch), "confirm chats:<st> only")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace:<ws> still unconfirmed")
+
+  // 4. [Opus P1-2] Exiting Safe Mode (`device` re-adding bob_dev_id) while Cloud downgrade is UNCONFIRMED
+  //    MUST preserve PendingAuthConfirm, re-anchor gen, clear confirmed_keys, and trigger workspace refresh!
+  let mut ws_refresh_triggered_on_exit = false
+  core.set_on_workspace_refresh(fn(w : String) -> Unit { if w == DA_WS1 { ws_refresh_triggered_on_exit = true } })
+  let (e3_restore, h3) = da_sign_entry(
+    kit,
+    DA_WS1,
+    3,
+    h2,
+    "device",
+    form::Json::Obj([
+      ("id", form::Json::Str(kit.bob_dev_id)),
+      ("sub", form::Json::Str("sub-bob")),
+      ("kind", form::Json::Str("app")),
+      ("label", form::Json::Str("Bob Linux")),
+      ("sign_key", form::Json::Str(kit.bob_key)),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply device restore failed: " + e)
+  }
+  let p3 = match core.membership.pending_auth_confirm_of(DA_WS1) {
+    Some(p) => p
+    None => panic("Opus P1-2: exiting Safe Mode MUST NOT clear an unconfirmed Cloud downgrade!")
+  }
+  debug_assert(p3.gen == core.auth.workspace_auth_gen(DA_WS1).to_int64(), "re-anchored to post-exit authGen")
+  debug_assert(ws_refresh_triggered_on_exit, "Safe Mode exit with unconfirmed Cloud downgrade re-fetches workspace")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace stays gated")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "confirmed_keys cleared per core.ts:1589")
+
+  // 5. Once workspace:<ws> IS confirmed, exiting Safe Mode clears PendingAuthConfirm cleanly!
+  let (e4_revoke2, h4) = da_sign_entry(
+    kit,
+    DA_WS1,
+    4,
+    h3,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore, e4_revoke2], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("second revoke failed: " + e)
+  }
+  let ws_seq = core.membership.next_cloud_seq()
+  let req_ep4 = match core.membership.required_cred_epoch_of(DA_WS1) { Some(e) => e; None => panic("pending expected") }
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1], sub="sub-bob"), req_seq=ws_seq, captured_cred_epoch=req_ep4)
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace confirmed")
+  let (e5_restore2, _) = da_sign_entry(
+    kit,
+    DA_WS1,
+    5,
+    h4,
+    "device",
+    form::Json::Obj([
+      ("id", form::Json::Str(kit.bob_dev_id)),
+      ("sub", form::Json::Str("sub-bob")),
+      ("kind", form::Json::Str("app")),
+      ("label", form::Json::Str("Bob Linux")),
+      ("sign_key", form::Json::Str(kit.bob_key)),
+    ]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke, e2_station, e3_restore, e4_revoke2, e5_restore2], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("second restore failed: " + e)
+  }
+  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "Safe Mode exit clears PendingAuthConfirm when Cloud downgrade already confirmed")
+
+  // 6. Upgrade member -> admin and workspace drop both clear PendingAuthConfirm immediately
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "admin")]), req_seq=core.membership.next_cloud_seq())
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "admin -> member re-arms pending")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "upgrade member -> owner clears PendingAuthConfirm")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=core.membership.next_cloud_seq())
+  debug_assert(core.membership.has_pending_auth_confirm(DA_WS1), "owner -> member re-arms pending")
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", []), req_seq=core.membership.next_cloud_seq())
+  debug_assert(!core.membership.has_pending_auth_confirm(DA_WS1), "workspace drop clears PendingAuthConfirm")
+}
+
+test "2B-2.3: Real CloudSync WS suppresses partial patches during PendingAuthConfirm & in-flight pre-Safe-Mode workspace detail rejected" {
+  let rt = effect::Runtime::new()
+  let (_, core, kit) = da_seed_core(rt, core_offline_transport())
+
+  // [Codex P1-3] Allocate an in-flight `/v1/workspaces/<ws>` req_seq BEFORE entering Safe Mode!
+  let inflight_ws_seq = core.membership.next_cloud_seq()
+  let inflight_cred_ep = core.membership.cred_epoch_of(DA_WS1)
+
+  // Enter Safe Mode via real Ed25519 lock (`device.remove`): boundary_seq MUST be allocated from next_cloud_seq() > inflight_ws_seq!
+  let (e1_revoke, _) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "device.remove",
+    form::Json::Obj([("id", form::Json::Str(kit.bob_dev_id))]),
+  )
+  match core.apply_lock_chain([kit.genesis, e1_revoke], kit.genesis_hash) {
+    Ok(_) => ()
+    Err(e) => panic("enter safe mode failed: " + e)
+  }
+  let p = match core.membership.pending_auth_confirm_of(DA_WS1) { Some(x) => x; None => panic("pending expected") }
+  debug_assert(p.boundary_seq > inflight_ws_seq, "boundary_seq from next_cloud_seq() strictly exceeds pre-boundary in-flight req_seq")
+
+  // In-flight pre-Safe-Mode `/v1/workspaces/<ws>` arrives late (both with cred_epoch and with cred_epoch=0): MUST be rejected!
+  let stale_ws = mt_make_ws(DA_WS1, "Stale Pre-SafeMode", "admin", [DA_ST1], sub="sub-bob")
+  match core.commit_cloud_workspace(stale_ws, req_seq=inflight_ws_seq, captured_cred_epoch=inflight_cred_ep) {
+    Ok(committed) => debug_assert(!committed, "pre-Safe-Mode in-flight workspace detail rejected (cred_epoch + seq)")
+    Err(e) => panic("unexpected err: " + e)
+  }
+  match core.commit_cloud_workspace(stale_ws, req_seq=inflight_ws_seq) {
+    Ok(committed) => debug_assert(!committed, "pre-Safe-Mode in-flight workspace detail rejected even without captured_cred_epoch")
+    Err(e) => panic("unexpected err: " + e)
+  }
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace stays unconfirmed")
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "stations stays unconfirmed")
+
+  // Real CloudSync::start_events_ws suppresses partial `station` WS events while PendingAuthConfirm is active
+  // and forces a full `GET /v1/workspaces/<ws>` reread instead!
+  let mock_db = MockCloudDb::new()
+  let mut ws_fetches = 0
+  let mut open_ws_id : Int64 = 0L
+  let mut pending_ws_read : Option[Int64] = None
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "ws.open" {
+        open_ws_id = 50L
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(50))]))
+      } else if op == "ws.next" {
+        pending_ws_read = Some(id)
+      } else if op == "fetch" {
+        let url = j_str(args, "url")
+        if url.contains("/v1/workspaces/" + DA_WS1) {
+          ws_fetches += 1
+          s.answer(
+            id,
+            base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+            bytes=Some(("{\"id\":\"" + DA_WS1 + "\",\"name\":\"Core Post\",\"role\":\"admin\",\"rev\":5,\"members\":[{\"sub\":\"sub-bob\",\"email\":\"bob@still.fail\",\"role\":\"admin\"}],\"stations\":[{\"id\":\"" + DA_ST1 + "\",\"name\":\"Station 1\",\"online\":true}]}").to_bytes()),
+          )
+        } else {
+          s.answer(
+            id,
+            base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+            bytes=Some(("{\"user\":{\"sub\":\"sub-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\"},\"workspaces\":[{\"id\":\"" + DA_WS1 + "\",\"name\":\"Core\",\"role\":\"admin\"}]}").to_bytes()),
+          )
+        }
+      } else {
+        s.answer(id, base_codec::json_obj([]))
+      }
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult { mock_db.handle_sql(op, args) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  holder.push(sh)
+  let cdb = match sql::Sql::open(sh, "cs-patch-suppress") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(sh, cdb, "https://cloud.example", token="tok-1")
+  cs.set_has_pending_auth_confirm_getter(fn(w : String) -> Bool { core.membership.has_pending_auth_confirm(w) })
+  cs.set_cred_epoch_getter(fn(w : String) -> Int64 { core.membership.cred_epoch_of(w) })
+  cs.set_seq_provider(fn() -> Int64 { core.membership.next_cloud_seq() })
+  cs.set_commit_hooks(
+    on_workspace_fetched_with_epoch=Some(fn(w : CloudWorkspace, rseq : Int64, cep : Int64) -> Unit {
+      let _ = core.commit_cloud_workspace(w, req_seq=rseq, captured_cred_epoch=cep)
+    }),
+  )
+  cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {})
+  let _ = rt.run_ready()
+  debug_assert(open_ws_id == 50L, "ws opened")
+  // Deliver partial `station` WS event while PendingAuthConfirm is active -> MUST force full GET /v1/workspaces/<ws>!
+  match pending_ws_read {
+    Some(rid) => {
+      pending_ws_read = None
+      sh.answer(
+        rid,
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("text")),
+          ("text", base_codec::json_str("{\"type\":\"station\",\"workspace\":\"" + DA_WS1 + "\",\"id\":\"" + DA_ST1 + "\",\"online\":false}")),
+        ]),
+      )
+    }
+    None => panic("expected ws.read")
+  }
+  let _ = rt.run_ready()
+  debug_assert(ws_fetches >= 1, "CloudSync forced full GET /v1/workspaces/<ws> on station patch during PendingAuthConfirm")
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "post-boundary full /v1/workspaces/<ws> confirmed workspace:<ws>")
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "post-boundary full /v1/workspaces/<ws> confirmed stations:<ws>")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "station keys stay gated until admitted_cred_epoch")
+  cs.stop()
+}
+
+test "2B-2.4: Real MeshStationTransport admission (initial, exchange_k, reconnect) + SSE pause (0 reconnects/0 polling over 20s) + auto resume" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let mut local_ep_id = ""
+  let mut next_conn_id = 2
+  let mut next_stream_id = 10
+  let mut ctrl_stream_id = 0
+  let mut ctrl_reply_queue : Array[String] = []
+  let mut ctrl_pending_read : Option[Int64] = None
+  let mut reject_next_admit = true
+  let mut req_events_count = 0
+  let mut req_chats_count = 0
+  let mut req_entries_count = 0
+  let mut req_jobs_count = 0
+  let closed_conns : Map[String, Bool] = Map::new()
+  let stream_req_buf : Map[Int, String] = Map::new()
+  let stream_resp : Map[Int, String] = Map::new()
+  let stream_read_step : Map[Int, Int] = Map::new()
+  let peer_id = "111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000"
+
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      if op == "conn.close" {
+        let cid = match base_codec::json_get(args, "id") {
+          Some(v) => base_codec::json_stringify(v)
+          None => ""
+        }
+        if cid.length() > 0 {
+          closed_conns.set(cid, true)
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "storage.set" || op == "istream.reset" {
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let bseed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(bseed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(1))]))
+        return
+      }
+      if op == "iroh.connect" {
+        ctrl_stream_id = 0
+        ctrl_reply_queue = []
+        ctrl_pending_read = None
+        let cid = next_conn_id
+        next_conn_id += 1
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(cid))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        let sid = next_stream_id
+        next_stream_id += 1
+        if ctrl_stream_id == 0 {
+          ctrl_stream_id = sid
+        }
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(sid))]))
+        return
+      }
+      if op == "istream.write" {
+        let sid = j_int(args, "id")
+        let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+        if sid == ctrl_stream_id {
+          let reply_line = if reject_next_admit {
+            reject_next_admit = false
+            "{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"not admitted yet\"}\n"
+          } else {
+            "{\"ok\":true,\"station\":{\"id\":\"st-da-1\",\"name\":\"Station 1\"}}\n"
+          }
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some(reply_line.to_bytes()))
+            }
+            None => ctrl_reply_queue.push(reply_line)
+          }
+          return
+        }
+        let prev = match stream_req_buf.get(sid) { Some(p) => p; None => "" }
+        let full = prev + payload
+        stream_req_buf.set(sid, full)
+        if full.contains("/jobs?chats=0") {
+          req_jobs_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n[{\"id\":\"job-after-1\",\"session\":\"sess-admin-1\",\"state\":\"running\"}]")
+        } else if full.contains("/threads/7/entries") {
+          req_entries_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000009000,\"body\":\"post-downgrade\"}]}")
+        } else if full.contains("\"/chats") {
+          req_chats_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"chats\":[],\"entries\":[]}")
+        } else if full.contains("\"/events") {
+          req_events_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: ev-live\nevent: chat-shared\ndata: {\"id\":\"c-live\",\"station\":\"" + DA_ST1 + "\",\"thread\":8,\"title\":\"Live\"}\n\n")
+        } else {
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{}")
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        let sid = j_int(args, "id")
+        if sid == ctrl_stream_id {
+          if ctrl_reply_queue.length() > 0 {
+            let line = ctrl_reply_queue[0]
+            let rest : Array[String] = []
+            for i in 1..<ctrl_reply_queue.length() { rest.push(ctrl_reply_queue[i]) }
+            ctrl_reply_queue = rest
+            s.answer(id, base_codec::json_obj([]), bytes=Some(line.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        let step = match stream_read_step.get(sid) { Some(n) => n; None => 0 }
+        if step == 0 {
+          stream_read_step.set(sid, 1)
+          let body = match stream_resp.get(sid) { Some(b) => b; None => "{\"status\":200,\"headers\":{}}\n{}" }
+          s.answer(id, base_codec::json_obj([]), bytes=Some(body.to_bytes()))
+        } else {
+          s.answer(id, base_codec::json_obj([]), bytes=None)
+        }
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" {
+        let cid = match base_codec::json_get(args, "id") {
+          Some(v) => base_codec::json_stringify(v)
+          None => ""
+        }
+        if closed_conns.get(cid).is_some() {
+          return shell::AskResult::Ok(base_codec::json_obj([("kind", base_codec::json_str("peer")), ("reason", base_codec::json_str("peer_reset"))]))
+        }
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x33 + i * 7) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let db = match sql::Sql::open(sh, "mesh-admit-epoch-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let core = ClientCore::new(DA_WS1, DA_ST1, rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  let _ = core.membership.set_account_sub("sub-alice")
+  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=1L)
+
+  let mut fail_cred_attempts = 0
+  let mut cred_fetch_attempts = 0
+  let cfg = MeshStationConfig::new(
+    DA_WS1,
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      cred_fetch_attempts += 1
+      if fail_cred_attempts > 0 {
+        fail_cred_attempts -= 1
+        ck(effect::Exit::Failed(effect::EffectError::Custom("transient_cloud_503")))
+        return
+      }
+      ck(effect::Exit::Succeeded("cred-ep-" + core.membership.cred_epoch_of(DA_WS1).to_string()))
+    },
+    get_cred_epoch=Some(fn() -> Int64 { core.membership.cred_epoch_of(DA_WS1) }),
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+  core.attach_mesh_station_transport(DA_ST1, ctrl, workspace=DA_WS1)
+
+  // 0. lock_unconfirmed MUST NOT advance admitted_cred_epoch or live_admitted_cred_epoch!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(ctrl.admitted_cred_epoch() == 0L && ctrl.live_admitted_cred_epoch() == 0L, "lock_unconfirmed must NOT advance epoch")
+  ctrl.drop_link(reason="retry_after_unconfirmed")
+
+  // 1. Initial Link::admitted_k success sets both admitted_cred_epoch & live_admitted_cred_epoch to 1L
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(ctrl.admitted_cred_epoch() == 1L && ctrl.live_admitted_cred_epoch() == 1L, "initial admitted_k sets epoch=1")
+
+  // Start live SSE and subscribe to chats, chat(7), chatJobs(7), then downgrade owner -> member (required=2L)
+  core.start()
+  let _ = rt.run_ready()
+  let _ = mt_sub(core, 1L, "chats", [("scope", base_codec::json_str(DA_WS1))])
+  let _ = mt_sub(core, 2L, "chat", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])
+  let _ = mt_sub(core, 3L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])
+  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  debug_assert(mt_opt_i64_is(core.membership.required_cred_epoch_of(DA_WS1), 2L), "downgrade requires cred_epoch=2")
+
+  // [Opus P1-3] SSE MUST be paused while un-admitted: advancing virtual clock 20s produces ZERO SSE reconnects and ZERO repeated GET /chats!
+  debug_assert(core.events.is_paused_for_admission(), "SSE paused immediately on un-admitted downgrade")
+  let ev_before_wait = req_events_count
+  let chats_before_wait = req_chats_count
+  for _ in 0..<10 {
+    rt.advance(2000)
+    let _ = rt.run_ready()
+  }
+  debug_assert(req_events_count == ev_before_wait, "0 SSE reconnects over 20s while awaiting admission")
+  debug_assert(req_chats_count == chats_before_wait, "0 repeated GET /chats over 20s while awaiting admission")
+
+  // Old link (admitted=1 < required=2) rejects fetches & drops SSE data while passing `event: lock`!
+  let mut snap_err = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => snap_err = m
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(snap_err == "admitted_cred_epoch_stale", "old-link snapshot rejected")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "old link NEVER confirms chats:<st>")
+
+  let mut saw_lock_sse = false
+  core.events.set_lock_apply_hook(fn(_j : base_codec::Json) -> Result[Unit, String] { saw_lock_sse = true; Ok(()) })
+  let sse_evs : Array[wire::Event] = [
+    wire::Event::{ id: Some("old-1"), name: "chat-shared", data: "{\"id\":\"c-old\",\"station\":\"" + DA_ST1 + "\",\"thread\":99,\"title\":\"Old Link Leak\"}" },
+    wire::Event::{ id: Some("old-2"), name: "lock", data: "{\"workspace\":\"" + DA_WS1 + "\",\"head\":\"deadbeef\"}" },
+  ]
+  match core.events.process_sse_chunk_with_cap(sse_evs, None) {
+    Ok(ok) => debug_assert(!ok, "old-link SSE chat-shared dropped")
+    Err(e) => panic("unexpected sse err: " + e)
+  }
+  debug_assert(mock_db.chats.get(DA_ST1 + ":c-old").is_none() && saw_lock_sse, "0 DB writes from old-link SSE data + event: lock passed")
+
+  // 2. In-place Link::exchange_k advances to 2L -> resumes SSE + triggers EXACTLY 1 deduped GET /chats, GET /entries, GET /jobs!
+  let chats_before_ex = req_chats_count
+  let entries_before_ex = req_entries_count
+  let jobs_before_ex = req_jobs_count
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.refresh_credential_k("cred-ep-2", fn(_ : effect::Exit[MeshAdmission]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    }, cred_epoch=Some(2L))
+  })
+  let _ = rt.run_ready()
+  debug_assert(ctrl.admitted_cred_epoch() == 2L && ctrl.live_admitted_cred_epoch() == 2L, "exchange_k sets epoch=2")
+  debug_assert(req_chats_count == chats_before_ex + 1, "post-downgrade GET /chats fired exactly once (deduped with SSE on_connected)")
+  debug_assert(req_entries_count == entries_before_ex + 1, "post-downgrade GET /threads/7/entries fired once")
+  debug_assert(req_jobs_count == jobs_before_ex + 1, "post-downgrade independent GET /jobs?chats=0 fired once")
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed")
+
+  // 3. [Opus P0 + Codex P1-1] Disconnect (`live_admitted_cred_epoch` drops to 0L while monotonic `admitted_cred_epoch` stays 2L)
+  // + second downgrade to required=3L + 2 transient cred fetch failures:
+  // NO manual `connect_k`! `ensure_admitted_for_epoch` drives redial with backoff (500ms -> 1000ms),
+  // re-admits at epoch 3, wakes paused SSE, and confirms `chats:<st>` automatically!
+  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=3L)
+  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=4L)
+  let req_ep3 = match core.membership.required_cred_epoch_of(DA_WS1) {
+    Some(e) => e
+    None => panic("expected pending required epoch after 2nd downgrade")
+  }
+  debug_assert(req_ep3 >= 3L, "2nd downgrade bumped required_cred_epoch >= 3")
+  debug_assert(core.events.is_paused_for_admission(), "SSE paused while awaiting epoch " + req_ep3.to_string())
+  ctrl.drop_link(reason="cred_refresh_failed")
+  debug_assert(ctrl.live_admitted_cred_epoch() == 0L, "disconnected link has live_admitted_cred_epoch=0")
+  debug_assert(ctrl.live_link_identity().0 == 0, "disconnected link has uid=0")
+  debug_assert(ctrl.admitted_cred_epoch() == 2L, "monotonic admitted_cred_epoch preserved across drop_link")
+
+  // Simulate 2 transient credential fetch failures before succeeding on the 3rd dial attempt!
+  fail_cred_attempts = 2
+  let attempts_before = cred_fetch_attempts
+  let chats_before_auto = req_chats_count
+  let ev_before_auto = req_events_count
+  ctrl.ensure_admitted_for_epoch(rt, req_ep3, fn() -> Bool { true })
+  let _ = rt.run_ready()
+  debug_assert(cred_fetch_attempts == attempts_before + 1 && ctrl.live_admitted_cred_epoch() == 0L, "1st auto-dial fails transiently")
+  rt.advance(500)
+  let _ = rt.run_ready()
+  debug_assert(cred_fetch_attempts == attempts_before + 2 && ctrl.live_admitted_cred_epoch() == 0L, "2nd auto-dial after 500ms backoff fails transiently")
+  rt.advance(1000)
+  let _ = rt.run_ready()
+  debug_assert(cred_fetch_attempts == attempts_before + 3, "3rd auto-dial after 1000ms backoff succeeded")
+  debug_assert(ctrl.admitted_cred_epoch() == req_ep3 && ctrl.live_admitted_cred_epoch() == req_ep3, "auto-admitted at epoch " + req_ep3.to_string() + " with zero manual connect_k")
+  debug_assert(ctrl.live_link_identity().0 != 0 && ctrl.live_link_identity().1 == req_ep3, "live_link_identity reports concrete uid + epoch")
+  debug_assert(!core.events.is_paused_for_admission() && req_events_count > ev_before_auto, "paused SSE resumed automatically after auto-admission")
+  debug_assert(req_chats_count > chats_before_auto && core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> automatically refreshed & confirmed")
+
+  // [Codex P1-2] Directly closing underlying link (`!link.usable()`) MUST clear `live_admitted_cred_epoch` to 0L!
+  match ctrl.link() {
+    Some(lk) => {
+      lk.close(reason="peer_reset")
+      debug_assert(ctrl.live_admitted_cred_epoch() == 0L && ctrl.live_link_identity().0 == 0, "!usable() link immediately clears live_admitted_cred_epoch & uid")
+    }
+    None => panic("expected active link before close")
+  }
+
+  core.stop()
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+}
+
+test "2B-2.5: Strict GET /threads/<id>/entries validator across foreground fetch_thread_k AND idle prefetch_idle_k (including integer overflow)" {
+  let rt = effect::Runtime::new()
+  let mut next_body = ""
+  let tr = StationTransport::{
+    request_k: fn(_ : String, _ : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: next_body.to_bytes() }))
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (sim, core, _) = da_seed_core(rt, tr)
+
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+
+  // Malformed, cross-thread, AND overflow (>2147483647 for thread/n, >9007199254740991 for last) payloads!
+  let bad_payloads : Array[String] = [
+    "[]",
+    "{}",
+    "{\"entries\":[]}",
+    "{\"last\":-1,\"entries\":[]}",
+    "{\"last\":1.5,\"entries\":[]}",
+    "{\"last\":1.0,\"entries\":[]}",
+    "{\"last\":\"1\",\"entries\":[]}",
+    "{\"last\":1e2,\"entries\":[]}",
+    "{\"last\":9007199254740992,\"entries\":[]}",
+    "{\"last\":99999999999999999999,\"entries\":[]}",
+    "{\"last\":1,\"entries\":{}}",
+    "{\"last\":1,\"entries\":[123]}",
+    "{\"last\":1,\"entries\":[{\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":null,\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":8,\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":2147483648,\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7.0,\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":\"7\",\"n\":1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":-1}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":2147483648}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":99999999999999999999}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1.5}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1.0}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":\"1\"}]}",
+  ]
+  core.events.dirty_threads.set(7, true)
+  let entries_before = sim.entry_count(DA_ST1, 7)
+  for i in 0..<bad_payloads.length() {
+    let raw = bad_payloads[i]
+    let parsed = match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic("bad test json: " + e)
+    }
+    debug_assert(!is_valid_thread_entries_payload(parsed, 7), "validator must reject: " + raw)
+    next_body = raw
+    let mut got_err = ""
+    let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      core.sync.fetch_thread_k(7, effect::priority_shown(), false, fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom(m)) => got_err = m
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+    let _ = rt.run_ready()
+    debug_assert(got_err == "malformed_thread_entries", "fetch_thread_k rejects " + raw + ", got " + got_err)
+    debug_assert(!core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "malformed payload NEVER confirms chat:<st>/7")
+    debug_assert(core.events.dirty_threads.get(7).is_some(), "malformed payload NEVER clears dirty_threads")
+  }
+
+  // [Opus P1-4] Idle `prefetch_idle_k` MUST ALSO reject cross-thread & overflow payloads with 0 DB writes!
+  let idle_bad : Array[String] = [
+    "{\"last\":1,\"entries\":[{\"thread\":8,\"n\":2,\"ts\":100,\"body\":\"cross-thread\"}]}",
+    "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":2147483648,\"ts\":100,\"body\":\"overflow\"}]}",
+  ]
+  for i in 0..<idle_bad.length() {
+    next_body = idle_bad[i]
+    let mut idle_err = ""
+    let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      core.sync.prefetch_idle_k(7, fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom(m)) => idle_err = m
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+    let _ = rt.run_ready()
+    debug_assert(idle_err == "malformed_thread_entries", "prefetch_idle_k must reject: " + idle_bad[i])
+  }
+  debug_assert(sim.entry_count(DA_ST1, 7) == entries_before, "0 DB writes across all malformed/cross-thread/overflow foreground & idle payloads")
+
+  // Valid empty list `{"last": 0, "entries": []}` MUST pass and confirm `chat:<st>/7`!
+  next_body = "{\"last\":0,\"entries\":[]}"
+  let mut empty_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_thread_k(7, effect::priority_shown(), false, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(0) => empty_ok = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(empty_ok && core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7") && core.events.dirty_threads.get(7).is_none(), "valid empty payload accepted & confirmed")
+
+  // Valid non-empty list via `prefetch_idle_k` commits cleanly!
+  next_body = "{\"last\":2,\"entries\":[{\"thread\":7,\"n\":2,\"ts\":1700000010000,\"body\":\"verified-idle\"}]}"
+  let mut idle_ok_n = -1
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.prefetch_idle_k(7, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => idle_ok_n = n
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(idle_ok_n == 1 && sim.entry_count(DA_ST1, 7) == entries_before + 1, "valid non-empty entries committed via prefetch_idle_k")
+}
+
+test "2B-2.6: Independent chatJobs confirmation, post-admission on-demand refresh, real session matching, and authoritative empty [] replacing stale agents[].jobs" {
+  let rt = effect::Runtime::new()
+  // Real station `/jobs?chats=0` format: keyed by `session` ONLY (no `thread` or `chat` field!)
+  let mut jobs_body = "[{\"id\":\"job-real-sess\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"real-session-job\",\"command\":\"pytest\"}]"
+  let mut jobs_reqs = 0
+  let mut chats_reqs = 0
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/chats" {
+        chats_reqs += 1
+        // Deliberately include inline `jobs` in `/chats` to prove `/chats` NEVER confirms `chatJobs`!
+        let b = "{\"chats\":[{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Member Chat\",\"lastActive\":1700000011000,\"agents\":[{\"id\":\"a1\",\"jobs\":[{\"id\":\"job-stale-cached\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"stale-admin-job\",\"command\":\"rm -rf\"}]}]}],\"entries\":[],\"jobs\":[{\"id\":\"job-inline\",\"session\":\"sess-admin-1\",\"state\":\"running\"}]}"
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: b.to_bytes() }))
+      } else if path.starts_with("/threads/7/entries") {
+        let b = "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000011000,\"body\":\"member entry\"}]}"
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: b.to_bytes() }))
+      } else if path == "/jobs?chats=0" {
+        jobs_reqs += 1
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: jobs_body.to_bytes() }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+
+  // Downgrade admin -> member and admit link at epoch 2 BEFORE subscribing to `chatJobs`!
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+  let _ = rt.run_ready()
+
+  // Also explicitly fetch `/threads/7/entries` — `chats:<st>` & `chat:<st>/7` confirmed, `chatJobs:<st>/7` MUST remain unconfirmed!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_thread_k(7, effect::priority_shown(), false, fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "GET /chats confirmed chats:<st>")
+  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "GET /entries confirmed chat:<st>/7")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs NEVER confirmed by /chats or /entries")
+  debug_assert(jobs_reqs == 0, "0 jobs fetches before chatJobs subscription")
+
+  // [Opus P0 + Codex P1-4] Subscribing to `chatJobs` AFTER post-downgrade admission (by `session`!)
+  // returns Waiting initially AND immediately triggers event-driven deduped on-demand `GET /jobs?chats=0`!
+  let ev1 = mt_sub(core, 30L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("session", base_codec::json_str("sess-admin-1"))])
+  debug_assert(mt_is_waiting(ev1), "chatJobs starts Waiting before jobs response")
+  let _ = rt.run_ready()
+  debug_assert(jobs_reqs == 1, "on-demand GET /jobs?chats=0 fired automatically (no permanent Waiting!)")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs confirmed after independent jobs fetch")
+
+  // [Codex P1-5] Hard-assert projected job contents: matches real `/jobs?chats=0` by `session` AND excludes stale cached `agents[].jobs`!
+  let v1 = mt_expect_val_json(mt_sub(core, 31L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("session", base_codec::json_str("sess-admin-1"))]), "chatJobs value with real session job")
+  let v1_s = base_codec::json_stringify(v1)
+  debug_assert(v1_s.contains("job-real-sess") && v1_s.contains("real-session-job"), "chatJobs projects real session-matched job: " + v1_s)
+  debug_assert(!v1_s.contains("job-stale-cached"), "authoritative /jobs?chats=0 MUST NOT leak stale cached agents[].jobs: " + v1_s)
+
+  // Now station returns authoritative EMPTY `[]` -> MUST replace all prior jobs and still NOT fall back to stale `agents[].jobs`!
+  jobs_body = "[]"
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  let v2 = mt_expect_val_json(mt_sub(core, 32L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs value after authoritative empty []")
+  debug_assert(da_arr_len(v2, "jobs") == 0, "authoritative empty [] clears jobs completely without falling back to stale agents[].jobs: " + base_codec::json_stringify(v2))
+  let _ = chats_reqs
+}
+
+test "2B-2.7: Cross-account admitted_cred_epoch isolation, canonical address!=id Cloud roster, and native extra_subs_provider session refresh" {
+  let rt = effect::Runtime::new()
+  let mut req_entries_7 = 0
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/chats" {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[],\"entries\":[]}".to_bytes() }))
+      } else if path.starts_with("/threads/7/entries") {
+        req_entries_7 += 1
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"last\":1,\"entries\":[{\"thread\":7,\"n\":1,\"ts\":1700000012000,\"body\":\"ok\"}]}".to_bytes() }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+
+  // 1. [Opus P1-1 + Codex P1-2] Account A (sub-bob) reaches admitted_cred_epoch = 3L, then logs out & Account B signs in!
+  core.on_station_admitted_cred_epoch(DA_ST1, 3L)
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 3L, "Account A admitted at epoch 3")
+  let (_, mem_db) = make_sim_db(rt)
+  core.switch_to_unauthenticated_db(mem_db)
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 0L, "logout clears station_admitted_epochs")
+
+  let (_, db_b) = make_sim_db(rt)
+  match core.switch_account_db(db_b, "sub-carol", target_workspace=Some(DA_WS1), target_station=Some(DA_ST1)) {
+    Ok(_) => ()
+    Err(e) => panic("switch_account_db B failed: " + e)
+  }
+  core.set_viewer("carol@still.fail", sub="sub-carol", role="owner")
+  core.attach_station_transport(DA_ST1, tr, workspace=DA_WS1)
+  let _ = core.commit_cloud_me(mt_make_me("sub-carol", "carol@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=1L)
+  // [Codex P1-6] Cloud roster uses short `id: "st-da-1"` whose canonical address is `DA_WS1 + "/st-da-1"` (`address != id`)!
+  let _ = core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "owner", ["st-da-1"], sub="sub-carol"), req_seq=2L)
+  da_seed_chat(
+    db_b,
+    DA_ST1,
+    "sess-carol-1",
+    7,
+    "sess-carol-1",
+    "{\"id\":\"sess-carol-1\",\"session\":\"sess-carol-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Carol Chat\",\"lastActive\":1700000012000}",
+  )
+
+  // Account B admits at epoch 1, then downgrades owner -> member (required_cred_epoch = 2L)!
+  core.on_station_admitted_cred_epoch(DA_ST1, 1L)
+  let _ = core.commit_cloud_me(mt_make_me("sub-carol", "carol@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  debug_assert(mt_opt_i64_is(core.membership.required_cred_epoch_of(DA_WS1), 2L), "Account B requires epoch 2")
+  debug_assert(core.station_admitted_cred_epoch(DA_ST1) == 1L, "Account B does NOT inherit Account A's epoch 3!")
+
+  let mut b_err = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => b_err = m
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(b_err == "admitted_cred_epoch_stale", "Account B old link (epoch 1) rejected despite Account A previously hitting epoch 3")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "Account B old link NEVER confirms chats")
+
+  // 2. [Codex P1-1 + P1-4] Register a native `(station, session)` chat subscription via `set_extra_subs_provider`!
+  core.set_extra_subs_provider(fn() -> Array[protocol::Topic] {
+    [
+      protocol::Topic::{
+        name: "chat",
+        params: [
+          ("station", base_codec::json_str(DA_ST1)),
+          ("session", base_codec::json_str("sess-carol-1")),
+        ],
+      },
+    ]
+  })
+  // Account B admits at epoch 2 -> auto refreshes `chats:<canonical>` AND resolves `(station, session)` -> `thread=7`!
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+  let _ = rt.run_ready()
+  debug_assert(req_entries_7 == 1, "extra_subs_provider (station, session) chat refreshed on post-downgrade admission")
+  debug_assert(core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/7"), "chat:<st>/7 confirmed via session subscription")
+
+  // 3. [Codex P1-6] `confirmed_station_briefs` checks canonical `address` (`DA_WS1/st-da-1`), NOT short `id` (`st-da-1`)!
+  let chats_val = mt_expect_val_json(mt_sub(core, 40L, "chats", [("scope", base_codec::json_str(DA_WS1))]), "chats readable with address!=id Cloud roster")
+  debug_assert(base_codec::json_stringify(chats_val).contains("Carol Chat"), "confirmed_station_briefs retains station when address!=id")
+}
+
+test "2B-2.8: Exact Link.uid binding rejects cross-link commits in SyncScheduler and SSE chunks after link swap" {
+  let rt = effect::Runtime::new()
+  let mut cur_uid = 10
+  let mut cur_ep = 2L
+  let pending_req : Array[(effect::Exit[HttpReply]) -> Unit] = []
+  let tr = StationTransport::{
+    request_k: fn(_ : String, _ : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      pending_req.push(k)
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (sim, core, _) = da_seed_core(rt, tr)
+  core.attach_station_transport(
+    DA_ST1,
+    tr,
+    workspace=DA_WS1,
+    admitted_cred_epoch_getter=Some(fn() -> Int64 { cur_ep }),
+    serving_link_getter=Some(fn() -> (Int, Int64) { (cur_uid, cur_ep) }),
+  )
+  // Downgrade admin -> member (requires epoch 2)
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+
+  // Dispatch GET /chats while serving link is uid=10, ep=2
+  let mut fetch_err = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => fetch_err = m
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_req.length() == 1, "snapshot request in-flight on link uid=10")
+
+  // Swap serving link to uid=11 (even with same ep=2!) BEFORE link 10's reply finishes!
+  cur_uid = 11
+  let cross_body = "[{\"id\":\"c-cross-link\",\"session\":\"s-cross\",\"station\":\"" + DA_ST1 + "\",\"thread\":88,\"title\":\"Cross-Link Leak\"}]"
+  (pending_req[0])(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: cross_body.to_bytes(),
+  }))
+  let _ = rt.run_ready()
+  debug_assert(fetch_err == "admitted_cred_epoch_stale", "response from swapped link uid=10 rejected, got: " + fetch_err)
+  debug_assert(sim.chats.get(DA_ST1 + ":c-cross-link").is_none(), "0 DB writes from swapped link")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "swapped link NEVER confirms chats:<st>")
+
+  // SSE chunk carrying expected_link_uid=10 after current link is uid=11 MUST be dropped with 0 DB writes!
+  let sse_evs : Array[wire::Event] = [
+    wire::Event::{ id: Some("swap-1"), name: "chat-shared", data: "{\"id\":\"c-sse-swap\",\"station\":\"" + DA_ST1 + "\",\"thread\":89,\"title\":\"Swapped SSE\"}" },
+  ]
+  match core.events.process_sse_chunk_with_cap(sse_evs, None, expected_link_uid=10) {
+    Ok(ok) => debug_assert(!ok, "SSE chunk from old link uid=10 rejected when current uid=11")
+    Err(e) => panic("unexpected sse err: " + e)
+  }
+  debug_assert(sim.chats.get(DA_ST1 + ":c-sse-swap").is_none(), "0 DB writes from swapped-link SSE chunk")
+}
+
+test "2B-2.9: Same-role /v1/me advancing ws_commit_seq mid-flight never strands PendingAuthConfirm Cloud confirmation" {
+  let rt = effect::Runtime::new()
+  let tr = StationTransport::{
+    request_k: fn(_ : String, _ : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+
+  let refresh_seqs : Array[(Int64, Int64)] = []
+  core.set_on_workspace_refresh(fn(ws : String) -> Unit {
+    if ws == DA_WS1 {
+      let s = core.membership.next_cloud_seq()
+      let ep = core.membership.cred_epoch_of(ws)
+      refresh_seqs.push((s, ep))
+    }
+  })
+
+  // 1. Downgrade admin -> member via /v1/me (req_seq=3) -> queues initial refresh_seqs[0]
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  debug_assert(refresh_seqs.length() == 1, "downgrade scheduled 1st workspace refresh")
+  let (inflight_seq, inflight_ep) = refresh_seqs[0]
+
+  // 2. While 1st detail fetch is in-flight, a same-role /v1/me arrives with a higher seq!
+  let me_seq = core.membership.next_cloud_seq()
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=me_seq)
+  // [Codex P1-3] commit_cloud_me MUST schedule a fresh workspace refresh AFTER advancing ws_commit_seq!
+  debug_assert(refresh_seqs.length() == 2, "same-role /v1/me re-scheduled workspace refresh while PendingAuthConfirm unconfirmed")
+  let (fresh_seq, fresh_ep) = refresh_seqs[1]
+  debug_assert(fresh_seq > me_seq, "fresh workspace refresh seq exceeds advancing /v1/me seq")
+
+  // 3. Earlier in-flight detail returns now -> rejected as Ok(false), does NOT confirm!
+  match core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1]), req_seq=inflight_seq, captured_cred_epoch=inflight_ep) {
+    Ok(false) => ()
+    _ => panic("expected stale in-flight detail Ok(false)")
+  }
+  debug_assert(!core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "stale detail did NOT confirm workspace")
+
+  // 4. Fresh detail returns -> commits Ok(true) and confirms BOTH workspace:<ws> & stations:<ws>!
+  match core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1]), req_seq=fresh_seq, captured_cred_epoch=fresh_ep) {
+    Ok(true) => ()
+    _ => panic("expected fresh detail Ok(true)")
+  }
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "workspace:" + DA_WS1), "workspace:<ws> confirmed")
+  debug_assert(core.can_read_confirmed_key(DA_WS1, "stations:" + DA_WS1), "stations:<ws> confirmed")
+}
+
+test "2B-2.10: Reverse-order /jobs-before-/chats confirmation wakes existing chatJobs sub AND newly-resolvable (station, session) chat sub" {
+  let rt = effect::Runtime::new()
+  let pending_chats : Array[(effect::Exit[HttpReply]) -> Unit] = []
+  let pending_jobs : Array[(effect::Exit[HttpReply]) -> Unit] = []
+  let mut req_entries_19 = 0
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/chats" {
+        pending_chats.push(k)
+      } else if path == "/jobs?chats=0" {
+        pending_jobs.push(k)
+      } else if path.starts_with("/threads/19/entries") {
+        req_entries_19 += 1
+        k(effect::Exit::Succeeded(HttpReply::{
+          status: 200,
+          headers: [],
+          body: "{\"last\":1,\"entries\":[{\"thread\":19,\"n\":1,\"kind\":\"message\",\"author\":\"alice@still.fail\",\"authorKind\":\"person\",\"ts\":1700000015000,\"text\":\"resolved-after-chats\"}]}".to_bytes(),
+        }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"last\":0,\"entries\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+  let emitted : Array[String] = []
+  core.set_wire_sink(fn(j : String, _ : Option[Bytes]) -> Unit { emitted.push(j) })
+
+  // Subscribe to:
+  // (a) `chatJobs` for existing thread 7 (id=51)
+  // (b) `chat` by `(station, session="sess-late-19")` whose chat row is NOT in SQLite yet (id=52)!
+  let _ = mt_sub(core, 51L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))])
+  let _ = mt_sub(core, 52L, "chat", [("station", base_codec::json_str(DA_ST1)), ("session", base_codec::json_str("sess-late-19"))])
+
+  // Downgrade admin -> member & admit at epoch 2
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  emitted.clear()
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+  let _ = rt.run_ready()
+  debug_assert(pending_chats.length() == 1 && pending_jobs.length() == 1, "both /chats and /jobs?chats=0 in-flight")
+  debug_assert(req_entries_19 == 0, "sess-late-19 thread not yet known before /chats lands")
+
+  // 1. Complete /jobs?chats=0 FIRST (reverse order!): `chatJobs:<st>/7` confirms, `chats:<st>` still unconfirmed -> sub 51 stays Waiting!
+  (pending_jobs[0])(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: "[{\"id\":\"job-rev-1\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"rev-job\",\"command\":\"echo hi\"}]".to_bytes(),
+  }))
+  let _ = rt.run_ready()
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs confirmed first")
+  debug_assert(!core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats not yet confirmed")
+  let mut saw_job_before_chats = false
+  for i in 0..<emitted.length() {
+    if emitted[i].contains("job-rev-1") { saw_job_before_chats = true }
+  }
+  debug_assert(!saw_job_before_chats, "chatJobs sub 51 stays Waiting until chats:<st> confirms")
+
+  // 2. Now complete /chats SECOND (including row for `sess-late-19` -> thread 19!):
+  //    - Existing `chatJobs` sub 51 MUST wake up immediately via wire_sink with `job-rev-1`!
+  //    - Existing `(station, session="sess-late-19")` sub 52 MUST resolve thread=19, fetch `/threads/19/entries`, and confirm `chat:<st>/19`!
+  let chats_2_body = "[{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Admin Chat\",\"lastActive\":1700000015000},{\"id\":\"c-late-19\",\"session\":\"sess-late-19\",\"station\":\"" + DA_ST1 + "\",\"thread\":19,\"title\":\"Late Session Chat\",\"lastActive\":1700000015000}]"
+  (pending_chats[0])(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: chats_2_body.to_bytes(),
+  }))
+  let _ = rt.run_ready()
+  let mut saw_job_after_chats = false
+  let mut saw_late_entry_after_chats = false
+  for i in 0..<emitted.length() {
+    if emitted[i].contains("job-rev-1") { saw_job_after_chats = true }
+    if emitted[i].contains("resolved-after-chats") { saw_late_entry_after_chats = true }
+  }
+  debug_assert(saw_job_after_chats, "existing chatJobs sub 51 woke up automatically after /chats confirmed!")
+  debug_assert(req_entries_19 == 1 && core.can_read_station_key(DA_ST1, "chat:" + DA_ST1 + "/19"), "(station, session) sub 52 resolved thread=19 after /chats & confirmed")
+  debug_assert(saw_late_entry_after_chats, "existing (station, session) chat sub 52 received entries after confirmation!")
+}
+
+test "2B-2.11: Live SSE job transitions update authoritative jobs snapshot (no freeze) AND malformed non-empty /jobs arrays rejected" {
+  let rt = effect::Runtime::new()
+  // Advance virtual clock > 2h so `longJobs` (>1h threshold) includes running jobs with startedAt=1000!
+  rt.advance(7200000)
+  let mut jobs_body = "[{\"id\":\"job-j1\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-one\",\"command\":\"sleep 9999\",\"startedAt\":1000}]"
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/jobs?chats=0" {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: jobs_body.to_bytes() }))
+      } else if path == "/chats" {
+        let cb = "[{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Job Chat\",\"lastActive\":1700000016000}]"
+        k(effect::Exit::Succeeded(HttpReply::{
+          status: 200,
+          headers: [],
+          body: cb.to_bytes(),
+        }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (_, core, _) = da_seed_core(rt, tr)
+
+  // Downgrade admin -> member and admit at epoch 2
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+  let _ = rt.run_ready()
+
+  // 1. [Codex P2] Malformed non-empty /jobs payloads MUST be rejected with 0 confirmation and 0 baseline erasure!
+  let bad_jobs : Array[String] = [
+    "[{\"foo\":1}]",
+    "[{\"id\":\"\"}]",
+    "[{\"id\":123}]",
+    "{\"jobs\":[]}",
+    "{}",
+  ]
+  for i in 0..<bad_jobs.length() {
+    jobs_body = bad_jobs[i]
+    let mut jerr = ""
+    let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(effect::EffectError::Custom(m)) => jerr = m
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+    let _ = rt.run_ready()
+    debug_assert(jerr == "malformed_jobs_payload", "rejected malformed jobs payload: " + bad_jobs[i] + ", got: " + jerr)
+    debug_assert(!core.can_read_station_key(DA_ST1, "jobs:" + DA_ST1), "malformed jobs NEVER confirms jobs:<st>")
+    debug_assert(!core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "malformed jobs NEVER confirms chatJobs:<st>/7")
+  }
+
+  // 2. Load valid authoritative `/jobs?chats=0` containing running job `job-j1`!
+  jobs_body = "[{\"id\":\"job-j1\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-one\",\"command\":\"sleep 9999\",\"startedAt\":1000}]"
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  let cj1 = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 60L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs initial J1"))
+  let lj1 = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 61L, "longJobs", [("scope", base_codec::json_str(DA_WS1))]), "longJobs initial J1"))
+  debug_assert(cj1.contains("job-j1") && lj1.contains("job-j1"), "both chatJobs & longJobs show initial J1")
+
+  // 3. Verify malformed payload AFTER baseline is loaded NEVER erases `job-j1`!
+  jobs_body = "[{\"foo\":1}]"
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  let cj_after_bad = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 62L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs preserves J1"))
+  debug_assert(cj_after_bad.contains("job-j1"), "malformed /jobs response does NOT erase existing J1 baseline")
+
+  // 4. [Opus P1-1 + Codex P1-5] Admitted SSE pushes `job-j1` terminal (`exited`) AND brand-new running `job-j2`!
+  //    BOTH `chatJobs` AND `longJobs` MUST immediately drop `job-j1` and show `job-j2` (zero freeze!).
+  let sse_jobs : Array[wire::Event] = [
+    wire::Event::{ id: Some("j-ev-1"), name: "job", data: "{\"id\":\"job-j1\",\"session\":\"sess-admin-1\",\"state\":\"exited\",\"name\":\"job-one\",\"command\":\"sleep 9999\",\"startedAt\":1000}" },
+    wire::Event::{ id: Some("j-ev-2"), name: "job", data: "{\"id\":\"job-j2\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-two\",\"command\":\"cargo watch\",\"startedAt\":2000}" },
+  ]
+  match core.events.process_sse_chunk_with_cap(sse_jobs, None) {
+    Ok(true) => ()
+    _ => panic("expected admitted SSE job chunk Ok(true)")
+  }
+  let cj2 = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 63L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs after SSE J1 exit + J2 start"))
+  let lj2 = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 64L, "longJobs", [("scope", base_codec::json_str(DA_WS1))]), "longJobs after SSE J1 exit + J2 start"))
+  debug_assert(!cj2.contains("job-j1") && cj2.contains("job-j2"), "chatJobs dropped exited J1 and added running J2: " + cj2)
+  debug_assert(!lj2.contains("job-j1") && lj2.contains("job-j2"), "longJobs dropped exited J1 and added running J2: " + lj2)
+
+  // 5. Admitted SSE `event: job-removed` removes `job-j2` cleanly!
+  let sse_rem : Array[wire::Event] = [
+    wire::Event::{ id: Some("j-ev-3"), name: "job-removed", data: "{\"id\":\"job-j2\"}" },
+  ]
+  match core.events.process_sse_chunk_with_cap(sse_rem, None) {
+    Ok(true) => ()
+    _ => panic("expected admitted SSE job-removed Ok(true)")
+  }
+  let cj3 = mt_expect_val_json(mt_sub(core, 65L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs after job-removed")
+  debug_assert(da_arr_len(cj3, "jobs") == 0, "job-removed clears J2 from chatJobs: " + base_codec::json_stringify(cj3))
+}
+
+/// Shared harness for R4 single-owner admission lifecycle tests (Tests 2B-2.12..2.14):
+/// real `MeshStationTransport` + real `ClientCore::set_on_station_admission_needed` +
+/// `ClientCore::set_on_workspace_lock_changed`, ZERO manual `connect_k` calls!
+struct R4MeshHarness {
+  rt : effect::Runtime
+  core : ClientCore
+  ctrl : MeshStationTransport
+  mock_db : MockCloudDb
+  dial_count : Array[Int]
+  reject_code : Array[String]
+  reject_extra_json : Array[String]
+  hold_ctrl_reply : Array[Bool]
+  flush_ctrl_reply : Array[() -> Unit]
+  sse_end_cbs : Array[(Int64) -> Unit]
+  sh : shell::Shell
+}
+
+fn make_r4_mesh_harness(reject_lock_initially : Bool) -> R4MeshHarness {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let mut local_ep_id = ""
+  let mut next_conn_id = 2
+  let mut next_stream_id = 10
+  let mut ctrl_stream_id = 0
+  let mut ctrl_reply_queue : Array[String] = []
+  let mut ctrl_pending_read : Option[Int64] = None
+  let dial_count : Array[Int] = [0]
+  let reject_code : Array[String] = [if reject_lock_initially { "lock_unconfirmed" } else { "" }]
+  let reject_extra_json : Array[String] = [""]
+  let hold_ctrl_reply : Array[Bool] = [false]
+  let flush_ctrl_reply : Array[() -> Unit] = []
+  let closed_conns : Map[String, Bool] = Map::new()
+  let stream_req_buf : Map[Int, String] = Map::new()
+  let stream_resp : Map[Int, String] = Map::new()
+  let stream_read_step : Map[Int, Int] = Map::new()
+  let sse_end_cbs : Array[(Int64) -> Unit] = []
+  let peer_id = "22223333444455556666777788889999aaaabbbbccccddddeeeeffff00001111"
+
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      if op == "conn.close" {
+        let cid = match base_codec::json_get(args, "id") {
+          Some(v) => base_codec::json_stringify(v)
+          None => ""
+        }
+        if cid.length() > 0 {
+          closed_conns.set(cid, true)
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "storage.set" || op == "istream.reset" {
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let bseed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(bseed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(1))]))
+        return
+      }
+      if op == "iroh.connect" {
+        dial_count[0] += 1
+        ctrl_stream_id = 0
+        ctrl_reply_queue = []
+        ctrl_pending_read = None
+        let cid = next_conn_id
+        next_conn_id += 1
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(cid))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        let sid = next_stream_id
+        next_stream_id += 1
+        if ctrl_stream_id == 0 {
+          ctrl_stream_id = sid
+        }
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(sid))]))
+        return
+      }
+      if op == "istream.write" {
+        let sid = j_int(args, "id")
+        let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+        if sid == ctrl_stream_id {
+          let reply_line = if reject_code[0].length() > 0 {
+            let extra = if reject_extra_json[0].length() > 0 { "," + reject_extra_json[0] } else { "" }
+            "{\"ok\":false,\"code\":\"" + reject_code[0] + "\",\"error\":\"lock refused\"" + extra + "}\n"
+          } else {
+            "{\"ok\":true,\"station\":{\"id\":\"" + DA_ST1 + "\"}}\n"
+          }
+          let deliver = fn() -> Unit {
+            match ctrl_pending_read {
+              Some(rid) => {
+                ctrl_pending_read = None
+                s.answer(rid, base_codec::json_obj([]), bytes=Some(reply_line.to_bytes()))
+              }
+              None => ctrl_reply_queue.push(reply_line)
+            }
+          }
+          if hold_ctrl_reply[0] {
+            flush_ctrl_reply.push(deliver)
+          } else {
+            deliver()
+          }
+        } else {
+          let prev = match stream_req_buf.get(sid) { Some(p) => p; None => "" }
+          let full = prev + payload
+          stream_req_buf.set(sid, full)
+          if full.contains("\"/events") {
+            stream_resp.set(sid, "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\n: ok\n\n")
+          } else if full.contains("\"/chats\"") {
+            stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n[{\"id\":\"c-r4\",\"session\":\"sess-r4\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"R4 Live Chat\",\"lastActive\":1700000020000}]")
+          } else {
+            stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n[]")
+          }
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.finish" {
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        let sid = j_int(args, "id")
+        if sid == ctrl_stream_id {
+          if ctrl_reply_queue.length() > 0 {
+            let first = ctrl_reply_queue[0]
+            let rest : Array[String] = []
+            for ri in 1..<ctrl_reply_queue.length() { rest.push(ctrl_reply_queue[ri]) }
+            ctrl_reply_queue = rest
+            s.answer(id, base_codec::json_obj([]), bytes=Some(first.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        let step = match stream_read_step.get(sid) { Some(v) => v; None => 0 }
+        let body = match stream_resp.get(sid) { Some(b) => b; None => "{\"status\":200,\"headers\":{}}\n[]" }
+        let is_sse = body.contains("text/event-stream")
+        if step == 0 {
+          stream_read_step.set(sid, 1)
+          s.answer(id, base_codec::json_obj([]), bytes=Some(body.to_bytes()))
+        } else if is_sse {
+          // Keep SSE open until test explicitly closes the stream (simulating natural network drop)!
+          sse_end_cbs.push(fn(_ : Int64) -> Unit {
+            s.answer(id, base_codec::json_obj([]), bytes=None)
+          })
+        } else {
+          s.answer(id, base_codec::json_obj([]), bytes=None)
+        }
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" {
+        let cid = match base_codec::json_get(args, "id") {
+          Some(v) => base_codec::json_stringify(v)
+          None => ""
+        }
+        if closed_conns.get(cid).is_some() {
+          return shell::AskResult::Ok(base_codec::json_obj([("kind", base_codec::json_str("peer")), ("reason", base_codec::json_str("network_switch"))]))
+        }
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x44 + i * 5) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let db = match sql::Sql::open(sh, "r4-mesh-harness") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let core = ClientCore::new(DA_WS1, DA_ST1, rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  let _ = core.membership.set_account_sub("sub-alice")
+  let _ = core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "owner")]), req_seq=1L)
+
+  let cfg = MeshStationConfig::new(
+    DA_WS1,
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-ep-" + core.membership.cred_epoch_of(DA_WS1).to_string()))
+    },
+    on_admission=Some(fn(adm : MeshAdmission) -> Unit {
+      let _ = core.absorb_mesh_admission_lock(DA_WS1, adm)
+    }),
+    get_cred_epoch=Some(fn() -> Int64 { core.membership.cred_epoch_of(DA_WS1) }),
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+
+  // Production single-ownership wiring (exact mirror of `core_runtime.pion`):
+  core.set_on_station_admission_needed(fn(st : String) -> Unit {
+    if st == DA_ST1 {
+      let req_ep = match core.membership.required_cred_epoch_of(DA_WS1) {
+        Some(ep) => ep
+        None => core.membership.cred_epoch_of(DA_WS1)
+      }
+      ctrl.ensure_admitted_for_epoch(rt, req_ep, fn() -> Bool { core.can_read_workspace(DA_WS1) })
+    }
+  })
+  core.set_on_workspace_lock_changed(fn(ws : String) -> Unit {
+    if ws.length() == 0 || ws == DA_WS1 {
+      ctrl.clear_lock_admission_block()
+    }
+  })
+  R4MeshHarness::{
+    rt: rt,
+    core: core,
+    ctrl: ctrl,
+    mock_db: mock_db,
+    dial_count: dial_count,
+    reject_code: reject_code,
+    reject_extra_json: reject_extra_json,
+    hold_ctrl_reply: hold_ctrl_reply,
+    flush_ctrl_reply: flush_ctrl_reply,
+    sse_end_cbs: sse_end_cbs,
+    sh: sh,
+  }
+}
+
+test "2B-2.12: Boundary-first station.connect (attach while live=false, then start) auto-drives admission via on_admission_needed" {
+  let h = make_r4_mesh_harness(false)
+  // 1. Downgrade owner -> member BEFORE `station.connect` (PendingAuthConfirm active while live=false!)
+  let _ = h.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  debug_assert(mt_opt_i64_is(h.core.membership.required_cred_epoch_of(DA_WS1), 2L), "downgrade requires epoch=2 before attach")
+
+  // 2. Production `station.connect` order: attach mesh transport FIRST (live=false), THEN enable live sync (`core.start()`).
+  // ZERO manual `connect_k` or `ensure_admitted_for_epoch` calls!
+  h.core.attach_mesh_station_transport(DA_ST1, h.ctrl, workspace=DA_WS1)
+  debug_assert(h.dial_count[0] == 0, "attach while live=false performs 0 dials")
+  h.core.start()
+  let _ = h.rt.run_ready()
+
+  debug_assert(h.dial_count[0] == 1, "on_admission_needed automatically drove initial connect_k on core.start()")
+  debug_assert(h.ctrl.live_admitted_cred_epoch() == 2L, "admitted at required epoch 2")
+  debug_assert(!h.core.events.is_paused_for_admission(), "SSE resumed automatically after admission")
+  debug_assert(h.core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "chats:<st> confirmed automatically")
+
+  h.core.stop()
+  let _ = h.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h.rt.run_ready()
+}
+
+test "2B-2.13: Natural link drop (!usable) after post-downgrade admission auto-redials via on_admission_needed and resumes SSE" {
+  let h = make_r4_mesh_harness(false)
+  let _ = h.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h.core.attach_mesh_station_transport(DA_ST1, h.ctrl, workspace=DA_WS1)
+  h.core.start()
+  let _ = h.rt.run_ready()
+  let uid1 = h.ctrl.live_link_identity().0
+  debug_assert(uid1 != 0 && h.ctrl.live_admitted_cred_epoch() == 2L, "initial admitted link established")
+  debug_assert(h.sse_end_cbs.length() >= 1, "live SSE stream open on link 1")
+
+  // Simulate natural network switch / link death (`!link.usable()`) + SSE stream EOF — ZERO manual `connect_k`!
+  match h.ctrl.link() {
+    Some(lk1) => lk1.close(reason="network_switch")
+    None => panic("expected active link 1")
+  }
+  debug_assert(h.ctrl.live_admitted_cred_epoch() == 0L, "dead link clears live_admitted_cred_epoch to 0")
+  (h.sse_end_cbs[0])(0L)
+  let _ = h.rt.run_ready()
+
+  // `stream_loop_k` exit branch -> `awaiting_admission` -> `on_admission_needed` -> auto-redial new link 2!
+  let (uid2, ep2) = h.ctrl.live_link_identity()
+  debug_assert(h.dial_count[0] == 2, "natural link drop automatically triggered redial #2")
+  debug_assert(uid2 != 0 && uid2 != uid1 && ep2 == 2L, "re-admitted on fresh concrete link uid2 != uid1 at epoch 2")
+  debug_assert(!h.core.events.is_paused_for_admission() && h.core.events.is_running(), "SSE resumed on link 2")
+
+  // Verify subsequent station read succeeds on the new admitted link 2!
+  let mut snap_ok = false
+  let _ = h.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.core.sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => snap_ok = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = h.rt.run_ready()
+  debug_assert(snap_ok, "post-recovery snapshot read succeeded on link 2")
+
+  h.core.stop()
+  let _ = h.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h.rt.run_ready()
+}
+
+test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-flight lock_gen redial, on_admission evidence, and Cloud detail wakeup" {
+  // Part A: `lock_station` bounded catchup (4 tries: 1500/3000/4500/6000ms), then stops (0 dials over 60s),
+  // then Cloud detail confirmation (`commit_cloud_workspace`) wakes the blocked station cleanly!
+  let h = make_r4_mesh_harness(true)
+  h.reject_code[0] = "lock_station"
+  let _ = h.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h.core.attach_mesh_station_transport(DA_ST1, h.ctrl, workspace=DA_WS1)
+  h.core.start()
+  let _ = h.rt.run_ready()
+
+  debug_assert(h.dial_count[0] == 1 && !h.ctrl.is_admission_blocked_by_lock(), "initial lock_station enters bounded catchup #1")
+  // Exhaust all 4 bounded catchup retries: 1500 + 3000 + 4500 + 6000 ms
+  h.rt.advance(1500)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 2, "catchup retry #1 fired at 1500ms")
+  h.rt.advance(3000)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 3, "catchup retry #2 fired at 3000ms")
+  h.rt.advance(4500)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 4, "catchup retry #3 fired at 4500ms")
+  h.rt.advance(6000)
+  let _ = h.rt.run_ready()
+  debug_assert(h.dial_count[0] == 5, "catchup retry #4 fired at 6000ms")
+  debug_assert(h.ctrl.is_admission_blocked_by_lock(), "blocked after exhausting 4 bounded catchup tries at same lock_gen")
+  debug_assert(h.core.events.is_paused_for_admission(), "SSE stays paused while lock blocked")
+
+  // Advance virtual clock 60 seconds: MUST NOT spin a 15s backoff loop!
+  for _ in 0..<12 {
+    h.rt.advance(5000)
+    let _ = h.rt.run_ready()
+  }
+  debug_assert(h.dial_count[0] == 5, "0 backoff dials over 60s after bounded catchup exhausted")
+
+  // Cloud detail confirmation (`commit_cloud_workspace`, same role, no Safe Mode change) wakes the blocked station!
+  h.reject_code[0] = ""
+  let ws_seq = h.core.membership.next_cloud_seq()
+  let ws_ep = h.core.membership.cred_epoch_of(DA_WS1)
+  match h.core.commit_cloud_workspace(mt_make_ws(DA_WS1, "Core", "member", [DA_ST1]), req_seq=ws_seq, captured_cred_epoch=ws_ep) {
+    Ok(true) => ()
+    _ => panic("expected Cloud detail commit Ok(true)")
+  }
+  let _ = h.rt.run_ready()
+  debug_assert(!h.ctrl.is_admission_blocked_by_lock(), "Cloud detail confirmation cleared lock admission block")
+  debug_assert(h.dial_count[0] == 6 && h.ctrl.live_admitted_cred_epoch() == 2L, "Cloud detail woke blocked station and admitted at epoch 2")
+  debug_assert(!h.core.events.is_paused_for_admission() && h.core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "SSE resumed and chats confirmed")
+
+  h.core.stop()
+  let _ = h.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h.rt.run_ready()
+
+  // Part B: Dial in-flight lock change (`lock_gen` advances mid-dial!) -> refused dial NEVER blocks
+  // and immediately redials with the updated lock state without waiting for any timer!
+  let h2 = make_r4_mesh_harness(true)
+  h2.hold_ctrl_reply[0] = true
+  let _ = h2.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h2.core.attach_mesh_station_transport(DA_ST1, h2.ctrl, workspace=DA_WS1)
+  h2.core.start()
+  let _ = h2.rt.run_ready()
+  debug_assert(h2.dial_count[0] == 1 && h2.flush_ctrl_reply.length() == 1, "dial #1 in-flight awaiting station admission reply")
+
+  // While dial #1 is in-flight, lock state advances (`lock_gen` increments) AND station will accept dial #2!
+  h2.core.wake_paused_stations_on_lock_change(DA_WS1)
+  h2.reject_code[0] = ""
+  h2.hold_ctrl_reply[0] = false
+  // Now deliver the stale `lock_unconfirmed` refusal for dial #1!
+  (h2.flush_ctrl_reply[0])()
+  let _ = h2.rt.run_ready()
+
+  debug_assert(!h2.ctrl.is_admission_blocked_by_lock(), "in-flight lock_gen advance prevents blocking on stale refusal")
+  debug_assert(h2.dial_count[0] == 2 && h2.ctrl.live_admitted_cred_epoch() == 2L, "immediately redialed #2 with 0ms timer wait and admitted at epoch 2")
+  debug_assert(!h2.core.events.is_paused_for_admission() && h2.core.can_read_station_key(DA_ST1, "chats:" + DA_ST1), "SSE resumed & chats confirmed after in-flight lock advance")
+
+  h2.core.stop()
+  let _ = h2.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h2.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h2.rt.run_ready()
+
+  // Part C: `lock_unconfirmed` self-heals on bounded catchup retry #2 (station propagation lag)!
+  let h3 = make_r4_mesh_harness(true)
+  let _ = h3.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h3.core.attach_mesh_station_transport(DA_ST1, h3.ctrl, workspace=DA_WS1)
+  h3.core.start()
+  let _ = h3.rt.run_ready()
+  debug_assert(h3.dial_count[0] == 1, "initial dial refused with lock_unconfirmed")
+  h3.reject_code[0] = ""
+  h3.rt.advance(1500)
+  let _ = h3.rt.run_ready()
+  debug_assert(h3.dial_count[0] == 2 && h3.ctrl.live_admitted_cred_epoch() == 2L, "bounded catchup retry #1 self-healed at 1500ms")
+  debug_assert(!h3.ctrl.is_admission_blocked_by_lock() && !h3.core.events.is_paused_for_admission(), "recovered cleanly from transient lock propagation lag")
+  h3.core.stop()
+  let _ = h3.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h3.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h3.rt.run_ready()
+
+  // Part D (R6): Real `station/src/mesh/serve.ts:150-161` refusal wire body:
+  // `{ error, code: "lock_unconfirmed", lock: { seq, hash, genesis }, entries: [...], person: [{ genesis, entries: [...] }] }`
+  // 1. First refusal with NEW signed `entries` + `person` absorbs both, increments `lock_gen`, and immediately redials!
+  // 2. Subsequent refusals carrying the EXACT SAME already-absorbed `entries` + `person` MUST NOT increment `lock_gen`
+  //    or trigger a 0ms infinite redial loop — they run bounded 4-try catchup and stop cleanly!
+  let kit = da_make_lock_kit(DA_WS1)
+  let ws_genesis_codec = form_to_codec(kit.genesis)
+  let p_seed = da_seed_bytes(0x77)
+  let p_key = ed25519_key_id(p_seed)
+  let p_dev_hex = hex_64("d")
+  let p_unsigned = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("ws", base_codec::json_str("person:sub-alice")),
+    ("seq", base_codec::json_int(0)),
+    ("prev", base_codec::json_null()),
+    ("at", base_codec::json_int(1790000100)),
+    ("kind", base_codec::json_str("genesis")),
+    (
+      "body",
+      base_codec::json_obj([
+        ("sub", base_codec::json_str("sub-alice")),
+        (
+          "device",
+          base_codec::json_obj([
+            ("key", base_codec::json_str(p_key)),
+            ("id", base_codec::json_str(p_dev_hex)),
+            ("label", base_codec::json_str("Alice Personal Mac")),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let p_signed_form = match sign_lock_entry(p_seed, codec_to_form(p_unsigned)) {
+    Ok(e) => e
+    Err(e) => panic("sign person genesis failed: " + e)
+  }
+  let p_genesis_hash = match lock::entry_hash(p_signed_form, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("person genesis hash failed")
+  }
+  let p_signed_codec = form_to_codec(p_signed_form)
+  let real_refusal_extra = "\"lock\":{\"seq\":0,\"hash\":\"" +
+  kit.genesis_hash +
+  "\",\"genesis\":\"" +
+  kit.genesis_hash +
+  "\"},\"entries\":[" +
+  base_codec::json_stringify(ws_genesis_codec) +
+  "],\"person\":[{\"genesis\":\"" +
+  p_genesis_hash +
+  "\",\"entries\":[" +
+  base_codec::json_stringify(p_signed_codec) +
+  "]}]"
+
+  let h4 = make_r4_mesh_harness(true)
+  h4.reject_code[0] = "lock_unconfirmed"
+  h4.reject_extra_json[0] = real_refusal_extra
+  let _ = h4.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h4.core.attach_mesh_station_transport(DA_ST1, h4.ctrl, workspace=DA_WS1)
+  let gen_before = h4.ctrl.lock_gen()
+  h4.core.start()
+  let _ = h4.rt.run_ready()
+
+  // Dial #1 absorbed real top-level workspace `entries`, bumped `lock_gen`, and immediately triggered Dial #2;
+  // untrusted refusal `person` MUST NOT pin an initial personal genesis on an unpinned device!
+  // Dial #2 received the EXACT SAME body -> NO `lock_gen` bump -> NO 0ms spin!
+  match h4.core.current_lock() {
+    Some(st) => debug_assert(st.genesis == kit.genesis_hash, "real serve.ts top-level entries absorbed into workspace lock")
+    None => panic("expected workspace lock to be absorbed from top-level entries")
+  }
+  debug_assert(h4.core.person_lock_kept_entries().length() == 0, "untrusted station refusal MUST NOT pin initial personal genesis")
+  let gen_after_absorb = h4.ctrl.lock_gen()
+  debug_assert(gen_after_absorb > gen_before, "fresh refusal workspace entries incremented lock_gen")
+  debug_assert(h4.dial_count[0] == 2, "Dial #1 immediate redialed Dial #2, and duplicate Dial #2 did NOT spin 0ms loop")
+
+  // Calling `absorb_mesh_admission_lock` again with identical evidence MUST return false & keep `lock_gen` unchanged!
+  let dup_raw = match base_codec::json_parse("{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"lock refused\"," + real_refusal_extra + "}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  debug_assert(!h4.core.absorb_mesh_admission_lock(DA_WS1, parse_mesh_admission(dup_raw)), "duplicate refusal returns advanced=false")
+  debug_assert(h4.ctrl.lock_gen() == gen_after_absorb, "duplicate refusal did NOT increment lock_gen")
+
+  // Exhaust 4 bounded catchup retries under the duplicate refusal body: `lock_gen` MUST stay flat and stop cleanly!
+  h4.rt.advance(1500)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(3000)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(4500)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(6000)
+  let _ = h4.rt.run_ready()
+  debug_assert(h4.dial_count[0] == 6, "exact 4 bounded catchup retries after Dial #2 (2 + 4 = 6)")
+  debug_assert(h4.ctrl.lock_gen() == gen_after_absorb, "lock_gen stayed completely flat across 4 duplicate refusals")
+  debug_assert(h4.ctrl.is_admission_blocked_by_lock(), "cleanly blocked after 4 bounded catchup tries")
+  for _ in 0..<12 {
+    h4.rt.advance(5000)
+    let _ = h4.rt.run_ready()
+  }
+  debug_assert(h4.dial_count[0] == 6, "0 extra dials over 60s after duplicate-evidence block")
+
+  h4.core.stop()
+  let _ = h4.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h4.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h4.rt.run_ready()
+
+  // Part E (R8): Protocol `lock::person_chain` personal lock reconciliation, unpinned refusal safety,
+  // `device.remove` shorter-branch priority, silent workspace tail gap, and `boundary_seq` stability!
+  let sign_person_gen = fn(seed : Bytes, sub : String, dev_hex : String, label : String) -> (base_codec::Json, String) {
+    let key = ed25519_key_id(seed)
+    let u = base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str("person:" + sub)),
+      ("seq", base_codec::json_int(0)),
+      ("prev", base_codec::json_null()),
+      ("at", base_codec::json_int(1790000100)),
+      ("kind", base_codec::json_str("genesis")),
+      (
+        "body",
+        base_codec::json_obj([
+          ("sub", base_codec::json_str(sub)),
+          (
+            "device",
+            base_codec::json_obj([
+              ("key", base_codec::json_str(key)),
+              ("id", base_codec::json_str(dev_hex)),
+              ("label", base_codec::json_str(label)),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+    let sf = match sign_lock_entry(seed, codec_to_form(u)) {
+      Ok(e) => e
+      Err(e) => panic("sign person gen failed: " + e)
+    }
+    let h = match lock::entry_hash(sf, native_lock_crypto()) {
+      Ok(v) => v
+      Err(_) => panic("hash person gen failed")
+    }
+    (form_to_codec(sf), h)
+  }
+  let sign_person_dev = fn(
+    signer_seed : Bytes,
+    sub : String,
+    seq : Int,
+    prev_hash : String,
+    dev_seed : Bytes,
+    dev_hex : String,
+    label : String,
+  ) -> (base_codec::Json, String) {
+    let dkey = ed25519_key_id(dev_seed)
+    let u = base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str("person:" + sub)),
+      ("seq", base_codec::json_int(seq)),
+      ("prev", base_codec::json_str(prev_hash)),
+      ("at", base_codec::json_int(1790000100 + seq * 10)),
+      ("kind", base_codec::json_str("device")),
+      (
+        "body",
+        base_codec::json_obj([
+          ("key", base_codec::json_str(dkey)),
+          ("id", base_codec::json_str(dev_hex)),
+          ("label", base_codec::json_str(label)),
+        ]),
+      ),
+    ])
+    let sf = match sign_lock_entry(signer_seed, codec_to_form(u)) {
+      Ok(e) => e
+      Err(e) => panic("sign person dev failed: " + e)
+    }
+    let h = match lock::entry_hash(sf, native_lock_crypto()) {
+      Ok(v) => v
+      Err(_) => panic("hash person dev failed")
+    }
+    (form_to_codec(sf), h)
+  }
+  let sign_person_remove = fn(
+    signer_seed : Bytes,
+    sub : String,
+    seq : Int,
+    prev_hash : String,
+    gone_key : String,
+  ) -> (base_codec::Json, String) {
+    let u = base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str("person:" + sub)),
+      ("seq", base_codec::json_int(seq)),
+      ("prev", base_codec::json_str(prev_hash)),
+      ("at", base_codec::json_int(1790000100 + seq * 10)),
+      ("kind", base_codec::json_str("device.remove")),
+      ("body", base_codec::json_obj([("key", base_codec::json_str(gone_key))])),
+    ])
+    let sf = match sign_lock_entry(signer_seed, codec_to_form(u)) {
+      Ok(e) => e
+      Err(e) => panic("sign person remove failed: " + e)
+    }
+    let h = match lock::entry_hash(sf, native_lock_crypto()) {
+      Ok(v) => v
+      Err(_) => panic("hash person remove failed")
+    }
+    (form_to_codec(sf), h)
+  }
+  let make_person_refusal_adm = fn(g_hash : String, entries : Array[base_codec::Json]) -> MeshAdmission {
+    let raw = base_codec::json_obj([
+      ("ok", base_codec::json_bool(false)),
+      ("code", base_codec::json_str("lock_unconfirmed")),
+      ("error", base_codec::json_str("lock refused")),
+      (
+        "person",
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("genesis", base_codec::json_str(g_hash)),
+            ("entries", base_codec::json_arr(entries)),
+          ]),
+        ]),
+      ),
+    ])
+    parse_mesh_admission(raw)
+  }
+
+  let (pg0, pg0_h) = sign_person_gen(p_seed, "sub-alice", hex_64("d"), "Alice Mac")
+  let dev1_seed = da_seed_bytes(0x78)
+  let dev1_key = ed25519_key_id(dev1_seed)
+  let (pe1, pe1_h) = sign_person_dev(p_seed, "sub-alice", 1, pg0_h, dev1_seed, hex_64("e"), "Alice Phone")
+  let (pe2, pe2_h) = sign_person_dev(p_seed, "sub-alice", 2, pe1_h, da_seed_bytes(0x79), hex_64("f"), "Alice iPad")
+  let (pe3, _) = sign_person_dev(p_seed, "sub-alice", 3, pe2_h, da_seed_bytes(0x7B), hex_64("9"), "Alice Extra")
+  // Shorter competing `device.remove` branch at seq=2 removing `dev1_key` (len 3 vs len 4 non-removal!):
+  let (pr2, pr2_h) = sign_person_remove(p_seed, "sub-alice", 2, pe1_h, dev1_key)
+
+  // Foreign genesis chain `[g_other, x1, x2, x3]` (length 4 > 3, different root key):
+  let other_seed = da_seed_bytes(0x91)
+  let (og0, og0_h) = sign_person_gen(other_seed, "sub-alice", hex_64("2"), "Other Root")
+  let (ox1, ox1_h) = sign_person_dev(other_seed, "sub-alice", 1, og0_h, da_seed_bytes(0x92), hex_64("3"), "Other 1")
+  let (ox2, ox2_h) = sign_person_dev(other_seed, "sub-alice", 2, ox1_h, da_seed_bytes(0x93), hex_64("4"), "Other 2")
+  let (ox3, _) = sign_person_dev(other_seed, "sub-alice", 3, ox2_h, da_seed_bytes(0x94), hex_64("5"), "Other 3")
+
+  let h5 = make_r4_mesh_harness(true)
+  h5.core.attach_mesh_station_transport(DA_ST1, h5.ctrl, workspace=DA_WS1)
+
+  // E0 (R8): Unpinned new device receives `[G1 (longer old len 3), G2 (new len 1)]` in station refusal:
+  // MUST NOT pin G1! `person_lock_kept_entries()` stays empty so `hello.lock.person` never locks onto old G1!
+  let gen_unpinned = h5.ctrl.lock_gen()
+  let multi_g_refusal = parse_mesh_admission(base_codec::json_obj([
+    ("ok", base_codec::json_bool(false)),
+    ("code", base_codec::json_str("lock_unconfirmed")),
+    ("error", base_codec::json_str("lock refused")),
+    (
+      "person",
+      base_codec::json_arr([
+        base_codec::json_obj([("genesis", base_codec::json_str(og0_h)), ("entries", base_codec::json_arr([og0, ox1, ox2]))]),
+        base_codec::json_obj([("genesis", base_codec::json_str(pg0_h)), ("entries", base_codec::json_arr([pg0]))]),
+      ]),
+    ),
+  ]))
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, multi_g_refusal), "unpinned device MUST NOT pin from station refusal")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 0, "hello.lock.person stays empty on unpinned device")
+  debug_assert(h5.ctrl.lock_gen() == gen_unpinned, "unpinned refusal did NOT bump lock_gen")
+
+  // E1 + E2: Trusted local load pins `[pg0, pe1]`, then alternating Station B `[pg0, pe1, pe2]` and
+  // Station A `[pg0, pe1]` converges monotonically via `lock::person_chain` (0 rollback, 0 ping-pong)!
+  debug_assert(h5.core.load_person_lock_json(base_codec::json_arr([pg0, pe1]), "sub-alice"), "trusted load pins [pg0,pe1]")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 2, "holding [pg0,pe1]")
+  let gen_e1 = h5.ctrl.lock_gen()
+
+  // E1b (R9/R10 Codex P1-1): Bad-signature AND colon-delimiter-colliding `sig.key`/`sig.alg`/`sig.sig`
+  // variants sharing the EXACT same unsigned `entry_hash` as `pe2` appearing BEFORE valid `pe2` MUST
+  // NOT drop valid `pe2` during `form::canonical` dedup before `lock::person_chain`!
+  let pe2_bad_sig = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("alg", base_codec::json_str("Ed25519")),
+      ("key", base_codec::json_str(ed25519_key_id(p_seed))),
+      ("sig", base_codec::json_str("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")),
+    ]),
+  )
+  // Direct colon-concatenation collision pair: `"ed25519:a" + ":" + "b:c" == "ed25519:a:b" + ":" + "c"`:
+  let pe2_col_a = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519:a")),
+      ("alg", base_codec::json_str("")),
+      ("sig", base_codec::json_str("b:c")),
+    ]),
+  )
+  let pe2_col_b = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519:a:b")),
+      ("alg", base_codec::json_str("")),
+      ("sig", base_codec::json_str("c")),
+    ]),
+  )
+  debug_assert(
+    person_signed_entry_key(codec_to_form(pe2_col_a)) != person_signed_entry_key(codec_to_form(pe2_col_b)),
+    "form::canonical strictly separates colon-colliding sig.key/sig.sig variants",
+  )
+  // Exact real-key colon-concatenation collision against valid `pe2` (`ed25519:<hex>:Ed25519:<sig>`):
+  let pe2_sig_obj = match base_codec::json_get(pe2, "sig") {
+    Some(s) => s
+    None => panic("expected sig on pe2")
+  }
+  let pe2_real_key = j_str(pe2_sig_obj, "key")
+  let pe2_real_sig = j_str(pe2_sig_obj, "sig")
+  debug_assert(pe2_real_key.starts_with("ed25519:"), "real Ed25519 key ID contains ':'")
+  let pe2_key_tail = pe2_real_key.slice(8, pe2_real_key.length())
+  let pe2_colon_collision = j_set_field(
+    pe2,
+    "sig",
+    base_codec::json_obj([
+      ("key", base_codec::json_str("ed25519")),
+      ("alg", base_codec::json_str(pe2_key_tail)),
+      ("sig", base_codec::json_str("Ed25519:" + pe2_real_sig)),
+    ]),
+  )
+  debug_assert(
+    person_signed_entry_key(codec_to_form(pe2_colon_collision)) != person_signed_entry_key(codec_to_form(pe2)),
+    "form::canonical strictly separates crafted colon-collision variant from real signed pe2",
+  )
+  debug_assert(
+    lock_entry_hash(codec_to_form(pe2_bad_sig), native_lock_crypto()) == pe2_h &&
+    lock_entry_hash(codec_to_form(pe2_colon_collision), native_lock_crypto()) == pe2_h,
+    "bad-sig & colon-collision variants share identical unsigned entry_hash with valid pe2",
+  )
+  debug_assert(
+    h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2_bad_sig, pe2_col_a, pe2_col_b, pe2_colon_collision, pe2])),
+    "form::canonical dedup preserves valid pe2 after bad-sig & colon-colliding variants and extends to [pg0,pe1,pe2]",
+  )
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3 && h5.ctrl.lock_gen() == gen_e1 + 1L, "advanced to len 3, lock_gen +1")
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "lagging [pg0,pe1] MUST NOT roll back [pg0,pe1,pe2]")
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2])), "duplicate [pg0,pe1,pe2] ignored")
+  debug_assert(!h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])), "alternating station A [pg0,pe1] ignored (0 ping-pong)")
+  let _ = h5.core.load_person_lock_json(base_codec::json_arr([pg0, pe1]), "sub-alice")
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3, "held chain stayed [pg0,pe1,pe2] with zero rollback")
+  debug_assert(h5.ctrl.lock_gen() == gen_e1 + 1L, "lock_gen incremented EXACTLY ONCE across alternating stations")
+
+  // E3: Foreign genesis `[g_other, x1, x2, x3]` (even longer: len 4 > 3) MUST be rejected on BOTH wire formats!
+  debug_assert(
+    !h5.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(og0_h, [og0, ox1, ox2, ox3])),
+    "foreign genesis chain array rejected even when longer",
+  )
+  debug_assert(
+    !h5.core.load_person_lock_json(base_codec::json_arr([og0, ox1, ox2, ox3]), "sub-alice"),
+    "foreign genesis flat array rejected even when longer",
+  )
+  debug_assert(h5.core.person_lock_kept_entries().length() == 3, "foreign genesis did NOT replace pinned chain")
+  debug_assert(
+    lock_entry_hash(codec_to_form(h5.core.person_lock_kept_entries()[0]), native_lock_crypto()) == pg0_h,
+    "pinned personal genesis hash unchanged",
+  )
+  debug_assert(h5.ctrl.lock_gen() == gen_e1 + 1L, "foreign genesis did NOT increment lock_gen")
+
+  // E4a (R8): `lock::person_chain` canonical priority: shorter valid `device.remove` branch `[pg0, pe1, pr2]` (len 3)
+  // BEATS longer non-removal branch `[pg0, pe1, pe2, pe3]` (len 4), AND re-receiving the longer old branch causes 0 ping-pong!
+  let h6 = make_r4_mesh_harness(true)
+  h6.core.attach_mesh_station_transport(DA_ST1, h6.ctrl, workspace=DA_WS1)
+  debug_assert(h6.core.load_person_lock_json(base_codec::json_arr([pg0, pe1, pe2, pe3]), "sub-alice"), "pin longer non-removal chain len 4")
+  let gen_rm = h6.ctrl.lock_gen()
+  debug_assert(
+    h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pr2])),
+    "shorter canonical device.remove branch beats longer non-removal branch via lock::person_chain",
+  )
+  debug_assert(h6.core.person_lock_kept_entries().length() == 3 && h6.ctrl.lock_gen() == gen_rm + 1L, "switched to len 3 device.remove chain, lock_gen +1")
+  debug_assert(
+    lock_entry_hash(codec_to_form(h6.core.person_lock_kept_entries()[2]), native_lock_crypto()) == pr2_h,
+    "head is canonical device.remove entry pr2",
+  )
+  debug_assert(
+    !h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1, pe2, pe3])),
+    "re-receiving older longer non-removal branch causes 0 ping-pong",
+  )
+  debug_assert(
+    !h6.core.absorb_mesh_admission_lock(DA_WS1, make_person_refusal_adm(pg0_h, [pg0, pe1])),
+    "lagging prefix [pg0,pe1] causes 0 rollback",
+  )
+  debug_assert(h6.ctrl.lock_gen() == gen_rm + 1L, "lock_gen stayed flat after device.remove convergence")
+
+  // E4b: Truncated workspace refusal tail gap (`[ws_e2]` skipping `seq=1`) absorbs silently with 0 `LockRejected`!
+  let _ = h6.core.drain_frame()
+  let (ws_e1, ws_e1_h) = da_sign_entry(
+    kit,
+    DA_WS1,
+    1,
+    kit.genesis_hash,
+    "member.add",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-carol")),
+      ("email", form::Json::Str("carol@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  let _ = ws_e1
+  let (ws_e2, ws_e2_h) = da_sign_entry(
+    kit,
+    DA_WS1,
+    2,
+    ws_e1_h,
+    "member.add",
+    form::Json::Obj([
+      ("sub", form::Json::Str("sub-dave")),
+      ("email", form::Json::Str("dave@still.fail")),
+      ("role", form::Json::Str("member")),
+    ]),
+  )
+  // Seed genesis `[g]` first, then deliver a truncated refusal tail `[ws_e2]` (missing `ws_e1` gap!):
+  let _ = h6.core.apply_lock_chain([kit.genesis], kit.genesis_hash)
+  let _ = h6.core.drain_frame()
+  let gap_adm = parse_mesh_admission(base_codec::json_obj([
+    ("ok", base_codec::json_bool(false)),
+    ("code", base_codec::json_str("lock_unconfirmed")),
+    ("error", base_codec::json_str("lock refused")),
+    (
+      "lock",
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(2)),
+        ("hash", base_codec::json_str(ws_e2_h)),
+        ("genesis", base_codec::json_str(kit.genesis_hash)),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([form_to_codec(ws_e2)])),
+  ]))
+  debug_assert(!h6.core.absorb_mesh_admission_lock(DA_WS1, gap_adm), "gapped refusal tail returns advanced=false")
+  let gap_evs = h6.core.drain_frame()
+  let mut saw_lock_rejected = false
+  for gi in 0..<gap_evs.length() {
+    match gap_evs[gi] {
+      CoreEvent::LockRejected(_, _) => saw_lock_rejected = true
+      _ => ()
+    }
+  }
+  debug_assert(!saw_lock_rejected, "gapped refusal tail absorbs silently with 0 CoreEvent::LockRejected")
+
+  // E5 (R8): Immutable `pending_auth_boundary_id` (`boundary_seq`) survives mesh `fresh` `bump_cred_epoch`
+  // AND `CloudSync` WS `/v1/workspaces/<ws>` 401 routes strictly to `on_workspace_unauthorized` (single coordinator)!
+  let _ = h6.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=5L)
+  let b1 = h6.core.membership.pending_auth_boundary_id(DA_WS1)
+  let ep_before_fresh = h6.core.membership.cred_epoch_of(DA_WS1)
+  debug_assert(b1 > 0L, "downgrade installed non-zero immutable boundary_seq")
+  // Simulate mesh `fresh` credential fetch bumping `cred_epoch` mid-flight:
+  let ep_after_fresh = h6.core.membership.bump_cred_epoch(DA_WS1)
+  debug_assert(ep_after_fresh == ep_before_fresh + 1L, "mesh fresh bumped cred_epoch")
+  debug_assert(
+    h6.core.membership.pending_auth_boundary_id(DA_WS1) == b1,
+    "pending_auth_boundary_id (boundary_seq) stays strictly unchanged across mesh fresh bump_cred_epoch!",
+  )
+  // Verify `CloudSync` WS WorkspaceChanged 401 routes to `on_workspace_unauthorized(ws, boundary_id, bearer_gen, req_seq, herr)`
+  // instead of generic `on_unauthorized_err`, and survives mid-flight `bump_cred_epoch`!
+  let mut ws_401_wid = ""
+  let mut ws_401_bid = 0L
+  let mut ws_401_bgen = 0L
+  let mut ws_401_seq = 0L
+  let mut generic_401_calls = 0
+  let mut pending_ws_read_id : Option[Int64] = None
+  let mut pending_ws_fetch_id : Option[Int64] = None
+  let cs_holder : Array[shell::Shell] = []
+  let cs_sh = shell::Shell::stood_in(
+    h6.rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      let s = cs_holder[0]
+      if op == "ws.open" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(1))]))
+        return
+      }
+      if op == "ws.next" {
+        pending_ws_read_id = Some(id)
+        return
+      }
+      if op == "fetch" {
+        let url = j_str(args, "url")
+        if url.contains("/v1/workspaces/" + DA_WS1) {
+          pending_ws_fetch_id = Some(id)
+          return
+        }
+        s.answer(
+          id,
+          base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+          bytes=Some("{\"user\":{\"sub\":\"sub-alice\",\"email\":\"alice@still.fail\"},\"workspaces\":[]}".to_bytes()),
+        )
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult { h6.mock_db.handle_sql(op, args) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  cs_holder.push(cs_sh)
+  let cs_db = match sql::Sql::open(cs_sh, "r8-cs-401") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(cs_sh, cs_db, "https://cloud.test", token="tok-1", bound_sub="sub-alice", bound_session="s1")
+  cs.set_seq_provider(fn() -> Int64 { h6.core.membership.next_cloud_seq() })
+  cs.set_workspace_auth_context_getters(
+    fn() -> Int64 { 7L },
+    fn(wid : String) -> Int64 { h6.core.membership.pending_auth_boundary_id(wid) },
+  )
+  cs.set_commit_hooks(
+    on_unauthorized_err=Some(fn(_ : CloudHttpError) -> Unit { generic_401_calls += 1 }),
+    on_workspace_unauthorized=Some(fn(wid : String, bid : Int64, bgen : Int64, rseq : Int64, _ : CloudHttpError) -> Unit {
+      ws_401_wid = wid
+      ws_401_bid = bid
+      ws_401_bgen = bgen
+      ws_401_seq = rseq
+    }),
+  )
+  cs.start_events_ws(fn(_ : CloudEvent) -> Unit {})
+  let _ = h6.rt.run_ready()
+  match pending_ws_read_id {
+    Some(rid) => {
+      pending_ws_read_id = None
+      cs_sh.answer(
+        rid,
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("text")),
+          ("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"" + DA_WS1 + "\"}")),
+        ]),
+      )
+    }
+    None => panic("expected ws.next read")
+  }
+  let _ = h6.rt.run_ready()
+  // While `/v1/workspaces/DA_WS1` is in-flight, bump `cred_epoch` again (simulating mesh `fresh`):
+  let _ = h6.core.membership.bump_cred_epoch(DA_WS1)
+  match pending_ws_fetch_id {
+    Some(fid) => cs_sh.answer(
+      fid,
+      base_codec::json_obj([("status", base_codec::json_int(401)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+      bytes=Some("{\"error\":\"expired\"}".to_bytes()),
+    )
+    None => panic("expected in-flight CloudSync workspace fetch")
+  }
+  let _ = h6.rt.run_ready()
+  debug_assert(ws_401_wid == DA_WS1 && ws_401_bid == b1 && ws_401_bgen == 7L && ws_401_seq > 0L, "CloudSync 401 routed to single coordinator with exact boundary_seq, bearer_gen & req_seq")
+  debug_assert(h6.core.membership.pending_auth_boundary_id(DA_WS1) == ws_401_bid, "coordinator boundary check STILL passes after mid-flight mesh fresh bump_cred_epoch")
+  debug_assert(generic_401_calls == 0, "CloudSync workspace 401 did NOT bypass coordinator via generic on_unauthorized_err")
+  cs.stop()
+  let _ = h6.rt.run_ready()
+
+  h5.core.stop()
+  h6.core.stop()
+  let _ = h5.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h5.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h6.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h6.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h5.rt.run_ready()
+  let _ = h6.rt.run_ready()
+}
+
+test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapshot + post-cut SSE replay, 4-view parity, and tx rollback atomicity)" {
+  let rt = effect::Runtime::new()
+  rt.advance(7200000)
+  let pending_jobs_req : Array[(effect::Exit[HttpReply]) -> Unit] = []
+  let tr = StationTransport::{
+    request_k: fn(_ : String, path : String, _ : Array[(String, String)], _ : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      if path == "/jobs?chats=0" {
+        pending_jobs_req.push(k)
+      } else if path == "/chats" {
+        let cb = "[{\"id\":\"c-admin-1\",\"session\":\"sess-admin-1\",\"station\":\"" + DA_ST1 + "\",\"thread\":7,\"title\":\"Job Chat\",\"lastActive\":1700000021000}]"
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: cb.to_bytes() }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      }
+    },
+    stream_k: fn(_ : String, _ : Array[(String, String)], _ : (Bytes) -> Unit, _ : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let (sim, core, _) = da_seed_core(rt, tr)
+  let _ = core.commit_cloud_me(mt_make_me("sub-bob", "bob@still.fail", [(DA_WS1, "Core", "member")]), req_seq=3L)
+  core.on_station_admitted_cred_epoch(DA_ST1, 2L)
+  let _ = rt.run_ready()
+
+  // Seed initial baseline with open jobs A and B!
+  let seed_jobs = match base_codec::json_parse("[{\"id\":\"job-A\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-a\",\"command\":\"a\",\"startedAt\":1000},{\"id\":\"job-B\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-b\",\"command\":\"b\",\"startedAt\":1000}]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match core.events.apply_jobs(seed_jobs) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => panic("seed apply_jobs failed: " + e.to_string())
+  }
+
+  // 1. Start in-flight GET /jobs?chats=0 (captures cut_seq BEFORE SSE batch commits!)
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "GET /jobs?chats=0 is in-flight")
+
+  // 2. While snapshot is in-flight, commit admitted SSE batch:
+  //    - job-removed(job-A)
+  //    - job(job-B, exited)
+  //    - brand-new job(job-C, running)
+  let sse_mid : Array[wire::Event] = [
+    wire::Event::{ id: Some("m-1"), name: "job-removed", data: "{\"id\":\"job-A\"}" },
+    wire::Event::{ id: Some("m-2"), name: "job", data: "{\"id\":\"job-B\",\"session\":\"sess-admin-1\",\"state\":\"exited\",\"name\":\"job-b\",\"command\":\"b\",\"startedAt\":1000}" },
+    wire::Event::{ id: Some("m-3"), name: "job", data: "{\"id\":\"job-C\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-c\",\"command\":\"c\",\"startedAt\":1500}" },
+  ]
+  match core.events.process_sse_chunk_with_cap(sse_mid, None) {
+    Ok(true) => ()
+    _ => panic("expected mid-flight SSE batch Ok(true)")
+  }
+
+  // 3. Stale late snapshot [job-A(running), job-B(running)] arrives now!
+  let stale_snap = "[{\"id\":\"job-A\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-a\",\"command\":\"a\",\"startedAt\":1000},{\"id\":\"job-B\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-b\",\"command\":\"b\",\"startedAt\":1000}]"
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: stale_snap.to_bytes() }))
+  let _ = rt.run_ready()
+
+  // 4. Hard-assert ALL FOUR views agree 100%: ONLY `job-C` is open (`job-A` deleted, `job-B` closed open=0, `job-C` open=1)!
+  // (a) SQLite `job` table:
+  debug_assert(sim.jobs.get(DA_ST1 + ":job-A").is_none(), "SQLite: job-A deleted and NEVER resurrected by stale snapshot")
+  match sim.job_open.get(DA_ST1 + ":job-B") {
+    Some(ov) => debug_assert(ov == 0, "SQLite: job-B remains open=0")
+    None => panic("SQLite: expected job-B closed row")
+  }
+  match sim.job_open.get(DA_ST1 + ":job-C") {
+    Some(ov) => debug_assert(ov == 1, "SQLite: brand-new SSE job-C is open=1")
+    None => panic("SQLite: expected job-C row")
+  }
+  // (b) `jobs.open` / `open_jobs()`:
+  let open_list = core.events.open_jobs()
+  debug_assert(open_list.length() == 1 && open_list[0].id == "job-C", "jobs.open has ONLY [job-C]")
+  // (c) `chatJobs` projection:
+  let cj = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 70L, "chatJobs", [("station", base_codec::json_str(DA_ST1)), ("thread", base_codec::json_int(7))]), "chatJobs 4-way check"))
+  debug_assert(!cj.contains("job-A") && !cj.contains("job-B") && cj.contains("job-C"), "chatJobs has ONLY [job-C]: " + cj)
+  // (d) `longJobs` projection:
+  let lj = base_codec::json_stringify(mt_expect_val_json(mt_sub(core, 71L, "longJobs", [("scope", base_codec::json_str(DA_WS1))]), "longJobs 4-way check"))
+  debug_assert(!lj.contains("job-A") && !lj.contains("job-B") && lj.contains("job-C"), "longJobs has ONLY [job-C]: " + lj)
+
+  // 5. True mid-transaction SQLite rollback atomicity: `BEGIN IMMEDIATE` and 1st `job` upsert SUCCEED
+  // (staging `StagedJobOp`!), then the 2nd statement fails -> ZERO memory mutations & unchanged `jobs_sse_seq`!
+  let seq_before_rb = core.events.jobs_sse_seq()
+  let mut run_calls = 0
+  let fail_sh = shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(99))]))
+      }
+      if op == "sql.all" {
+        return shell::AskResult::Ok(base_codec::json_arr([]))
+      }
+      if op == "sql.exec" {
+        return shell::AskResult::Ok(base_codec::json_obj([]))
+      }
+      if op == "sql.run" {
+        run_calls += 1
+        if run_calls == 1 {
+          // 1st job upsert succeeds inside tx -> `StagedJobOp::Upsert("job-D", ...)` is staged!
+          return shell::AskResult::Ok(base_codec::json_obj([("changes", base_codec::json_int(1))]))
+        }
+        // 2nd statement (`DELETE FROM job` for `job-C`) fails -> tx rolls back!
+        return shell::AskResult::Err(shell::ShellError::{ message: "simulated_mid_tx_disk_full" })
+      }
+      shell::AskResult::Err(shell::ShellError::{ message: "unexpected op" })
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let fail_db = match sql::Sql::open(fail_sh, "fail-rb") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let orig_db = core.events.db
+  core.events.db = fail_db
+  let sse_rb : Array[wire::Event] = [
+    wire::Event::{ id: Some("rb-1"), name: "job", data: "{\"id\":\"job-D\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-d\",\"command\":\"d\",\"startedAt\":2000}" },
+    wire::Event::{ id: Some("rb-2"), name: "job-removed", data: "{\"id\":\"job-C\"}" },
+  ]
+  match core.events.apply_sse_batch(sse_rb) {
+    sql::SqlResult::Err(_) => ()
+    sql::SqlResult::Ok(_) => panic("expected mid-tx rollback Err")
+  }
+  core.events.db = orig_db
+  debug_assert(run_calls == 2, "1st SQL upsert succeeded and staged op before 2nd SQL failed")
+  debug_assert(core.events.jobs_sse_seq() == seq_before_rb, "mid-tx rollback leaves jobs_sse_seq unchanged")
+  let open_after_rb = core.events.open_jobs()
+  debug_assert(open_after_rb.length() == 1 && open_after_rb[0].id == "job-C", "mid-tx rollback leaves self.jobs unchanged (no job-D, job-C intact)")
+  let auth_after_rb = core.events.authoritative_jobs_snapshot()
+  debug_assert(auth_after_rb.length() == 1 && j_str(auth_after_rb[0], "id") == "job-C", "mid-tx rollback leaves authoritative_jobs_by_id unchanged")
+
+  // 6. Single-flight per-station `/jobs?chats=0`: concurrent `fetch_jobs_k` + `fetch_chat_jobs_k(7)` +
+  //    `fetch_chat_jobs_k(12)` coalesce into EXACTLY ONE HTTP request and confirm all 3 keys!
+  pending_jobs_req.clear()
+  let mut cb_jobs = false
+  let mut cb_t7 = false
+  let mut cb_t12 = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_jobs = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_t7 = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(12, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => cb_t12 = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "single-flight coalesced 3 concurrent jobs fetches into 1 HTTP request")
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{
+    status: 200,
+    headers: [],
+    body: "[{\"id\":\"job-C\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"job-c\",\"command\":\"c\",\"startedAt\":1500}]".to_bytes(),
+  }))
+  let _ = rt.run_ready()
+  debug_assert(cb_jobs && cb_t7 && cb_t12, "all 3 coalesced waiters completed")
+  debug_assert(core.can_read_station_key(DA_ST1, "jobs:" + DA_ST1), "jobs:<st> confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/7"), "chatJobs:<st>/7 confirmed")
+  debug_assert(core.can_read_station_key(DA_ST1, "chatJobs:" + DA_ST1 + "/12"), "chatJobs:<st>/12 confirmed")
+
+  // 7. Reset generation isolation + cold-boot SQLite `open=1` reconciliation:
+  //    (a) Stale-gen `end_jobs_snapshot` / `apply_jobs_at_cut` NEVER corrupt new generation's inflight counter or journal!
+  let (old_gen, old_cut) = core.events.begin_jobs_snapshot()
+  // Also leave `job-C` open=1 in SQLite while `reset_state()` wipes in-memory `self.job_order`!
+  core.events.reset_state()
+  let (new_gen, new_cut) = core.events.begin_jobs_snapshot()
+  debug_assert(new_gen > old_gen && core.events.jobs_snapshot_inflight_count() == 1, "reset_state bumped jobs_reset_gen")
+  // Late stale-gen callback tries to end & apply: MUST be rejected & ignored!
+  core.events.end_jobs_snapshot(old_gen)
+  debug_assert(core.events.jobs_snapshot_inflight_count() == 1, "stale-gen end_jobs_snapshot did NOT decrement new-gen inflight counter")
+  let empty_arr = match base_codec::json_parse("[]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match core.events.apply_jobs_at_cut(empty_arr, old_gen, old_cut) {
+    sql::SqlResult::Err(_) => ()
+    sql::SqlResult::Ok(_) => panic("stale-gen apply_jobs_at_cut must fail")
+  }
+  // (b) Now apply empty `[]` snapshot under `new_gen`: even though in-memory `job_order` is empty after reset,
+  //     SQLite `SELECT id, session, chat FROM job WHERE station = ? AND open = 1` reconciles & closes `job-C`!
+  match core.events.apply_jobs_at_cut(empty_arr, new_gen, new_cut) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => panic("new-gen empty snapshot failed: " + e.to_string())
+  }
+  core.events.end_jobs_snapshot(new_gen)
+  debug_assert(core.events.jobs_snapshot_inflight_count() == 0, "new-gen inflight counter balanced to 0")
+  match sim.job_open.get(DA_ST1 + ":job-C") {
+    Some(ov) => debug_assert(ov == 0, "cold-boot/post-reset empty snapshot reconciled stale SQLite open=1 row to open=0")
+    None => panic("expected closed job-C row in SQLite")
+  }
+
+  // 8. (R6) Journal overflow auto-refetch: if > 4096 SSE job ops commit while `/jobs?chats=0` is
+  //    in-flight, `apply_jobs_at_cut` returns `jobs_sse_journal_overflow`, `end_jobs_snapshot` clears
+  //    the overflowed journal, and `SyncScheduler` automatically carries all waiting callers into a
+  //    fresh single-flight round that commits and confirms `jobs:<st>` & `chatJobs:<st>/7`!
+  pending_jobs_req.clear()
+  let mut ovf_jobs_ok = false
+  let mut ovf_t7_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => ovf_jobs_ok = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => ovf_t7_ok = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "overflow round #1 in-flight")
+
+  // Pump 4097 committed SSE job ops in one batch to trigger `JOBS_SSE_JOURNAL_MAX = 4096` overflow!
+  let flood_batch : Array[wire::Event] = []
+  for fi in 0..<4097 {
+    flood_batch.push(wire::Event::{
+      id: Some("fl-" + fi.to_string()),
+      name: "job",
+      data: "{\"id\":\"job-ovf\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"ovf\",\"command\":\"o\",\"startedAt\":3000}",
+    })
+  }
+  match core.events.process_sse_chunk_with_cap(flood_batch, None) {
+    Ok(true) => ()
+    _ => panic("expected overflow flood SSE batch Ok(true)")
+  }
+  // Deliver round #1 snapshot inside a runtime fiber (matching real Shell/Mesh I/O delivery) ->
+  // overflows -> auto-kicks off fresh round #2 carrying both waiters!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+    k(effect::Exit::Succeeded(()))
+  })
+  let _ = rt.run_ready()
+  debug_assert(!ovf_jobs_ok && !ovf_t7_ok, "waiters carried into fresh retry round instead of failing prematurely")
+  debug_assert(pending_jobs_req.length() == 2, "journal overflow automatically initiated fresh single-flight round #2")
+  // Deliver round #2 snapshot -> commits cleanly and settles both carried waiters!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (pending_jobs_req[1])(effect::Exit::Succeeded(HttpReply::{
+      status: 200,
+      headers: [],
+      body: "[{\"id\":\"job-ovf\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"ovf\",\"command\":\"o\",\"startedAt\":3000}]".to_bytes(),
+    }))
+    k(effect::Exit::Succeeded(()))
+  })
+  let _ = rt.run_ready()
+  debug_assert(ovf_jobs_ok && ovf_t7_ok, "overflow retry round #2 succeeded and settled both carried waiters")
+  debug_assert(core.events.open_jobs().length() == 1 && core.events.open_jobs()[0].id == "job-ovf", "fresh round #2 committed job-ovf")
+
+  // 9. (R6) `bump_epoch` and `set_transport` waiter retirement: every waiter in BOTH `jobs_waiters`
+  //    AND `jobs_next_waiters` MUST be settled EXACTLY ONCE with `Failed("transport_epoch_changed")`,
+  //    and late responses from the retired round NEVER double-invoke any callback!
+  pending_jobs_req.clear()
+  let mut w1_calls = 0
+  let mut w1_reason = ""
+  let mut w2_calls = 0
+  let mut w2_reason = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      w1_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => w1_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "retirement test round #1 in-flight")
+  // Advance cred_epoch so 2nd waiter queues into `jobs_next_waiters`!
+  let _ = core.membership.bump_cred_epoch(DA_WS1)
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(19, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      w2_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => w2_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // `bump_epoch` MUST retire BOTH active and next-round waiters exactly once!
+  core.sync.bump_epoch()
+  let _ = rt.run_ready()
+  debug_assert(w1_calls == 1 && w1_reason == "transport_epoch_changed", "bump_epoch settled active jobs_waiter exactly once")
+  debug_assert(w2_calls == 1 && w2_reason == "transport_epoch_changed", "bump_epoch settled jobs_next_waiter exactly once")
+  // Late HTTP response for retired round MUST NOT double-invoke callbacks!
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  debug_assert(w1_calls == 1 && w2_calls == 1, "late retired round reply did NOT double-invoke waiters")
+
+  // Repeat for `set_transport`: both active and next-round waiters settled exactly once!
+  pending_jobs_req.clear()
+  let mut s1_calls = 0
+  let mut s1_reason = ""
+  let mut s2_calls = 0
+  let mut s2_reason = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      s1_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => s1_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  let _ = core.membership.bump_cred_epoch(DA_WS1)
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(23, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      s2_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => s2_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  core.sync.set_transport(tr)
+  let _ = rt.run_ready()
+  debug_assert(s1_calls == 1 && s1_reason == "transport_epoch_changed", "set_transport settled active jobs_waiter exactly once")
+  debug_assert(s2_calls == 1 && s2_reason == "transport_epoch_changed", "set_transport settled jobs_next_waiter exactly once")
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  debug_assert(s1_calls == 1 && s2_calls == 1, "late set_transport retired reply did NOT double-invoke waiters")
+}

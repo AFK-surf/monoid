@@ -299,7 +299,7 @@ core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/
 core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh station/mb/src/rigs_mode station/mb/src/api_routes station/mb/src/session_chats station/mb/src/cloud_lock station/mb/src/mesh_door station/mb/src/mesh_scopes station/mb/src/reader_harness vendor rules/js pion/rules/js shared/lock.ts shared/rules-runtime.ts shared/moved-from.ts shared/release-keys.ts shared/station-busy.ts station/test/fake-control-plane.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
 
 if part ts; then
-  ts_root='^(scripts|test|spike|shared)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
+  ts_root='^(scripts|test|spike|shared|bin)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
   ts_web='^web/'
   # (the core's own files the web imports and typechecks under its stricter settings: a change there alone, #2395's
   # util.ts import in error.ts, passed its own check and turned main red at the next change to the web, 8cb036d5)
@@ -383,6 +383,14 @@ if part ts; then
   # A release's deltas within the job's end, the package and its feed put after them (apps/mbui/scripts/beta.sh publish).
   if touches '^apps/mbui/scripts/beta\.sh$|^scripts/beta-deadline'; then
     step "preview publish: deltas bounded by the job's end" bash scripts/beta-deadline-test.sh
+  fi
+  # Reversible-undo guard (scripts/undone.sh) self-tests when the check or its test suite changes.
+  if touches '^scripts/undone(_test)?\.sh$'; then
+    step "undone guard self-test" sh scripts/undone_test.sh
+  fi
+  # Release included-changes manifests, signing verification, and pruning rules.
+  if touches '^scripts/release-(included(\.test)?|prune|sign)\.ts$|^shared/release-signed\.ts$'; then
+    step "release included manifests and pruning" node --test scripts/release-included.test.ts
   fi
   # The UIs never make a request of a station or still.fail cloud themselves: they name what they want done
   # (client/core-ts/src/ops.ts), and the core, which knows what it changes, brings every topic that shows it up to date.

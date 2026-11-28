@@ -954,7 +954,7 @@ test "auth_cap 8: SyncScheduler pending_refresh converges across 4+ consecutive 
             None => ()
           }
         }
-        let body = "{\"chats\":[{\"id\":\"c-idle\",\"thread\":12,\"title\":\"Idle Gen " + idle_calls[0].to_string() + "\"}]}"
+        let body = "{\"last\":1,\"entries\":[{\"thread\":12,\"n\":1,\"ts\":1700000000,\"body\":\"Idle Gen " + idle_calls[0].to_string() + "\"}]}"
         rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body.to_bytes() }))
       } else {
         rk(effect::Exit::Succeeded(HttpReply::{ status: 404, headers: [], body: Bytes::new(0) }))
@@ -999,8 +999,8 @@ test "auth_cap 8: SyncScheduler pending_refresh converges across 4+ consecutive 
   let _ = env.rt.run_ready()
   debug_assert(idle_calls[0] == 5, "prefetch_idle_k ran 5 attempts across 4 consecutive bumps")
   debug_assert(idle_res[0] >= 1, "prefetch_idle_k converged and committed")
-  let idle_row_ok = match env.sim_db.chats.get("ws-sched/st-1:0:c-idle") {
-    Some(r) => r.json.contains("Idle Gen 5")
+  let idle_row_ok = match env.sim_db.entries.get("ws-sched/st-1 12") {
+    Some(arr) => arr.length() > 0 && arr[0].1.contains("Idle Gen 5")
     None => false
   }
   debug_assert(idle_row_ok, "SQLite holds converged attempt-5 idle prefetch")

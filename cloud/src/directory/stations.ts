@@ -6,7 +6,7 @@ import { langOf, type Lang } from "../i18n.ts";
 import { showsOf, type Shows } from "../noticeText";
 import type { ProvisionKeyView, Role, WorkspaceView } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
-import { ENROLLMENT_TTL_SEC, LIMITS, MANAGERS, REVOCATION_DAYS, cleanEmoji, cleanIcon, cleanName, fail, type PushDevice, type PushRegistration, type Row } from "./types";
+import { ENROLLMENT_TTL_SEC, LIMITS, MANAGERS, REVOCATION_DAYS, cleanEmoji, cleanIcon, cleanName, fail, type ChangedView, type PushDevice, type PushRegistration, type Row } from "./types";
 
 /** A provisioning key's beginning, which only `/v1/provision/*` takes (api.ts). */
 export const PROVISION_KEY_PREFIX = "sfpk_";
@@ -212,9 +212,9 @@ export class DirectoryStations {
     if (name !== undefined) this.#db.run("UPDATE station_members SET name = ? WHERE station = ? AND workspace = ?", name, station, workspace);
     if (emoji !== undefined) this.#db.run("UPDATE station_members SET emoji = ? WHERE station = ? AND workspace = ?", emoji, station, workspace);
     if (icon !== undefined) this.#db.run("UPDATE station_members SET icon = ? WHERE station = ? AND workspace = ?", icon, station, workspace);
-    this.#host.changed(workspace, false);
+    const kept = this.#host.changed(workspace, false);
     if (name !== undefined) this.#host.sendState(station);
-    return this.#host.view(sub, workspace);
+    return this.#host.view(sub, workspace, kept);
   }
 
   /**
@@ -230,6 +230,7 @@ export class DirectoryStations {
     const role = this.#db.role(sub, workspace);
     if (mode !== "full" && mode !== "tasks") fail(400, "invalid_name");
     const row = this.#db.one("SELECT rig, enrolled_by FROM station_members WHERE station = ? AND workspace = ?", station, workspace) ?? fail(404, "station_not_found");
+    let kept: ChangedView | null = null;
     if ((row.rig === 1) !== (mode === "tasks")) {
       const oldHome = this.#db.memberships(station)[0];
       const mine = row.enrolled_by === sub;
@@ -243,7 +244,7 @@ export class DirectoryStations {
         this.#db.run("UPDATE station_members SET rig = NULL WHERE station = ? AND workspace = ?", station, workspace);
       }
       const newHome = this.#db.memberships(station)[0];
-      this.#host.changed(workspace, true);
+      kept = this.#host.changed(workspace, true);
       if (newHome !== oldHome) {
         if (oldHome && oldHome !== workspace) this.#host.changed(oldHome, true);
         if (newHome && newHome !== workspace) this.#host.changed(newHome, true);
@@ -251,7 +252,7 @@ export class DirectoryStations {
       this.#host.sendState(station, true);
       await this.#host.delivered();
     }
-    return this.#host.view(sub, workspace);
+    return this.#host.view(sub, workspace, kept);
   }
 
   /** Takes a station out of this workspace only; it stays in the others it is in. A rig: its person may too. */

@@ -183,9 +183,9 @@ pub fn unframe_agent_messages(buf : Bytes) -> Result[(Array[Bytes], Bytes), Stri
 
 /// An Ed25519 SSH key held in memory by the per-command agent.
 pub struct SshEd25519Key {
-  pub seed : Bytes
+  pub mut seed : Bytes
   pub pub_key : Bytes
-  pub blob : Bytes
+  pub mut blob : Bytes
   pub comment : String
 }
 
@@ -533,6 +533,12 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
     return
   }
   self.closed = true
+  // Scrub private key material immediately on close so closed tombstones NEVER retain keys in memory.
+  for i in 0..<self.key.seed.length() {
+    self.key.seed[i] = 0 as Byte
+  }
+  self.key.seed = Bytes::new(0)
+  self.key.blob = Bytes::new(0)
   if self.listener_id >= 0 {
     let lid = self.listener_id
     self.listener_id = -1
