@@ -21,7 +21,12 @@ pub fn project_chat_row(
   marks : ViewerMarks,
   now_ms : Int64,
   lang : String = "zh",
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
+  match allow_station {
+    Some(pred) => if !pred(station) { return sql::SqlResult::Ok(base_codec::json_null()) }
+    None => ()
+  }
   // Follow moved-chat pointer if present.
   let mut cur_st = station
   let mut cur_sess = session
@@ -33,6 +38,10 @@ pub fn project_chat_row(
       }
     }
     _ => ()
+  }
+  match allow_station {
+    Some(pred) => if !pred(cur_st) { return sql::SqlResult::Ok(base_codec::json_null()) }
+    None => ()
   }
   let rec_opt = match store::get_chat_by_session(db, cur_st, cur_sess) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -460,7 +469,13 @@ pub fn resolve_station_now(db : sql::Sql, address : String) -> String {
 /// Parse an in-app `still.fail` / `monoid` link into its structured destination and follow
 /// both replaced stations (`copies.formerly` via `resolve_station_now`) and multi-hop moved chats
 /// (`store::resolve_chat_now`), matching `asks.ts:461-525` (`linkTarget` + `linkNow`) 1:1.
-pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> base_codec::Json {
+pub fn parse_link_target(
+  db : sql::Sql,
+  url : String,
+  cloud_origin : String,
+  allow_workspace : Option[(String) -> Bool] = None,
+  allow_station : Option[(String) -> Bool] = None,
+) -> base_codec::Json {
   if url.starts_with("?") {
     let (q, _) = cut_once(url.slice(1, url.length()), "#")
     match query_param(q, "history") {
@@ -591,8 +606,15 @@ pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> 
     Some(t) => t
     None => return base_codec::json_null()
   }
-  // Follow replaced stations (`stationNow`) and moved-chat pointers (`linkNow`, up to 16 hops)
+  // Follow replaced stations (`stationNow`) and moved-chat pointers (`linkNow`, up to 16 hops),
+  // enforcing authorization on source workspace/station AND every resolved destination hop!
   let ws = j_str(target, "workspace")
+  if ws.length() > 0 {
+    match allow_workspace {
+      Some(pred) => if !pred(ws) { return base_codec::json_null() }
+      None => ()
+    }
+  }
   let orig_st = j_str(target, "station")
   if ws.length() == 0 || orig_st.length() == 0 {
     return target
@@ -606,11 +628,19 @@ pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> 
     None
   }
   let mut addr = ws + "/" + orig_st
+  match allow_station {
+    Some(pred) => if !pred(addr) { return base_codec::json_null() }
+    None => ()
+  }
   let mut named_opt = orig_chat_opt
   let seen : Map[String, Bool] = Map::new()
   for _ in 0..<16 {
     // 1. Follow replaced station (`copies.formerly`)
     addr = resolve_station_now(db, addr)
+    match allow_station {
+      Some(pred) => if !pred(addr) { return base_codec::json_null() }
+      None => ()
+    }
     if seen.get(addr).is_some() {
       return target
     }
@@ -636,6 +666,10 @@ pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> 
         match moved_opt {
           None => break
           Some(loc) => {
+            match allow_station {
+              Some(pred) => if !pred(loc.station) { return base_codec::json_null() }
+              None => ()
+            }
             if seen.get(loc.station).is_some() {
               return target
             }
@@ -650,6 +684,10 @@ pub fn parse_link_target(db : sql::Sql, url : String, cloud_origin : String) -> 
         }
       }
     }
+  }
+  match allow_station {
+    Some(pred) => if !pred(addr) { return base_codec::json_null() }
+    None => ()
   }
   let sl = last_index_of_byte(addr, 47 as Byte)
   let final_st = if sl >= 0 { addr.slice(sl + 1, addr.length()) } else { addr }

@@ -58,6 +58,7 @@ struct SimAccountDb {
   moved_rows : Map[String, (String, String, String, Option[Int], Option[Int], Option[Int64], Int)]
   meta : Map[String, String]
   mut fail_drop_sql : Bool
+  mut fail_sqlite_master : Bool
   ran : Array[String]
 }
 
@@ -99,6 +100,7 @@ fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
     moved_rows: Map::new(),
     meta: Map::new(),
     fail_drop_sql: false,
+    fail_sqlite_master: false,
     ran: [],
   }
   holder.push(db)
@@ -789,6 +791,9 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       }
     }
   } else if stmt == "SELECT name FROM sqlite_master WHERE type = 'table'" {
+    if self.fail_sqlite_master {
+      return shell::AskResult::Err(shell::ShellError::{ message: "sqlite_master_io_error" })
+    }
     rows.push(base_codec::json_arr([base_codec::json_str("moved")]))
     rows.push(base_codec::json_arr([base_codec::json_str("shared_mark")]))
     rows.push(base_codec::json_arr([base_codec::json_str("md_kept")]))

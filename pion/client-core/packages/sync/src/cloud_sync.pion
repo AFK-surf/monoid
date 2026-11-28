@@ -161,6 +161,39 @@ fn parse_cloud_error(status : Int, body : Bytes) -> String {
   parse_cloud_http_error(status, body).message
 }
 
+fn is_non_neg_json_int(n : Double, repr : String) -> Bool {
+  if n < 0.0 {
+    return false
+  }
+  if repr.contains(".") || repr.contains("e") || repr.contains("E") {
+    return false
+  }
+  n.to_int64().to_double() == n
+}
+
+fn check_opt_str_field(obj : base_codec::Json, key : String, idx : Int) -> Result[Unit, String] {
+  match base_codec::json_get(obj, key) {
+    None | Some(base_codec::Json::Null) | Some(base_codec::Json::Str(_)) => Ok(())
+    _ => Err("malformed /v1/me: workspaces[" + idx.to_string() + "]." + key + " must be string or null")
+  }
+}
+
+fn check_opt_str_array_field(obj : base_codec::Json, key : String, idx : Int) -> Result[Unit, String] {
+  match base_codec::json_get(obj, key) {
+    None | Some(base_codec::Json::Null) => Ok(())
+    Some(base_codec::Json::Arr(xs)) => {
+      for j in 0..<xs.length() {
+        match xs[j] {
+          base_codec::Json::Str(_) => ()
+          _ => return Err("malformed /v1/me: workspaces[" + idx.to_string() + "]." + key + "[" + j.to_string() + "] must be string")
+        }
+      }
+      Ok(())
+    }
+    _ => Err("malformed /v1/me: workspaces[" + idx.to_string() + "]." + key + " must be string array")
+  }
+}
+
 /// Strictly validate `/v1/me` payload before any membership diff or persistence:
 /// - Root MUST be a JSON object.
 /// - `sub` MUST be a non-empty string (on `user.sub` or root `sub`).
@@ -233,16 +266,32 @@ pub fn parse_cloud_me_strict(j : base_codec::Json) -> Result[CloudMe, String] {
       _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].created_at must be number")
     }
     match base_codec::json_get(w, "stations") {
-      Some(base_codec::Json::Num(n, _)) => if n < 0.0 {
-        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].stations must be non-negative number")
+      Some(base_codec::Json::Num(n, repr)) => if !is_non_neg_json_int(n, repr) {
+        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].stations must be non-negative integer")
       }
-      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].stations must be number")
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].stations must be non-negative integer")
     }
     match base_codec::json_get(w, "members") {
-      Some(base_codec::Json::Num(n, _)) => if n < 0.0 {
-        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].members must be non-negative number")
+      Some(base_codec::Json::Num(n, repr)) => if !is_non_neg_json_int(n, repr) {
+        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].members must be non-negative integer")
       }
-      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].members must be number")
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].members must be non-negative integer")
+    }
+    match check_opt_str_field(w, "emoji", i) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
+    }
+    match check_opt_str_field(w, "icon", i) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
+    }
+    match check_opt_str_array_field(w, "relays", i) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
+    }
+    match check_opt_str_array_field(w, "ways_off", i) {
+      Err(e) => return Err(e)
+      Ok(_) => ()
     }
     workspaces.push(CloudWorkspaceRef::{
       id: wid,
@@ -1174,8 +1223,20 @@ pub fn CloudSync::bind_account_context(
   if session.length() > 0 && session != self.bound_session {
     self.bound_session = session
     self.session_gen += 1L
+    self.stop_events_ws()
   }
   Ok(())
+}
+
+/// Stop only the active `/v1/events` WebSocket fiber so `is_events_ws_running()` becomes `false`.
+pub fn CloudSync::stop_events_ws(self : CloudSync) -> Unit {
+  match self.ws_fiber {
+    Some(f) => {
+      self.ws_fiber = None
+      f.interrupt()
+    }
+    None => ()
+  }
 }
 
 pub fn CloudSync::session_gen(self : CloudSync) -> Int64 {

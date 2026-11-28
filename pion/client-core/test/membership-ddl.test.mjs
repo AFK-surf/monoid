@@ -25,7 +25,10 @@ import {
   MIGRATIONS,
   ensureSaid,
   ensureKept,
+  ensureFilesKept,
   ensureMdKept,
+  ensureSlackSaid,
+  ensureSlackWho,
   ensureMoved,
   ensureSharedSidecar,
 } from "../../../client/core-ts/src/db/schema.ts";
@@ -109,13 +112,19 @@ function createRealTsSchemaDb() {
   };
   ensureSaid(sqlShim);
   ensureKept(sqlShim);
+  ensureFilesKept(sqlShim);
   ensureMdKept(sqlShim);
+  ensureSlackSaid(sqlShim);
+  ensureSlackWho(sqlShim);
   ensureMoved(sqlShim);
   ensureSharedSidecar(sqlShim);
   return db;
 }
 
 function seedOptionalTablesForStation(db, ws, st, tag, otherSt = null) {
+  db.prepare(
+    "INSERT OR REPLACE INTO file_kept (station, session, name, kind, type, size, used, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(st, `sess-${tag}`, `img-${tag}.png`, "thumb", "image/png", 16, 1000, "AAAA");
   db.prepare("INSERT OR REPLACE INTO md_kept (station, key, of, size, used, json) VALUES (?, ?, ?, ?, ?, ?)").run(
     st,
     `md-${tag}`,
@@ -124,6 +133,12 @@ function seedOptionalTablesForStation(db, ws, st, tag, otherSt = null) {
     1000,
     "{}",
   );
+  db.prepare(
+    "INSERT OR REPLACE INTO slack_said (station, session, i, k, out, call, user, who, at, dest, text, failed, refused) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(st, `sess-${tag}`, 1, 0, 0, null, "U123", "Alice", 1000, "C1", `slack msg ${tag}`, 0, 0);
+  db.prepare(
+    "INSERT OR REPLACE INTO slack_who (station, user, first, who, at) VALUES (?, ?, ?, ?, ?)",
+  ).run(st, "U123", 1000, "Alice", 1000);
   db.prepare("INSERT OR REPLACE INTO log_use (kind, station, id, opened, evicted) VALUES (?, ?, ?, ?, ?)").run(
     "chat",
     st,
@@ -269,7 +284,17 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
 
     // Fetch exact SQL plan from Pion `sync::drop_workspace_sql_plan` INCLUDING all present optional tables
     // and execute EVERY statement in ONE single SQLite transaction on real `node:sqlite`.
-    const optionalTables = ["md_kept", "log_use", "moved", "shared_sidecar", "shared_meta", "shared_mark"];
+    const optionalTables = [
+      "file_kept",
+      "md_kept",
+      "log_use",
+      "slack_said",
+      "slack_who",
+      "moved",
+      "shared_sidecar",
+      "shared_meta",
+      "shared_mark",
+    ];
     const plan = await rpc.call("membership.dropSqlPlan", {
       workspace: "ws_drop",
       stations: ["ws_drop/st-1", "st-drop-only"],
@@ -297,7 +322,7 @@ test("Slice 2B real node:sqlite TS DDL: drop_workspace_sql_plan deletes every dr
       "slack_app", "list", "chat", "session", "thread", "thread_member",
       "entry", "transcript", "job", "outbox", "pending", "first",
       "changing", "draft", "said",
-      "md_kept", "log_use", "shared_sidecar", "shared_meta", "shared_mark",
+      "file_kept", "md_kept", "log_use", "slack_said", "slack_who", "shared_sidecar", "shared_meta", "shared_mark",
     ];
     for (const tbl of perStationTables) {
       const remDrop = db.prepare(`SELECT count(*) AS c FROM ${tbl} WHERE station IN (?, ?)`).get("ws_drop/st-1", "st-drop-only").c;

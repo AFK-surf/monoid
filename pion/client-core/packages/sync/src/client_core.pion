@@ -1476,6 +1476,7 @@ pub fn ClientCore::set_db_account_sub(
   sub : String,
   host_purges_doc : Option[base_codec::Json] = None,
   host_purges_shared : Bool = false,
+  host_purges_read : Option[HostStorageRead] = None,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1486,7 +1487,13 @@ pub fn ClientCore::set_db_account_sub(
     }
     None => ()
   }
-  match self.membership.bind_account_sub(sub, db=Some(self.db), host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared) {
+  match self.membership.bind_account_sub(
+    sub,
+    db=Some(self.db),
+    host_purges_doc=host_purges_doc,
+    host_purges_shared=host_purges_shared,
+    host_purges_read=host_purges_read,
+  ) {
     Err(msg) => Err(msg)
     Ok(_) => {
       self.db_account_sub = Some(sub)
@@ -1504,6 +1511,7 @@ pub fn ClientCore::switch_account_db(
   sub : String,
   host_purges_doc : Option[base_codec::Json] = None,
   host_purges_shared : Bool = false,
+  host_purges_read : Option[HostStorageRead] = None,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1576,7 +1584,12 @@ pub fn ClientCore::switch_account_db(
   // Hydrate `MembershipAuthority` from `new_db` + per-account host pending purges, then retry pending purges.
   self.db_account_sub = None
   self.membership.reset_for_db_switch()
-  match self.set_db_account_sub(sub, host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared) {
+  match self.set_db_account_sub(
+    sub,
+    host_purges_doc=host_purges_doc,
+    host_purges_shared=host_purges_shared,
+    host_purges_read=host_purges_read,
+  ) {
     Err(msg) => return Err(msg)
     Ok(_) => ()
   }
@@ -1585,6 +1598,77 @@ pub fn ClientCore::switch_account_db(
   self.restore_notify_state()
   let _ = self.auth.bump_all()
   Ok(())
+}
+
+/// Atomically transition ALL DB holders back to a clean unauthenticated `:memory:` DB
+/// (e.g. when the last signed-in account is permanently removed on 401 refresh failure).
+/// Clears `db_account_sub`, stops all station streams, resets all cached state, and leaves
+/// the runtime ready for a subsequent same-process sign-in with any account!
+pub fn ClientCore::switch_to_unauthenticated_db(self : ClientCore, new_mem_db : sql::Sql) -> Unit {
+  self.events.stop()
+  self.events.reset_state()
+  let off = core_offline_transport()
+  self.events.set_transport(off)
+  self.sync.bump_epoch()
+  self.sync.set_transport(off)
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    match self.extra_events.get(eks[i]) {
+      Some(ev) => {
+        ev.stop()
+        ev.reset_state()
+      }
+      None => ()
+    }
+    match self.extra_sync.get(eks[i]) {
+      Some(sy) => {
+        sy.bump_epoch()
+        sy.set_transport(core_offline_transport())
+      }
+      None => ()
+    }
+  }
+  self.extra_events.clear()
+  self.extra_sync.clear()
+
+  self.db = new_mem_db
+  self.md_store.switch_db(new_mem_db)
+  self.router.switch_db(new_mem_db)
+  self.events.switch_db(new_mem_db)
+  self.local_outbox.switch_db(new_mem_db)
+  self.composers.switch_db(new_mem_db)
+
+  self.rows_memo = views::RowsMemo::new()
+  self.pending_dirty_rows.clear()
+  self.viewer_marks = views::ViewerMarks::new("")
+  self.viewer_sub = ""
+  self.viewer_role = "member"
+  self.workspace = "ws-default"
+  self.chat_windows.clear()
+  self.chat_places.clear()
+  self.chat_place_order.clear()
+  self.chat_sub_snapshots.clear()
+  self.marks_wanted.clear()
+  self.extra_locks.clear()
+  self.lock_digest_by_ws.clear()
+  self.lock_sec_digest_by_ws.clear()
+  self.lock_state = None
+  self.lock_root = None
+  self.lock_kept_entries = []
+  self.lock_kept_aside = []
+  self.person_lock_entries = []
+  self.lock_seen = None
+  self.lock_corrupt = false
+  self.lock_read_pending = false
+  self.lock_effective = None
+  self.notices_held.clear()
+  self.lock_pairing_prompts.clear()
+  self.vault_key_asks.clear()
+
+  self.db_account_sub = None
+  self.membership.reset_for_db_switch()
+  self.membership.set_unauthenticated(true)
+  let _ = self.auth.bump_all()
 }
 
 // ── Single Authoritative Membership & Lifecycle Coordination (`MembershipAuthority`) ──
@@ -2131,17 +2215,18 @@ pub fn ClientCore::commit_cloud_me(
   if me.sub.length() == 0 {
     return Err("account_sub_mismatch: empty /v1/me sub")
   }
-  match self.db_account_sub {
-    Some(existing) => if existing != me.sub {
-      return Err("account_sub_mismatch: expected " + existing + ", got " + me.sub)
-    }
-    None => ()
-  }
   if self.membership.is_unauthenticated() {
     return Err("unauthenticated")
   }
   if self.membership.is_session_invalidated() {
     return Err("session_invalidated")
+  }
+  // Pure account-binding validation: NEVER call `set_db_account_sub` or trigger host I/O here!
+  match self.db_account_sub {
+    None => return Err("account_sub_unbound: db account sub not bound")
+    Some(existing) => if existing != me.sub {
+      return Err("account_sub_mismatch: expected " + existing + ", got " + me.sub)
+    }
   }
   if !self.membership.can_commit_cloud_me(req_seq) {
     return Ok(false)
@@ -2150,25 +2235,36 @@ pub fn ClientCore::commit_cloud_me(
     Err(msg) => return Err(msg)
     Ok(_) => ()
   }
-  match self.set_db_account_sub(me.sub) {
-    Err(msg) => {
-      self.membership.leave_commit_guard()
-      return Err(msg)
-    }
-    Ok(_) => ()
-  }
 
   let raw_me_ws_ids : Map[String, CloudWorkspaceRef] = Map::new()
   for i in 0..<me.workspaces.length() {
     raw_me_ws_ids.set(me.workspaces[i].id, me.workspaces[i])
   }
+  let raw_me_ws_items : Map[String, base_codec::Json] = Map::new()
+  match base_codec::json_get(me.raw, "workspaces") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let wid = j_str(xs[i], "id")
+        if wid.length() > 0 {
+          raw_me_ws_items.set(wid, xs[i])
+        }
+      }
+    }
+    _ => ()
+  }
 
   // Collect all currently existing workspaces (SQLite `workspace` + `pending_purges` + active bindings).
   let existing_ws : Array[String] = []
+  let existing_ws_rows : Map[String, base_codec::Json] = Map::new()
   match store::list_workspaces(self.db) {
     sql::SqlResult::Ok(rows) => {
       for i in 0..<rows.length() {
-        push_unique_str_cc(existing_ws, rows[i].id)
+        let r = rows[i]
+        push_unique_str_cc(existing_ws, r.id)
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => existing_ws_rows.set(r.id, j)
+          base_codec::JsonParseResult::Err(_) => ()
+        }
       }
     }
     sql::SqlResult::Err(_) => ()
@@ -2216,12 +2312,65 @@ pub fn ClientCore::commit_cloud_me(
   let raw_json = base_codec::json_stringify(effective_me_json)
   let eff_now = if now_ms > 0L { now_ms } else { self.rt.now() }
 
+  // Prepare `workspace` table summary upserts for workspaces where `should_apply_me_workspace(wid, req_seq)`
+  // so fresh DBs immediately show all workspaces after first `/v1/me` without overwriting newer details.
+  let ws_upserts : Array[(String, String)] = []
+  for i in 0..<me.workspaces.length() {
+    let wid = me.workspaces[i].id
+    if !self.membership.should_apply_me_workspace(wid, req_seq) {
+      continue
+    }
+    match raw_me_ws_items.get(wid) {
+      Some(me_item) => {
+        let existing_opt = if contains_str_ma(rejoined, wid) { None } else { existing_ws_rows.get(wid) }
+        let merged_row = merge_me_summary_into_workspace_row(existing_opt, me_item)
+        ws_upserts.push((wid, base_codec::json_stringify(merged_row)))
+      }
+      None => ()
+    }
+  }
+
   let need_ddl = to_drop.length() > 0 || rejoin_pending.length() > 0
   let opt_tables = if need_ddl {
     match detect_existing_optional_tables(self.db) {
       sql::SqlResult::Ok(ts) => ts
       sql::SqlResult::Err(e) => {
+        // Fail-closed on schema probe error: latch `revoked` + `pending_purges` and purge memory
+        // for all removed / rejoin-pending workspaces before returning `Err`!
+        let latched_events : Array[(String, Array[String])] = []
+        for i in 0..<to_drop.length() {
+          let (wid, sts) = to_drop[i]
+          let _ = self.membership.latch_purge(wid, sts)
+          self.purge_workspace_memory(wid, sts)
+          let _ = self.membership.bump_cred_epoch(wid)
+          self.membership.clear_role(wid)
+          let _ = self.auth.bump_workspace_and_vault(wid)
+          latched_events.push((wid, sts))
+        }
+        for i in 0..<rejoin_pending.length() {
+          let (wid, sts) = rejoin_pending[i]
+          let _ = self.membership.latch_purge(wid, sts)
+          self.purge_workspace_memory(wid, sts)
+          let _ = self.membership.bump_cred_epoch(wid)
+          self.membership.clear_role(wid)
+          let _ = self.auth.bump_workspace_and_vault(wid)
+          latched_events.push((wid, sts))
+        }
+        if latched_events.length() > 0 {
+          let _ = self.membership.persist_pending_purges_sqlite(self.db)
+        }
         self.membership.leave_commit_guard()
+        if latched_events.length() > 0 {
+          self.membership.enqueue_host_pending_purges_sync()
+          match self.on_workspace_dropped {
+            Some(cb) => {
+              for i in 0..<latched_events.length() {
+                cb(latched_events[i].0, latched_events[i].1)
+              }
+            }
+            None => ()
+          }
+        }
         return Err(e.to_string())
       }
     }
@@ -2258,6 +2407,17 @@ pub fn ClientCore::commit_cloud_me(
   let tx_res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
     for i in 0..<drop_plans.length() {
       match run_drop_plan_in_burst(b, drop_plans[i]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    for i in 0..<ws_upserts.length() {
+      let (wid, wjson) = ws_upserts[i]
+      match b.run(sql_workspace_put(), params=[
+        base_codec::json_str(wid),
+        base_codec::json_str(wjson),
+        base_codec::json_int64(eff_now),
+      ]) {
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(_) => ()
       }
@@ -2450,6 +2610,36 @@ pub fn ClientCore::commit_cloud_workspace(
     return Ok(false)
   }
 
+  // Determine viewer's effective role from `ws.raw.role` or matching member entry BEFORE SQLite tx
+  // so `account_doc("me")` is bidirectionally merged in the EXACT same atomic transaction!
+  let mut new_role = j_str(ws.raw, "role")
+  if new_role.length() == 0 {
+    for i in 0..<ws.members.length() {
+      let m = ws.members[i]
+      let sub_match = self.viewer_sub.length() > 0 && m.sub == self.viewer_sub
+      let email_match = self.viewer_marks.me.length() > 0 && m.email == self.viewer_marks.me
+      if sub_match || email_match {
+        new_role = m.role
+        break
+      }
+    }
+  }
+  let merged_role_opt : Option[String] = if is_valid_workspace_role(new_role) {
+    Some(new_role)
+  } else {
+    self.membership.role_of(ws.id)
+  }
+  let merged_me_json_opt : Option[String] = match store::get_account_doc(self.db, "me") {
+    sql::SqlResult::Ok(Some(me_raw)) => match base_codec::json_parse(me_raw) {
+      base_codec::JsonParseResult::Ok(me_doc) => match merge_workspace_detail_into_me_json(me_doc, ws, merged_role_opt) {
+        Some(updated_me) => Some(base_codec::json_stringify(updated_me))
+        None => None
+      }
+      base_codec::JsonParseResult::Err(_) => None
+    }
+    _ => None
+  }
+
   let snap = self.membership.snapshot_for_tx()
   for i in 0..<ws.stations.length() {
     let _ = self.membership.bind_station_checked(ws.id, ws.stations[i].id)
@@ -2466,6 +2656,17 @@ pub fn ClientCore::commit_cloud_workspace(
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => ()
     }
+    match merged_me_json_opt {
+      Some(me_str) => match b.run(sql_account_doc_put(), params=[
+        base_codec::json_str("me"),
+        base_codec::json_str(me_str),
+        base_codec::json_int64(eff_now),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      None => ()
+    }
     self.membership.persist_station_bindings_in_burst(b)
   })
   match tx_res {
@@ -2478,19 +2679,6 @@ pub fn ClientCore::commit_cloud_workspace(
   }
   self.membership.advance_workspace_seq(ws.id, req_seq)
 
-  // Determine viewer's role from `ws.raw.role` or matching member entry.
-  let mut new_role = j_str(ws.raw, "role")
-  if new_role.length() == 0 {
-    for i in 0..<ws.members.length() {
-      let m = ws.members[i]
-      let sub_match = self.viewer_sub.length() > 0 && m.sub == self.viewer_sub
-      let email_match = self.viewer_marks.me.length() > 0 && m.email == self.viewer_marks.me
-      if sub_match || email_match {
-        new_role = m.role
-        break
-      }
-    }
-  }
   let mut role_changed = false
   if is_valid_workspace_role(new_role) {
     match self.membership.role_of(ws.id) {
@@ -3795,16 +3983,33 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
       _ => self.station
     }
-    if !self.can_read_station(st) {
-      return Some(protocol::CoreEvent::Waiting(id))
-    }
     let sess = match topic.param("session") {
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
-    let ws_of_st = self.membership.station_workspace(st, fallback_ws=self.workspace)
+    let mut final_st = st
+    match store::resolve_chat_now(self.db, st, sess) {
+      sql::SqlResult::Ok(Some(loc)) => {
+        final_st = loc.station
+      }
+      _ => ()
+    }
+    // Authorize BOTH source station AND moved destination station!
+    if !self.can_read_station(st) || !self.can_read_station(final_st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let ws_of_st = self.membership.station_workspace(final_st, fallback_ws=self.workspace)
     let briefs = self.station_briefs_for_scope(ws_of_st)
-    match views::project_chat_row(self.db, st, sess, briefs, self.viewer_marks, self.rt.now(), lang=self.lang) {
+    match views::project_chat_row(
+      self.db,
+      st,
+      sess,
+      briefs,
+      self.viewer_marks,
+      self.rt.now(),
+      lang=self.lang,
+      allow_station=Some(fn(s : String) -> Bool { self.can_read_station(s) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -5644,6 +5849,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         return Some(protocol::CoreEvent::Ok(id, self.lock_status_json(workspace=req_ws), None))
       }
       if call_name == "sessions.list" {
+        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() || !self.can_read_station(self.station) {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("sessions", base_codec::json_arr([]))]), None))
+        }
         let all = self.events.all_sessions()
         let items : Array[base_codec::Json] = []
         for i in 0..<all.length() {
@@ -5657,6 +5865,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("sessions", base_codec::json_arr(items))]), None))
       }
       if call_name == "jobs.open" {
+        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() || !self.can_read_station(self.station) {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr([]))]), None))
+        }
         let open_list = self.events.open_jobs()
         let items : Array[base_codec::Json] = []
         for i in 0..<open_list.length() {
@@ -5763,6 +5974,52 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
               _ => (self.rt.now() / 1000L) + 3600L
             }
           }
+          let new_acct = views::StoredAccount::{
+            sub: sub,
+            email: email,
+            name: name,
+            picture: picture,
+            access: access,
+            refresh: refresh,
+            access_expires: exp,
+          }
+          // Build candidate accounts snapshot and persist BEFORE mutating auth_store or opening gate!
+          let cand_accounts : Array[views::StoredAccount] = []
+          let mut replaced_cand = false
+          for i in 0..<self.auth_store.accounts.length() {
+            if self.auth_store.accounts[i].sub == sub {
+              cand_accounts.push(new_acct)
+              replaced_cand = true
+            } else {
+              cand_accounts.push(self.auth_store.accounts[i])
+            }
+          }
+          if !replaced_cand {
+            cand_accounts.push(new_acct)
+          }
+          let cand_sessions : Map[String, String] = Map::new()
+          let sks = self.account_sessions.keys()
+          for i in 0..<sks.length() {
+            match self.account_sessions.get(sks[i]) {
+              Some(v) => cand_sessions.set(sks[i], v)
+              None => ()
+            }
+          }
+          match proto_str(params, "session") {
+            Some(sid) => if sid.length() > 0 { cand_sessions.set(sub, sid) }
+            None => ()
+          }
+          let persisted = serialize_stored_accounts(cand_accounts, sessions=Some(cand_sessions))
+          match self.on_accounts_persisted {
+            Some(hook) => match hook(persisted) {
+              Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+                code: "storage_error",
+                message: msg,
+              }))
+              Ok(_) => ()
+            }
+            None => ()
+          }
           match proto_str(params, "session") {
             Some(sid) => if sid.length() > 0 { self.account_sessions.set(sub, sid) }
             None => ()
@@ -5771,22 +6028,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             self.membership.clear_session_invalidated()
             self.membership.set_unauthenticated(false)
           }
-          self.auth_store.register_account(views::StoredAccount::{
-            sub: sub,
-            email: email,
-            name: name,
-            picture: picture,
-            access: access,
-            refresh: refresh,
-            access_expires: exp,
-          })
+          self.auth_store.register_account(new_acct)
           self.set_viewer(email, sub=sub)
           self.login_flow.mark_completed(sub, outcome.return_to)
-          let persisted = serialize_stored_accounts(self.auth_store.accounts, sessions=Some(self.account_sessions))
-          match self.on_accounts_persisted {
-            Some(hook) => { let _ = hook(persisted) }
-            None => ()
-          }
           let _ = store::put_account_doc(self.db, "accounts", base_codec::json_stringify(views::project_accounts_topic(self.auth_store)))
         }
         // NEVER expose `verifier`, `access`, or `refresh`!
@@ -6459,7 +6703,16 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(u) => u
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing url" }))
         }
-        let parsed = views::parse_link_target(self.db, url, self.cloud_origin)
+        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+        }
+        let parsed = views::parse_link_target(
+          self.db,
+          url,
+          self.cloud_origin,
+          allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
+          allow_station=Some(fn(s : String) -> Bool { self.can_read_station(s) }),
+        )
         return Some(protocol::CoreEvent::Ok(id, parsed, None))
       }
       if call_name == "composer.text" {

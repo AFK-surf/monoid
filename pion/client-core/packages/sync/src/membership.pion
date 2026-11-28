@@ -138,33 +138,6 @@ pub fn is_valid_workspace_role(role : String) -> Bool {
   role == "owner" || role == "admin" || role == "member"
 }
 
-/// Numeric privilege rank for Cloud workspace roles (`owner > admin > member`).
-pub fn role_rank(role : String) -> Int {
-  if role == "owner" {
-    3
-  } else if role == "admin" {
-    2
-  } else if role == "member" {
-    1
-  } else {
-    0
-  }
-}
-
-/// Whether transitioning from `old_role` to `new_role` is a privilege downgrade.
-pub fn is_role_downgrade(old_role : String, new_role : String) -> Bool {
-  let old_r = role_rank(old_role)
-  let new_r = role_rank(new_role)
-  old_r > 0 && new_r > 0 && new_r < old_r
-}
-
-/// Whether transitioning from `old_role` to `new_role` is a privilege upgrade.
-pub fn is_role_upgrade(old_role : String, new_role : String) -> Bool {
-  let old_r = role_rank(old_role)
-  let new_r = role_rank(new_role)
-  old_r > 0 && new_r > 0 && new_r > old_r
-}
-
 fn push_unique_str_ma(xs : Array[String], v : String) -> Unit {
   if v.length() == 0 {
     return
@@ -405,6 +378,22 @@ pub struct AccountRefreshHost {
 /// - 200 write-back CAS & 401 permanent removal CAS: both re-read latest disk `accounts` inside the
 ///   serialized lock, verify `(sub, session, refresh)` still matches, preserve all sibling accounts
 ///   verbatim, and abort retryably on `ReadError` without touching disk!
+let g_shared_account_locks : Map[String, effect::Semaphore] = Map::new()
+
+/// Return the process-wide serialized `accounts` disk write lock shared across all runtimes
+/// targeting the same storage directory `dir_key`.
+pub fn shared_account_lock_for_dir(dir_key : String) -> effect::Semaphore {
+  let norm = if dir_key.length() > 0 { dir_key } else { "__default__" }
+  match g_shared_account_locks.get(norm) {
+    Some(sem) => sem
+    None => {
+      let created = effect::Semaphore::new(1)
+      g_shared_account_locks.set(norm, created)
+      created
+    }
+  }
+}
+
 pub struct AccountRefreshCoordinator {
   lock : effect::Semaphore
   in_flight : Map[String, Array[(AccountRefreshOutcome) -> Unit]]
@@ -413,6 +402,16 @@ pub struct AccountRefreshCoordinator {
 pub fn AccountRefreshCoordinator::new() -> AccountRefreshCoordinator {
   AccountRefreshCoordinator::{
     lock: effect::Semaphore::new(1),
+    in_flight: Map::new(),
+  }
+}
+
+/// Create an `AccountRefreshCoordinator` backed by the shared storage-directory write lock
+/// so multiple runtimes or concurrent login/refresh paths on the same `data_dir` strictly
+/// serialize all `accounts` disk CAS operations.
+pub fn AccountRefreshCoordinator::for_storage_dir(dir_key : String) -> AccountRefreshCoordinator {
+  AccountRefreshCoordinator::{
+    lock: shared_account_lock_for_dir(dir_key),
     in_flight: Map::new(),
   }
 }
@@ -739,9 +738,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
                           clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)))
                         }
                         HostStorageRead::Absent => {
-                          // Already removed from disk: invalidate locally without rewriting disk.
-                          on_inval(sub, expected_session, eff_refresh, [], Map::new())
-                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
+                          // Align with TS `#forgetIfMatches`: absent file on disk is treated as stale,
+                          // NEVER passing `[]` to `on_inval` or clearing in-memory sibling accounts!
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
                         }
                         HostStorageRead::Found(doc) => {
                           let disk_sessions = parse_stored_account_sessions(doc)
@@ -828,12 +827,16 @@ pub fn drop_workspace_station_tables() -> Array[String] {
   ]
 }
 
-/// Optional / lazily ensured tables (`schema.pion:145-187` and `account.ts:900-916`) that
-/// must be deleted in the same SQLite transaction whenever present in `sqlite_master`.
+/// Optional / lazily ensured tables (`schema.pion:145-187`, `kept-cache.ts:74-81`,
+/// `slack-said.ts:51-57`, and `account.ts:900-916`) that must be deleted in the same
+/// SQLite transaction whenever present in `sqlite_master`.
 pub fn drop_workspace_optional_tables() -> Array[String] {
   [
+    "file_kept",
     "md_kept",
     "log_use",
+    "slack_said",
+    "slack_who",
     "moved",
     "shared_sidecar",
     "shared_meta",
@@ -870,7 +873,8 @@ pub fn drop_workspace_sql_plan(
     let ot = optional_tables[i]
     if ot == "moved" {
       has_moved = true
-    } else if ot == "md_kept" || ot == "log_use" || ot == "shared_sidecar" ||
+    } else if ot == "file_kept" || ot == "md_kept" || ot == "log_use" ||
+    ot == "slack_said" || ot == "slack_who" || ot == "shared_sidecar" ||
     ot == "shared_meta" || ot == "shared_mark" || ot == "letter" {
       push_unique_str_ma(opt_station_tables, ot)
     }
@@ -1392,6 +1396,140 @@ fn synthesize_workspace_summary_from_detail(
     _ => ()
   }
   base_codec::json_obj(fields)
+}
+
+/// Merge a `/v1/me` workspace summary object into an existing `workspace` SQLite row (or return the
+/// summary object itself when no detail row exists yet). Preserves existing detail arrays (`stations`
+/// / `members` arrays and `rev`) while updating `name`, `role`, `emoji`, `icon`, `relays`, `ways_off`.
+pub fn merge_me_summary_into_workspace_row(
+  existing_ws_row : Option[base_codec::Json],
+  me_ws_item : base_codec::Json,
+) -> base_codec::Json {
+  let existing = match existing_ws_row {
+    Some(base_codec::Json::Obj(fs)) => fs
+    _ => return me_ws_item
+  }
+  let me_name = j_str(me_ws_item, "name")
+  let me_role = j_str(me_ws_item, "role")
+  let me_emoji = base_codec::json_get(me_ws_item, "emoji")
+  let me_icon = base_codec::json_get(me_ws_item, "icon")
+  let me_relays = base_codec::json_get(me_ws_item, "relays")
+  let me_ways_off = base_codec::json_get(me_ws_item, "ways_off")
+
+  let out : Array[(String, base_codec::Json)] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<existing.length() {
+    let (k, v) = existing[i]
+    seen.set(k, true)
+    if k == "name" && me_name.length() > 0 {
+      out.push((k, base_codec::json_str(me_name)))
+    } else if k == "role" && is_valid_workspace_role(me_role) {
+      out.push((k, base_codec::json_str(me_role)))
+    } else if k == "emoji" {
+      match me_emoji {
+        Some(base_codec::Json::Str(e)) => out.push((k, base_codec::json_str(e)))
+        Some(base_codec::Json::Null) => ()
+        _ => out.push((k, v))
+      }
+    } else if k == "icon" {
+      match me_icon {
+        Some(base_codec::Json::Str(ic)) => out.push((k, base_codec::json_str(ic)))
+        Some(base_codec::Json::Null) => ()
+        _ => out.push((k, v))
+      }
+    } else if k == "relays" {
+      match me_relays {
+        Some(base_codec::Json::Arr(xs)) => out.push((k, base_codec::json_arr(xs)))
+        _ => out.push((k, v))
+      }
+    } else if k == "ways_off" {
+      match me_ways_off {
+        Some(base_codec::Json::Arr(xs)) => out.push((k, base_codec::json_arr(xs)))
+        _ => out.push((k, v))
+      }
+    } else {
+      out.push((k, v))
+    }
+  }
+  if seen.get("role").is_none() && is_valid_workspace_role(me_role) {
+    out.push(("role", base_codec::json_str(me_role)))
+  }
+  if seen.get("name").is_none() && me_name.length() > 0 {
+    out.push(("name", base_codec::json_str(me_name)))
+  }
+  if seen.get("emoji").is_none() {
+    match me_emoji {
+      Some(base_codec::Json::Str(e)) => out.push(("emoji", base_codec::json_str(e)))
+      _ => ()
+    }
+  }
+  if seen.get("icon").is_none() {
+    match me_icon {
+      Some(base_codec::Json::Str(ic)) => out.push(("icon", base_codec::json_str(ic)))
+      _ => ()
+    }
+  }
+  if seen.get("relays").is_none() {
+    match me_relays {
+      Some(base_codec::Json::Arr(xs)) => out.push(("relays", base_codec::json_arr(xs)))
+      _ => ()
+    }
+  }
+  if seen.get("ways_off").is_none() {
+    match me_ways_off {
+      Some(base_codec::Json::Arr(xs)) => out.push(("ways_off", base_codec::json_arr(xs)))
+      _ => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+/// Merge a newer `/v1/workspaces/<ws.id>` detail commit back into the persisted `account_doc("me")`
+/// JSON so `account.doc("me")` and SQLite `workspace` stay bidirectionally consistent regardless of
+/// whether `me(seq1) -> ws(seq2)` or `ws(seq2) -> me(seq1)` occurred.
+pub fn merge_workspace_detail_into_me_json(
+  me_doc : base_codec::Json,
+  ws : CloudWorkspace,
+  role_override : Option[String],
+) -> Option[base_codec::Json] {
+  match me_doc {
+    base_codec::Json::Obj(fs) => {
+      let existing_arr = match base_codec::json_get(me_doc, "workspaces") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      let next_ws : Array[base_codec::Json] = []
+      let mut found = false
+      for i in 0..<existing_arr.length() {
+        let item = existing_arr[i]
+        if j_str(item, "id") == ws.id {
+          next_ws.push(merge_workspace_summary_with_detail(item, ws.raw, role_override))
+          found = true
+        } else {
+          next_ws.push(item)
+        }
+      }
+      if !found {
+        next_ws.push(synthesize_workspace_summary_from_detail(ws.id, ws.raw, role_override))
+      }
+      let out_fs : Array[(String, base_codec::Json)] = []
+      let mut replaced_field = false
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "workspaces" {
+          out_fs.push((k, base_codec::json_arr(next_ws)))
+          replaced_field = true
+        } else {
+          out_fs.push((k, v))
+        }
+      }
+      if !replaced_field {
+        out_fs.push(("workspaces", base_codec::json_arr(next_ws)))
+      }
+      Some(base_codec::json_obj(out_fs))
+    }
+    _ => None
+  }
 }
 
 /// Synthesize the merged effective `account_doc("me")` JSON so workspaces with a newer
@@ -2561,51 +2699,19 @@ pub fn MembershipAuthority::merge_host_pending_purges_doc(
   }
 }
 
-/// Read this account's dedicated host pending-purges key (`device/pending_purges/<sanitized_sub>`)
-/// via the registered reader, strictly distinguishing `Absent` from `ReadError`, and falling back
-/// to the legacy shared `device/pending_purges` (strictly keyed by `account_sub`!) only on `Absent`.
-pub fn MembershipAuthority::load_host_pending_purges(self : MembershipAuthority) -> Result[Unit, String] {
-  let key = host_pending_purges_key_for_sub(self.account_sub)
-  if key.length() == 0 {
-    return Err("account_sub_unbound")
-  }
-  match self.on_host_pending_purges_read {
-    Some(reader) => match reader(key) {
-      HostStorageRead::Found(doc) => {
-        self.merge_host_pending_purges_doc(doc, is_shared_storage=false)
-        Ok(())
-      }
-      HostStorageRead::Absent => match reader(HOST_PENDING_PURGES_KEY) {
-        HostStorageRead::Found(shared_doc) => {
-          self.merge_host_pending_purges_doc(shared_doc, is_shared_storage=true)
-          Ok(())
-        }
-        HostStorageRead::Absent => Ok(())
-        HostStorageRead::ReadError(reason) => {
-          self.last_host_persist_warn = Some(reason)
-          Err(reason)
-        }
-      }
-      HostStorageRead::ReadError(reason) => {
-        self.last_host_persist_warn = Some(reason)
-        Err(reason)
-      }
-    }
-    None => Ok(())
-  }
-}
-
 /// Immutably bind this authority (and its SQLite DB handle) to `sub`:
 /// - Rejects empty `sub` with `Err("account_sub_mismatch")`.
 /// - If already bound to a different `sub`, returns `Err("account_sub_mismatch")` with 0 side effects!
-/// - Hydrates SQLite `meta` (including `completed_purge_gen`) FIRST, THEN reconciles host pending
-///   purges so any stale host mirror (`op_gen <= completed_purge_gen[ws]`) is discarded and scrubbed!
+/// - Hydrates SQLite `meta` (including `completed_purge_gen`) FIRST, THEN reconciles any pre-loaded
+///   host pending-purges read (`host_purges_read` or `host_purges_doc`) without EVER performing
+///   synchronous blocking host I/O!
 pub fn MembershipAuthority::bind_account_sub(
   self : MembershipAuthority,
   sub : String,
   db : Option[sql::Sql] = None,
   host_purges_doc : Option[base_codec::Json] = None,
   host_purges_shared : Bool = false,
+  host_purges_read : Option[HostStorageRead] = None,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -2619,9 +2725,16 @@ pub fn MembershipAuthority::bind_account_sub(
     Some(d) => self.load_from_db(d)
     None => ()
   }
-  match host_purges_doc {
-    Some(doc) => self.merge_host_pending_purges_doc(doc, is_shared_storage=host_purges_shared)
-    None => { let _ = self.load_host_pending_purges() }
+  match host_purges_read {
+    Some(HostStorageRead::Found(doc)) => self.merge_host_pending_purges_doc(doc, is_shared_storage=host_purges_shared)
+    Some(HostStorageRead::Absent) => ()
+    Some(HostStorageRead::ReadError(reason)) => {
+      self.last_host_persist_warn = Some(reason)
+    }
+    None => match host_purges_doc {
+      Some(doc) => self.merge_host_pending_purges_doc(doc, is_shared_storage=host_purges_shared)
+      None => ()
+    }
   }
   Ok(())
 }
@@ -2633,8 +2746,15 @@ pub fn MembershipAuthority::set_account_sub(
   db : Option[sql::Sql] = None,
   host_purges_doc : Option[base_codec::Json] = None,
   host_purges_shared : Bool = false,
+  host_purges_read : Option[HostStorageRead] = None,
 ) -> Result[Unit, String] {
-  self.bind_account_sub(sub, db=db, host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared)
+  self.bind_account_sub(
+    sub,
+    db=db,
+    host_purges_doc=host_purges_doc,
+    host_purges_shared=host_purges_shared,
+    host_purges_read=host_purges_read,
+  )
 }
 
 // ── Unified O(1) Read Gate (NEVER queries SQLite!) ──

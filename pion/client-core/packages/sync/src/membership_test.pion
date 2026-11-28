@@ -18,6 +18,7 @@ import "shell"
 import "sql"
 import "store"
 import "views"
+import "wire"
 
 let ULID_WS1 : String = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 let ULID_WS2 : String = "01ARZ3NDEKTSV4RRFFQ69G5FBW"
@@ -1007,4 +1008,339 @@ test "Slice 2B-1: exchange_auth_code_k, cred_epoch fail-open retry, and strict s
   debug_assert(!is_valid_thread_entries_payload(base_codec::json_arr([]), 0), "bare array thread entries rejected")
   debug_assert(is_valid_thread_entries_payload(base_codec::json_obj([("entries", base_codec::json_arr([]))]), 0), "object {entries:[]} valid")
   debug_assert(!is_valid_thread_entries_payload(base_codec::json_obj([("ok", base_codec::json_bool(true))]), 0), "missing entries rejected")
+}
+
+// ── Test 7 (R2 Group 1): Zero synchronous host reads across all membership commits & DB switches ──
+
+test "Slice 2B-1 R2: zero sync host reader calls in commits/switch/drop/retry and unbound commit_cloud_me rejected" {
+  let rt = effect::Runtime::new()
+  let (_, db1) = make_sim_db(rt)
+  let (_, db2) = make_sim_db(rt)
+  let core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db1, core_offline_transport(), fn() -> Unit {})
+
+  // Register a panicking + counting sync host reader: MUST NEVER be called anywhere!
+  let sync_reads : Array[Int] = [0]
+  core.membership.set_host_pending_purges_reader(fn(_k : String) -> HostStorageRead {
+    sync_reads[0] += 1
+    panic("forbidden synchronous host read invoked!")
+  })
+
+  // Unbound `commit_cloud_me` (when authenticated flag is false but `db_account_sub == None`) returns `account_sub_unbound`.
+  match core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=1L) {
+    Err(m) => debug_assert(m.starts_with("account_sub_unbound"), "unbound commit_cloud_me must fail with account_sub_unbound")
+    _ => panic("unbound commit_cloud_me must fail")
+  }
+  debug_assert(sync_reads[0] == 0, "0 sync host reads on unbound commit_cloud_me")
+
+  // `switch_account_db` with `host_purges_doc=None` and explicit `HostStorageRead::Absent` / `ReadError` triggers 0 sync reads!
+  match core.switch_account_db(db2, "u-alice", host_purges_read=Some(HostStorageRead::ReadError("disk_busy"))) {
+    Ok(_) => ()
+    Err(e) => panic("switch_account_db failed: " + e)
+  }
+  debug_assert(sync_reads[0] == 0, "0 sync host reads on switch_account_db")
+  match core.membership.last_host_persist_warn {
+    Some(w) => debug_assert(w == "disk_busy", "ReadError recorded cleanly without sync read")
+    None => panic("expected ReadError recorded")
+  }
+
+  // `commit_cloud_me`, `commit_cloud_workspace`, `drop_workspace`, `retry_pending_purges`: ALL 0 sync reads!
+  match core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "admin")]), req_seq=1L) {
+    Ok(true) => ()
+    _ => panic("commit_cloud_me failed")
+  }
+  match core.commit_cloud_workspace(mt_make_ws(ULID_WS1, "W1", "owner", ["st-1"]), req_seq=2L) {
+    Ok(true) => ()
+    _ => panic("commit_cloud_workspace failed")
+  }
+  match core.drop_workspace(ULID_WS2) {
+    Ok(_) => ()
+    Err(e) => panic("drop_workspace failed: " + e)
+  }
+  let _ = core.retry_pending_purges()
+  debug_assert(sync_reads[0] == 0, "0 sync host reads across all membership ops")
+}
+
+// ── Test 8 (R2 Groups 2, 3, 5): Fail-closed auth.complete persistence, switch_to_unauthenticated_db, sessions.list/jobs.open gates, 401 Absent, shared dir lock ──
+
+test "Slice 2B-1 R2: fail-closed direct auth.complete, unauth switch + sessions/jobs gates, 401 Absent preserves siblings, shared dir lock" {
+  let rt = effect::Runtime::new()
+  let (_, db) = make_sim_db(rt)
+  let core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.membership.set_unauthenticated(true)
+
+  // 1. Direct-param `auth.complete` with failing `on_accounts_persisted` MUST fail with `storage_error`
+  //    and keep `unauthenticated == true` and `auth_store` empty!
+  let b_res = mt_expect_ok_json(mt_call(core, 1L, "auth.begin", base_codec::json_obj([])), "auth.begin")
+  let st_tok = j_str(b_res, "state")
+  core.set_on_accounts_persisted(fn(_doc : base_codec::Json) -> Result[Unit, String] {
+    Err("disk_full")
+  })
+  mt_expect_err_code(
+    mt_call(core, 2L, "auth.complete", base_codec::json_obj([
+      ("state", base_codec::json_str(st_tok)),
+      ("code", base_codec::json_str("c1")),
+      ("sub", base_codec::json_str("u-alice")),
+      ("email", base_codec::json_str("alice@still.fail")),
+      ("access", base_codec::json_str("acc-1")),
+    ])),
+    "storage_error",
+    "failed accounts persistence must return storage_error",
+  )
+  debug_assert(core.membership.is_unauthenticated(), "read gate MUST remain closed when persistence fails")
+  debug_assert(core.auth_store.accounts.length() == 0, "auth_store MUST remain unchanged on persistence failure")
+
+  // 2. Bind Alice, populate live events session/job, verify `sessions.list` & `jobs.open` work while readable,
+  //    then `switch_to_unauthenticated_db` immediately clears DB binding & gates both to empty!
+  let _ = core.set_db_account_sub("u-alice")
+  let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
+  let _ = core.events.apply_sse_batch([
+    wire::Event::{ name: "session", data: "{\"key\":\"sess-live\",\"running\":true,\"listed\":true}", id: Some("s1") },
+  ])
+  core.events.track_job(JobStatus::{ id: "job-live", session: Some("sess-live"), open: true, chat: Some("c-1") })
+  let sess_ok = mt_expect_ok_json(mt_call(core, 3L, "sessions.list", base_codec::json_obj([])), "auth sessions.list")
+  debug_assert(base_codec::json_stringify(sess_ok).contains("sess-live"), "sessions.list returns live session when readable")
+  let jobs_ok = mt_expect_ok_json(mt_call(core, 4L, "jobs.open", base_codec::json_obj([])), "auth jobs.open")
+  debug_assert(base_codec::json_stringify(jobs_ok).contains("job-live"), "jobs.open returns live job when readable")
+
+  // Revoking WS1 gates `sessions.list` & `jobs.open` to empty even before logout:
+  let _ = core.drop_workspace(ULID_WS1)
+  let sess_rev = mt_expect_ok_json(mt_call(core, 5L, "sessions.list", base_codec::json_obj([])), "revoked sessions.list")
+  debug_assert(!base_codec::json_stringify(sess_rev).contains("sess-live"), "revoked station sessions.list must be empty")
+  let jobs_rev = mt_expect_ok_json(mt_call(core, 6L, "jobs.open", base_codec::json_obj([])), "revoked jobs.open")
+  debug_assert(!base_codec::json_stringify(jobs_rev).contains("job-live"), "revoked station jobs.open must be empty")
+
+  // `switch_to_unauthenticated_db` resets DB, clears `db_account_sub`, sets `unauthenticated = true`:
+  let (_, fresh_mem_db) = make_sim_db(rt)
+  core.switch_to_unauthenticated_db(fresh_mem_db)
+  debug_assert(core.db_account_sub.is_none(), "db_account_sub cleared on unauth switch")
+  debug_assert(core.membership.is_unauthenticated(), "unauthenticated after switch_to_unauthenticated_db")
+  // Same `ClientCore` can now switch cleanly to a different account (`u-bob`)!
+  let (_, bob_db) = make_sim_db(rt)
+  match core.switch_account_db(bob_db, "u-bob") {
+    Ok(_) => ()
+    Err(e) => panic("same-process re-login switch to u-bob failed: " + e)
+  }
+  debug_assert(mt_opt_str_is(core.db_account_sub, "u-bob"), "re-bound to u-bob cleanly")
+
+  // 3. 401 CAS `Absent` branch returns `Stale("stale_401")` and NEVER invokes `on_invalidated` (preserves siblings)!
+  let coord = AccountRefreshCoordinator::new()
+  let mut phase = 0
+  let mut invalidated_called = false
+  let mut outcome_stale = false
+  let host = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit {
+      phase += 1
+      if phase == 1 {
+        let a = views::StoredAccount::{ sub: "u-a", email: "a@still.fail", name: "A", picture: "", access: "acc-a", refresh: "ref-a", access_expires: 100L }
+        let b = views::StoredAccount::{ sub: "u-b", email: "b@still.fail", name: "B", picture: "", access: "acc-b", refresh: "ref-b", access_expires: 9999L }
+        let s : Map[String, String] = Map::new()
+        s.set("u-a", "sa")
+        s.set("u-b", "sb")
+        rk(HostStorageRead::Found(serialize_stored_accounts([a, b], sessions=Some(s))))
+      } else {
+        rk(HostStorageRead::Absent)
+      }
+    },
+    write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Ok(())) },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sa", "ref-a")) },
+    on_adopt_or_update: fn(_u, _s, _all, _ss) -> Unit {},
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { invalidated_called = true },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord.refresh_k(host, "u-a", "sa", "ref-a", fn(out : AccountRefreshOutcome) -> Unit {
+      match out {
+        AccountRefreshOutcome::Stale(m) => if m == "stale_401" { outcome_stale = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(outcome_stale && !invalidated_called, "401 CAS Absent must return Stale and never wipe siblings")
+
+  // 4. Shared storage-directory lock serializes concurrent upserts across two separate coordinator instances!
+  let shared_dir = "/tmp/test-shared-account-lock-dir"
+  let c1 = AccountRefreshCoordinator::for_storage_dir(shared_dir)
+  let c2 = AccountRefreshCoordinator::for_storage_dir(shared_dir)
+  let disk_ref : Array[Option[base_codec::Json]] = [None]
+  let write_gates : Array[(Result[Unit, String]) -> Unit] = []
+  let mut c1_done = false
+  let mut c2_done = false
+  let acct1 = views::StoredAccount::{ sub: "u-1", email: "1@still.fail", name: "One", picture: "", access: "a1", refresh: "r1", access_expires: 1900000000L }
+  let acct2 = views::StoredAccount::{ sub: "u-2", email: "2@still.fail", name: "Two", picture: "", access: "a2", refresh: "r2", access_expires: 1900000000L }
+  let read_fn = fn(rk : (HostStorageRead) -> Unit) -> Unit {
+    match disk_ref[0] {
+      Some(d) => rk(HostStorageRead::Found(d))
+      None => rk(HostStorageRead::Absent)
+    }
+  }
+  let write_fn = fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+    disk_ref[0] = Some(doc)
+    write_gates.push(wk)
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    c1.upsert_account_cas_k(read_fn, write_fn, acct1, "s1", fn(_r) -> Unit {
+      c1_done = true
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    c2.upsert_account_cas_k(read_fn, write_fn, acct2, "s2", fn(_r) -> Unit {
+      c2_done = true
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // c2 MUST still be blocked waiting for c1's shared dir lock (only 1 pending write gate)!
+  debug_assert(write_gates.length() == 1 && !c1_done && !c2_done, "shared dir lock must serialize c1 and c2")
+  let g1 = write_gates[0]
+  g1(Ok(()))
+  let _ = rt.run_ready()
+  debug_assert(c1_done && write_gates.length() == 2 && !c2_done, "c2 starts only after c1 releases shared lock")
+  let g2 = write_gates[1]
+  g2(Ok(()))
+  let _ = rt.run_ready()
+  debug_assert(c2_done, "c2 finished")
+  match disk_ref[0] {
+    Some(final_doc) => {
+      let s = base_codec::json_stringify(final_doc)
+      debug_assert(s.contains("u-1") && s.contains("u-2"), "both siblings preserved across concurrent shared-dir coordinators")
+    }
+    None => panic("expected persisted accounts doc")
+  }
+}
+
+// ── Test 9 (R2 Groups 4 & 5): Fresh `/v1/me` workspace visibility, bidirectional `me(seq1)->ws(seq2)`, `bind_account_context` WS stop, strict WorkspaceSummary, `chatRow`/`link.parse` dual-side gates, fail-closed schema probe ──
+
+test "Slice 2B-1 R2: fresh me visibility, bidirectional me->ws merge, bind_account_context WS stop, strict summary, chatRow/link.parse gates, fail-closed probe" {
+  let rt = effect::Runtime::new()
+  let (sim, db) = make_sim_db(rt)
+  let core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let _ = core.set_db_account_sub("u-alice")
+  core.set_viewer("alice@still.fail", sub="u-alice", role="owner")
+
+  // 1. Fresh DB: single `commit_cloud_me(seq=1)` immediately populates SQLite `workspace` summary rows!
+  match core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "Fresh W1", "owner"), (ULID_WS2, "Fresh W2", "owner")]), req_seq=1L) {
+    Ok(true) => ()
+    _ => panic("fresh commit_cloud_me failed")
+  }
+  debug_assert(sim.workspaces.get(ULID_WS1).is_some() && sim.workspaces.get(ULID_WS2).is_some(), "workspace rows immediately visible after first /v1/me")
+  let ws_topic = mt_expect_val_json(mt_sub(core, 1L, "workspaces", []), "workspaces sub after /v1/me")
+  let ws_topic_s = base_codec::json_stringify(ws_topic)
+  debug_assert(ws_topic_s.contains("Fresh W1") && ws_topic_s.contains("Fresh W2"), "workspaces topic shows summaries immediately")
+
+  // 2. Bidirectional consistency in `me(seq=1) -> ws(seq=2)` order: `commit_cloud_workspace` updates BOTH `workspace` AND `account_doc("me")`!
+  match core.commit_cloud_workspace(mt_make_ws(ULID_WS2, "Updated W2 Detail", "member", ["st-2"]), req_seq=2L) {
+    Ok(true) => ()
+    _ => panic("commit_cloud_workspace(seq=2) failed")
+  }
+  let me_after_ws = match store::get_account_doc(db, "me") {
+    sql::SqlResult::Ok(Some(s)) => s
+    _ => panic("missing account_doc(me)")
+  }
+  debug_assert(me_after_ws.contains("Updated W2 Detail") && me_after_ws.contains("\"role\":\"member\""), "me(seq1)->ws(seq2) must update account_doc(me) atomically")
+
+  // 3. `CloudSync::bind_account_context` changing session stops old WS so `is_events_ws_running() == false`!
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _body : Option[Bytes]) -> Unit {},
+    fn(_op : String, _args : base_codec::Json) -> shell::AskResult { shell::AskResult::Ok(base_codec::json_obj([])) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="t1", bound_sub="u-alice", bound_session="sess-1")
+  cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {})
+  debug_assert(cs.is_events_ws_running(), "events WS running before session change")
+  match cs.bind_account_context("u-alice", session="sess-2") {
+    Ok(_) => ()
+    Err(e) => panic("bind_account_context same sub new session failed: " + e)
+  }
+  debug_assert(!cs.is_events_ws_running(), "bind_account_context session change MUST stop old WS fiber")
+
+  // 4. Strict `WorkspaceSummary` validation: reject fractional `stations`/`members` & wrong optional field types!
+  let bad_frac_st = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1.5,\"members\":1}]}")
+  match bad_frac_st {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_err(), "fractional stations rejected")
+    _ => panic("parse json")
+  }
+  let bad_frac_mem = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1,\"members\":2.5}]}")
+  match bad_frac_mem {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_err(), "fractional members rejected")
+    _ => panic("parse json")
+  }
+  let bad_emoji = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1,\"members\":1,\"emoji\":123}]}")
+  match bad_emoji {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_err(), "non-string emoji rejected")
+    _ => panic("parse json")
+  }
+  let bad_relays = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1,\"members\":1,\"relays\":[42]}]}")
+  match bad_relays {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_err(), "non-string relays elem rejected")
+    _ => panic("parse json")
+  }
+  let bad_ways_off = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1,\"members\":1,\"ways_off\":\"relay\"}]}")
+  match bad_ways_off {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_err(), "non-array ways_off rejected")
+    _ => panic("parse json")
+  }
+  let good_opt = base_codec::json_parse("{\"user\":{\"sub\":\"u1\"},\"workspaces\":[{\"id\":\"" + ULID_WS1 + "\",\"name\":\"W1\",\"role\":\"owner\",\"created_at\":1,\"stations\":1,\"members\":1,\"emoji\":\"🚀\",\"icon\":null,\"relays\":[\"https://r1\"],\"ways_off\":[\"relay\"]}]}")
+  match good_opt {
+    base_codec::JsonParseResult::Ok(j) => debug_assert(parse_cloud_me_strict(j).is_ok(), "valid optional fields accepted")
+    _ => panic("parse json")
+  }
+
+  // 5. `chatRow` & `link.parse` dual-side authorization: moved pointer from readable W1/st-1 -> revoked W2/st-2!
+  let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
+  let _ = core.membership.bind_station_checked(ULID_WS2, "st-2")
+  let _ = core.drop_workspace(ULID_WS2)
+  sim.moved_rows.set(
+    ULID_WS1 + "/st-1:sess-moved",
+    (ULID_WS1 + "/st-1", "sess-moved", ULID_WS2 + "/st-2", Some(9), Some(99), Some(1000L), 0),
+  )
+  sim.chats.set(ULID_WS2 + "/st-2:0:sess-moved", SimChatRow::{
+    station: ULID_WS2 + "/st-2",
+    archived: 0,
+    id: "sess-moved",
+    ord: 1.0,
+    thread: Some(99),
+    session: Some("sess-moved"),
+    pinned_at: None,
+    last_active: 1000L,
+    unread: 0,
+    tone: None,
+    asks: 0,
+    json: "{\"id\":\"sess-moved\",\"title\":\"Secret Revoked Chat\",\"thread\":99,\"session\":\"sess-moved\"}",
+  })
+  sim.chat_order.push(ULID_WS2 + "/st-2:0:sess-moved")
+  match mt_sub(core, 2L, "chatRow", [("station", base_codec::json_str(ULID_WS1 + "/st-1")), ("session", base_codec::json_str("sess-moved"))]) {
+    protocol::CoreEvent::Waiting(_) => ()
+    _ => panic("chatRow pointing at revoked moved destination must return Waiting")
+  }
+  core.set_cloud_origin("https://app.still.fail")
+  let lp_rev = mt_expect_ok_json(
+    mt_call(core, 3L, "link.parse", base_codec::json_obj([
+      ("url", base_codec::json_str("https://app.still.fail/o/" + ULID_WS1 + "/st-1/sess-moved")),
+    ])),
+    "link.parse to revoked moved destination",
+  )
+  match lp_rev {
+    base_codec::Json::Null => ()
+    _ => panic("link.parse MUST return null when moved destination station is revoked")
+  }
+
+  // 6. Schema probe (`sqlite_master`) failure during `commit_cloud_me` MUST fail closed (latch revoked + pending_purges)!
+  let (fail_sim, fail_db) = make_sim_db(rt)
+  let fail_core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, fail_db, core_offline_transport(), fn() -> Unit {})
+  let _ = fail_core.set_db_account_sub("u-alice")
+  let _ = fail_core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner"), (ULID_WS2, "W2", "owner")]), req_seq=1L)
+  fail_sim.fail_sqlite_master = true
+  match fail_core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=2L) {
+    Err(_) => ()
+    _ => panic("commit_cloud_me must fail when sqlite_master probe fails")
+  }
+  debug_assert(!fail_core.can_read_workspace(ULID_WS2), "WS2 must fail closed (revoked) when sqlite_master probe fails")
+  debug_assert(fail_core.membership.has_pending_purge(ULID_WS2), "WS2 must have pending_purge latched on probe failure")
 }

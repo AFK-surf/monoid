@@ -265,16 +265,25 @@ static void *handle_client_thread(void *arg) {
 
     if (strncmp(buf, "POST /v1/auth/token ", 20) == 0) {
         const char *body = buf + header_end;
-        assert(strstr(body, "\"code\":\"live_oauth_code_42\"") != NULL);
         assert(strstr(body, "\"code_verifier\":\"") != NULL);
         assert(strstr(body, "\"redirect_uri\":\"stillfail://auth/callback\"") != NULL);
         atomic_fetch_add(&g_srv.got_auth_token, 1);
-        send_http_json(
-            fd,
-            200,
-            "OK",
-            "{\"access_token\":\"acc-exchanged-42\",\"refresh_token\":\"ref-exchanged-42\","
-            "\"subject\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"expires_at\":1900000000}");
+        if (strstr(body, "\"code\":\"live_oauth_code_bob\"") != NULL) {
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"access_token\":\"acc-bob-1\",\"refresh_token\":\"ref-bob-1\","
+                "\"subject\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"expires_at\":1900000000}");
+        } else {
+            assert(strstr(body, "\"code\":\"live_oauth_code_42\"") != NULL);
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"access_token\":\"acc-exchanged-42\",\"refresh_token\":\"ref-exchanged-42\","
+                "\"subject\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"expires_at\":1900000000}");
+        }
         close(fd);
         return NULL;
     }
@@ -282,7 +291,8 @@ static void *handle_client_thread(void *arg) {
     if (strncmp(buf, "POST /v1/auth/refresh ", 22) == 0) {
         const char *body = buf + header_end;
         assert(strstr(body, "\"request_id\":\"") != NULL);
-        assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL);
+        assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
+               strstr(body, "\"refresh_token\":\"ref-bob-1\"") != NULL);
         atomic_fetch_add(&g_srv.got_auth_refresh, 1);
         send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
         close(fd);
@@ -494,10 +504,13 @@ int main(void) {
     send_json("{\"id\":102,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS2_ID "\"}}");
     wait_for_matching_msg(&g_host, "\"id\":102,", "\"workspace\":\"" WS2_ID "\"", 10);
 
-    // Pinned trusted origin guard: foreign origin in `cloud.sync` MUST be rejected with `origin_mismatch`!
+    // Pinned trusted origin guard + strict ULID workspace parameter check in `cloud.sync`:
     send_json("{\"id\":101,\"call\":\"cloud.sync\",\"params\":{\"origin\":\"https://evil.example\"}}");
     char *m_bad_orig = wait_for_matching_msg(&g_host, "\"id\":101,", "origin_mismatch", 10);
     printf("[live_net_e2e] #101 cloud.sync foreign origin rejected -> %s\n", m_bad_orig);
+
+    send_json("{\"id\":107,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"not-a-ulid\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":107,", "bad_params", 10);
 
     // Write local draft for WS1 (`new:<WS1>`) and WS2 (`new:<WS2>`).
     send_json("{\"id\":103,\"call\":\"draft.put\",\"params\":{\"key\":\"new:" WS1_ID "\",\"value\":{\"text\":\"persisted-alice-draft\"}}}");
@@ -582,12 +595,25 @@ int main(void) {
     char *m_thread_back = wait_for_matching_msg(&g_host, "\"id\":204,", "hello over real rust shell", 10);
     printf("[live_net_e2e] Phase 4 persisted chat -> %s\n", m_thread_back);
 
-    // ── PHASE 5: Permanent 401 refresh removes the last account ──
+    // ── PHASE 5: Permanent 401 refresh removes the last account — immediate unauth `:memory:` switch BEFORE restart! ──
     printf("[live_net_e2e] Phase 5: triggering permanent 401 auth.refresh\n");
     send_json("{\"id\":205,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-live\"}}");
     char *m_ref_401 = wait_for_matching_msg(&g_host, "\"id\":205,", "\"error\"", 10);
     printf("[live_net_e2e] Phase 5 auth.refresh 401 -> %s\n", m_ref_401);
     assert(atomic_load(&g_srv.got_auth_refresh) == 1);
+
+    // IMMEDIATELY (WITHOUT restarting!): sessions.list, jobs.open, account.doc(me), workspaces.list MUST all be empty/null!
+    send_json("{\"id\":206,\"call\":\"sessions.list\",\"params\":{}}");
+    wait_for_matching_msg(&g_host, "\"id\":206,", "\"sessions\":[]", 10);
+    send_json("{\"id\":207,\"call\":\"jobs.open\",\"params\":{}}");
+    wait_for_matching_msg(&g_host, "\"id\":207,", "\"jobs\":[]", 10);
+    send_json("{\"id\":208,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":208,", "\"ok\":null", 10);
+    send_json("{\"id\":209,\"call\":\"workspaces.list\",\"params\":{}}");
+    char *m_immed_ws = wait_for_matching_msg(&g_host, "\"id\":209,", "\"workspaces\":[]", 10);
+    assert(strstr(m_immed_ws, WS1_ID) == NULL);
+    send_json("{\"id\":210,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":210,", "unauthenticated", 10);
 
     atomic_store(&g_host.stopped, 1);
     mb_core_stop();
@@ -610,7 +636,60 @@ int main(void) {
 
     send_json("{\"id\":303,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
     wait_for_matching_msg(&g_host, "\"id\":303,", "unauthenticated", 10);
+    assert(!file_exists(default_db_path));
 
+    // ── PHASE 7: Same-process sign-in with ANOTHER account (`u-bob`) -> 401 logout -> same-process re-login as `u-live`! ──
+    printf("[live_net_e2e] Phase 7: same-process account switch via 401 logout + re-login\n");
+    char bob_db_path[256];
+    snprintf(bob_db_path, sizeof(bob_db_path), "%s/databases/account-u-bob.db", data_dir);
+    send_json("{\"id\":401,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+    char *m_bob_begin = wait_for_matching_msg(&g_host, "\"id\":401,", "\"state\":\"", 10);
+    const char *bsp = strstr(m_bob_begin, "\"state\":\"");
+    assert(bsp != NULL);
+    bsp += 9;
+    char bob_state[128];
+    size_t bi = 0;
+    while (bsp[bi] != '\0' && bsp[bi] != '"' && bi + 1 < sizeof(bob_state)) {
+        bob_state[bi] = bsp[bi];
+        bi++;
+    }
+    bob_state[bi] = '\0';
+    char bob_complete[512];
+    snprintf(bob_complete, sizeof(bob_complete),
+             "{\"id\":402,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_bob\"}}",
+             bob_state);
+    send_json(bob_complete);
+    wait_for_matching_msg(&g_host, "\"id\":402,", "\"email\":\"bob@still.fail\"", 10);
+    assert(file_exists(bob_db_path));
+    assert(!file_exists(default_db_path));
+    // Bob MUST NOT see Alice's draft!
+    send_json("{\"id\":403,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+    char *m_bob_draft = wait_for_matching_msg(&g_host, "\"id\":403,", "\"ok\":", 10);
+    assert(strstr(m_bob_draft, "persisted-alice-draft") == NULL);
+
+    // Trigger 401 on Bob and IMMEDIATELY re-login as Alice in the SAME process (no restart)!
+    send_json("{\"id\":404,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-bob\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":404,", "\"error\"", 10);
+    send_json("{\"id\":405,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+    char *m_alice_re = wait_for_matching_msg(&g_host, "\"id\":405,", "\"state\":\"", 10);
+    const char *asp = strstr(m_alice_re, "\"state\":\"");
+    assert(asp != NULL);
+    asp += 9;
+    char alice_re_state[128];
+    size_t ai = 0;
+    while (asp[ai] != '\0' && asp[ai] != '"' && ai + 1 < sizeof(alice_re_state)) {
+        alice_re_state[ai] = asp[ai];
+        ai++;
+    }
+    alice_re_state[ai] = '\0';
+    char alice_re_complete[512];
+    snprintf(alice_re_complete, sizeof(alice_re_complete),
+             "{\"id\":406,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_42\"}}",
+             alice_re_state);
+    send_json(alice_re_complete);
+    wait_for_matching_msg(&g_host, "\"id\":406,", "\"email\":\"alice@still.fail\"", 10);
+    send_json("{\"id\":407,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":407,", "persisted-alice-draft", 10);
     assert(!file_exists(default_db_path));
 
     atomic_store(&g_host.stopped, 1);

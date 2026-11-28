@@ -47,7 +47,11 @@ pub fn project_workspaces(
       Some(s) => s
       None => "member"
     }
-    let stations_n = j_arr(j, "stations").length()
+    let stations_n = match base_codec::json_get(j, "stations") {
+      Some(base_codec::Json::Arr(xs)) => xs.length()
+      Some(base_codec::Json::Num(n, _)) => if n >= 0.0 { n.to_int() } else { 0 }
+      _ => 0
+    }
     let item : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(r.id)),
       ("name", base_codec::json_str(name)),
