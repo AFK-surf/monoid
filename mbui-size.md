@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e196a2778](https://github.com/AFK-surf/monoid/commit/e196a27789a9bbe5a84d0a6138ac178716863e7e) feat(station-main): wire 17 live updates, accounts | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.68 | 120.63 |
 | [258434e6d](https://github.com/AFK-surf/monoid/commit/258434e6dce28924e77455fce7222cb52a75add2) perf(core): open a leading chat without reading it | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
 | [063dabbb3](https://github.com/AFK-surf/monoid/commit/063dabbb3797b9316cac9754f27c8f27070ec32b) feat(station-pion): wire Wave 17D-1 all 11 Vault a | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
 | [27a53d081](https://github.com/AFK-surf/monoid/commit/27a53d08133b7af8b17d41ba87a702438f31b6e0) perf(ui): optimize bit-exact skia/svg rasterizatio | 2.74 | 3.71 | 15.4 | 38.51 | 59.55 | 33.76 | 69.05 | 103.94 | 133.96 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.66 | 131.94 |
-| [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e196a2778](https://github.com/AFK-surf/monoid/commit/e196a27789a9bbe5a84d0a6138ac178716863e7e) feat(station-main): wire 17 live updates, accounts | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
 | [258434e6d](https://github.com/AFK-surf/monoid/commit/258434e6dce28924e77455fce7222cb52a75add2) perf(core): open a leading chat without reading it | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.49 |
 | [063dabbb3](https://github.com/AFK-surf/monoid/commit/063dabbb3797b9316cac9754f27c8f27070ec32b) feat(station-pion): wire Wave 17D-1 all 11 Vault a | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [27a53d081](https://github.com/AFK-surf/monoid/commit/27a53d08133b7af8b17d41ba87a702438f31b6e0) perf(ui): optimize bit-exact skia/svg rasterizatio | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [92adfc092](https://github.com/AFK-surf/monoid/commit/92adfc0923f8c0029db715aa65207bd284b72fcc) fix(station-main): set device: None in whole_daemo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
-| [f87f8fa6a](https://github.com/AFK-surf/monoid/commit/f87f8fa6ad6b113ea82de4576ff521f6326eadce) fix(screens,core,mbui): prevent false duplicate vi | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
