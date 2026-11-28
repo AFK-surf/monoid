@@ -72,6 +72,7 @@ function written(r: Request, by: Person, fields: Record<string, string>): Item {
 
 function harness(lock: (ws: string | null) => ReturnType<typeof world>["state"] | null, starter = "alice@x.com", dbFile = ":memory:", observe?: (db: DatabaseSync) => DatabaseSync) {
   const db = new DatabaseSync(dbFile);
+  if (dbFile !== ":memory:") db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
   const connection = observe?.(db) ?? db;
   const vaults = new VaultStore(connection);
   const plain = new PlainStore(connection);
@@ -602,6 +603,7 @@ test("a newer certificate written before reboxing keeps its key on a waiting sav
   const h = harness(() => w.state, "alice@x.com", path);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path), otherVaults = new VaultStore(other);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     const old = { ...w.alice, box: newBoxPair() }, newer = { ...w.alice, box: newBoxPair() };
     const cert = (p: Person, at: number) => signed({ v: 1 as const, ws: WS, device: p.base.hex, box: p.box.pub, at }, TAG.box, p.signer);
@@ -638,6 +640,7 @@ test("a certificate changed between reboxing and its write is checked again", as
   const h = harness(() => w.state, "alice@x.com", path, hook.observe);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path), otherVaults = new VaultStore(other);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     const old = { ...w.alice, box: newBoxPair() }, newer = { ...w.alice, box: newBoxPair() };
     const cert = (p: Person, at: number) => signed({ v: 1 as const, ws: WS, device: p.base.hex, box: p.box.pub, at }, TAG.box, p.signer);
@@ -663,6 +666,7 @@ test("reboxing does not restore a request decided by another connection", async 
   const h = harness(() => w.state, "alice@x.com", path, hook.observe);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     await h.secrets.save("s1", { name: "Pending", kind: "token", reason: "test", value: "sample", cwd: h.dir });
     const [request] = pendingOf(h.secrets, w.state, "alice@x.com");
@@ -692,6 +696,7 @@ test("a busy reboxing retries even if the device does not send its certificate a
   const hook = requestWriteHook(), h = harness(() => w.state, "alice@x.com", path, hook.observe);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     await h.secrets.save("s1", { name: "Pending", kind: "token", reason: "test", value: "sample", cwd: h.dir });
     const [request] = pendingOf(h.secrets, w.state, "alice@x.com");
@@ -735,6 +740,7 @@ test("a queued reboxing checks that the device is still admitted", async () => {
   const h = harness(() => lock, "alice@x.com", path, hook.observe);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     await h.secrets.save("s1", { name: "Pending", kind: "token", reason: "test", value: "sample", cwd: h.dir });
     const [request] = pendingOf(h.secrets, w.state, "alice@x.com"), cert = w.cert(w.alice);
@@ -768,6 +774,7 @@ test("stopping the station cancels a queued reboxing", async () => {
   const hook = requestWriteHook(), h = harness(() => w.state, "alice@x.com", path, hook.observe);
   h.db.exec("PRAGMA journal_mode=WAL");
   const other = new DatabaseSync(path);
+  other.exec("PRAGMA synchronous=NORMAL");
   try {
     await h.secrets.save("s1", { name: "Pending", kind: "token", reason: "test", value: "sample", cwd: h.dir });
     const [request] = pendingOf(h.secrets, w.state, "alice@x.com"), cert = w.cert(w.alice);

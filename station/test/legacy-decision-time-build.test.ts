@@ -8,10 +8,13 @@ import { decisionTimeIndexNeedsWork, decisionTimeIndexStep, hasLegacyDecisionTim
 
 function database(size: number, path = ":memory:"): DatabaseSync {
   const db = new DatabaseSync(path);
+  if (path !== ":memory:") db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
   db.exec(`CREATE TABLE decision_checks(id INTEGER PRIMARY KEY,session TEXT NOT NULL,created_at INTEGER NOT NULL,result TEXT NOT NULL);
     CREATE INDEX decision_checks_at ON decision_checks(created_at);`);
   const put = db.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES('old',?, '{}')");
+  db.exec("BEGIN");
   for (let i = 0; i < size; i++) put.run(i);
+  db.exec("COMMIT");
   return db;
 }
 function same(db: DatabaseSync): void {
@@ -50,6 +53,7 @@ for (const winner of ["old writes", "native index", "another opener"] as const) 
     const dir = mkdtempSync(join(tmpdir(), "decision-time-install-")), path = join(dir, "station.db");
     const db = database(winner === "old writes" ? 40 : 100, path);
     const old = new DatabaseSync(path, { timeout: 5000 });
+    old.exec("PRAGMA synchronous=NORMAL");
     try {
       let intercepted = false;
       const observed = new Proxy(db, { get(target, property) {

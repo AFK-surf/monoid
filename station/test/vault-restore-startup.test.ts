@@ -12,6 +12,7 @@ import { VaultStore } from "../src/vault/store.ts";
 function expiredGrants(db: DatabaseSync, count: number) {
   db.exec("CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))");
   const insert = db.prepare("INSERT INTO vault_grants VALUES(?,?,?,?)");
+  db.exec("BEGIN");
   for (let i = 0; i < count; i++) {
     const id = `r${String(i).padStart(3, "0")}`;
     const request = { id, ws: "w", vault: "plain", item: "i1", session: "s1", chat: "chat", owner: "p@example.com",
@@ -19,6 +20,7 @@ function expiredGrants(db: DatabaseSync, count: number) {
     const grant = { v: 1, ws: "w", request: id, vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 999, at: 900 };
     insert.run("w", id, "s1", JSON.stringify({ request, grant, uses: 0 }));
   }
+  db.exec("COMMIT");
 }
 
 for (const { failAt, remaining } of [{ failAt: 11, remaining: 70 }, { failAt: 41, remaining: 38 }])
@@ -67,7 +69,8 @@ test("expired-grant batches stay inside an enclosing transaction", async () => {
 test("restoring many expired grants keeps a grant renewed after the startup read", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-many-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), other = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec("PRAGMA journal_mode=WAL");
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
+  other.exec("PRAGMA synchronous=NORMAL");
   expiredGrants(db, 70);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -115,7 +118,7 @@ test("a renewal racing an expired-grant batch is either retained or loses to the
   const signal = new Int32Array(new SharedArrayBuffer(8)), prior = Promise.withResolvers<void>();
   let secrets: Secrets | undefined, worker: Worker | undefined;
   try {
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000");
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000");
     expiredGrants(db, 70);
     plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
       listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -125,7 +128,7 @@ test("a renewal racing an expired-grant batch is either retained or loses to the
       const { parentPort, workerData } = require('node:worker_threads');
       const { DatabaseSync } = require('node:sqlite');
       const signal = new Int32Array(workerData.signal), db = new DatabaseSync(workerData.path);
-      db.exec('PRAGMA busy_timeout=5000');
+      db.exec('PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL');
       parentPort.postMessage('ready');
       Atomics.wait(signal, 0, 0);
       Atomics.store(signal, 1, 1); Atomics.notify(signal, 1);
@@ -168,7 +171,7 @@ test("a renewal racing an expired-grant batch is either retained or loses to the
 test("a renewed grant from another connection survives stale startup cleanup", () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-race-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -177,6 +180,7 @@ test("a renewed grant from another connection survives stale startup cleanup", (
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 999, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), newer = JSON.stringify({ request, grant: { ...grant, exp: 2000 }, uses: 0 });
+  other.exec("PRAGMA synchronous=NORMAL");
   let renewed = false;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "prepare") return (sql: string) => {
@@ -215,7 +219,7 @@ test("a renewed grant from another connection survives stale startup cleanup", (
 test("a repeatedly changed grant is recovered after the previous station exits", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-changed-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -224,6 +228,7 @@ test("a repeatedly changed grant is recovered after the previous station exits",
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 990, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let changes = 0;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "location") return () => null;
@@ -266,7 +271,7 @@ test("a repeatedly changed grant is recovered after the previous station exits",
 test("a grant removed by another connection while it is restored is not held", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-removed-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -275,6 +280,7 @@ test("a grant removed by another connection while it is restored is not held", a
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let removed = false;
   const observedPlain = new Proxy(plain, { get(target, property) {
     if (property === "itemSnapshot") return (ws: string, id: string) => {
@@ -300,7 +306,7 @@ test("a grant removed by another connection while it is restored is not held", a
 for (const makeValid of [false, true]) test(`a changed item is checked again during grant restoration (becomes valid: ${makeValid})`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-item-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   const item = { ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token" as const, name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token" as const, modes: (makeValid ? ["proxy"] : ["env"]) as ("env" | "proxy")[], hosts: [] }, at: 1000 };
@@ -310,6 +316,7 @@ for (const makeValid of [false, true]) test(`a changed item is checked again dur
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), otherPlain = new PlainStore(other), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let changed = false;
   const observed = new Proxy(plain, { get(target, property) {
     if (property === "itemSnapshot") return (ws: string, id: string) => {
@@ -341,7 +348,7 @@ for (const makeValid of [false, true]) test(`a changed item is checked again dur
 for (const makeValid of [false, true]) test(`a changed owner limit is checked again during grant restoration (becomes valid: ${makeValid})`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-limit-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -351,6 +358,7 @@ for (const makeValid of [false, true]) test(`a changed owner limit is checked ag
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), otherPlain = new PlainStore(other), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let changed = false;
   const observed = new Proxy(plain, { get(target, property) {
     if (property === "lasts") return (ws: string, owner: string) => {
@@ -381,7 +389,7 @@ for (const makeValid of [false, true]) test(`a changed owner limit is checked ag
 test("a grant removed after restoration cannot be used by the new station", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-revoked-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -390,6 +398,7 @@ test("a grant removed after restoration cannot be used by the new station", asyn
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   const secrets = new Secrets({ db, plain, vaults, proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never, backfill: { previousGone: prior.promise } });
   try {
@@ -407,7 +416,7 @@ test("a grant removed after restoration cannot be used by the new station", asyn
 test("two stations can use the same reusable grant without losing its use count", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restored-uses-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -416,6 +425,7 @@ test("two stations can use the same reusable grant without losing its use count"
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), otherPlain = new PlainStore(other), otherVaults = new VaultStore(other);
+  other.exec("PRAGMA synchronous=NORMAL");
   const prior = Promise.withResolvers<void>();
   const common = { proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never, backfill: { previousGone: prior.promise } };
@@ -438,7 +448,7 @@ test("two stations can use the same reusable grant without losing its use count"
 test("a concurrent removal during idle renewal does not recreate the grant", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-renew-removed-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -448,6 +458,7 @@ test("a concurrent removal during idle renewal does not recreate the grant", asy
     exp: 2000, at: 900, timeout: { kind: "idle", seconds: 1000 } };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let removed = false;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "prepare") return (sql: string) => {
@@ -483,7 +494,7 @@ test("a concurrent removal during idle renewal does not recreate the grant", asy
 test("a removed browser grant is not listed or put back into the browser", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-browser-removed-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "browser", name: "test", fields: { cookies: "test-only" }, notes: "",
     listing: { name: "test", kind: "browser", modes: ["browser"], hosts: ["example.com"] }, at: 1000 });
@@ -492,6 +503,7 @@ test("a removed browser grant is not listed or put back into the browser", async
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "browser", hosts: ["example.com"], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>(), calls: string[] = [];
+  other.exec("PRAGMA synchronous=NORMAL");
   const secrets = new Secrets({ db, plain, vaults, proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never, backfill: { previousGone: prior.promise },
     browsers: { signIn: async () => { calls.push("sign-in"); }, passkeysIn: async () => { calls.push("passkeys"); } } as never });
@@ -511,7 +523,7 @@ test("a removed browser grant is not listed or put back into the browser", async
 test("a grant renewed just before expiry cleanup stays usable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-expire-renewed-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -521,6 +533,7 @@ test("a grant renewed just before expiry cleanup stays usable", async () => {
     exp: 2000, at: 900, timeout: { kind: "idle", seconds: 1000 } };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0, until: 1001 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let now = 1_000_000, renewed = false;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "prepare") return (sql: string) => {
@@ -562,7 +575,7 @@ test("a grant renewed just before expiry cleanup stays usable", async () => {
 test("a reusable grant remains available after repeated competing uses", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-repeated-use-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -571,6 +584,7 @@ test("a reusable grant remains available after repeated competing uses", async (
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "hour", exp: 2000, at: 900 };
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let competingUses = 0;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "prepare") return (sql: string) => {
@@ -611,7 +625,7 @@ test("a reusable grant remains available after repeated competing uses", async (
 test("expiry cleanup does not delete a replacement grant", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-expire-replaced-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -621,6 +635,7 @@ test("expiry cleanup does not delete a replacement grant", async () => {
   db.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const replacement = JSON.stringify({ request, grant: { ...grant, exp: 2000, at: 1000 }, uses: 0 });
   const other = new DatabaseSync(path), prior = Promise.withResolvers<void>();
+  other.exec("PRAGMA synchronous=NORMAL");
   let now = 1_000_000, replaced = false;
   const observed = new Proxy(db, { get(target, property) {
     if (property === "prepare") return (sql: string) => {
@@ -662,6 +677,7 @@ test("expiry cleanup does not delete a replacement grant", async () => {
 test("closing secrets cancels a history read waiting for handover", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-close-history-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
   const prior = Promise.withResolvers<void>();
   const secrets = new Secrets({ db, plain, vaults, proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never, backfill: { previousGone: prior.promise } });

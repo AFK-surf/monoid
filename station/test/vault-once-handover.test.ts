@@ -14,7 +14,7 @@ import { withoutUseReader } from "./vault-no-reader.ts";
 test("a one-use grant spent during handover stays spent on the new station", () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-restore-spend-")), path = join(dir, "stillfail.db");
   const oldDb = new DatabaseSync(path), oldPlain = new PlainStore(oldDb), oldVaults = new VaultStore(oldDb);
-  oldDb.exec(`PRAGMA journal_mode=WAL;
+  oldDb.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   oldPlain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -23,6 +23,7 @@ test("a one-use grant spent during handover stays spent on the new station", () 
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "once", exp: 2000, at: 900 };
   oldDb.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const newDb = new DatabaseSync(path), newPlain = new PlainStore(newDb), newVaults = new VaultStore(newDb);
+  newDb.exec("PRAGMA synchronous=NORMAL");
   const common = { proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never };
   const old = new Secrets({ ...common, db: withoutUseReader(oldDb), plain: oldPlain, vaults: oldVaults });
@@ -41,7 +42,7 @@ test("a one-use grant spent during handover stays spent on the new station", () 
 test("two stations cannot both run a one-use plain grant during handover", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-once-run-")), path = join(dir, "stillfail.db");
   const oldDb = new DatabaseSync(path), oldPlain = new PlainStore(oldDb), oldVaults = new VaultStore(oldDb);
-  oldDb.exec(`PRAGMA journal_mode=WAL;
+  oldDb.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   oldPlain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -50,6 +51,7 @@ test("two stations cannot both run a one-use plain grant during handover", async
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "once", exp: 2000, at: 900 };
   oldDb.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const newDb = new DatabaseSync(path), newPlain = new PlainStore(newDb), newVaults = new VaultStore(newDb);
+  newDb.exec("PRAGMA synchronous=NORMAL");
   const common = { proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never };
   const old = new Secrets({ ...common, db: withoutUseReader(oldDb), plain: oldPlain, vaults: oldVaults });
@@ -67,7 +69,7 @@ test("two stations cannot both run a one-use plain grant during handover", async
 for (const oldUsed of [false, true]) test(`a restored one-use grant waits for a previous station without the claim protocol (old used: ${oldUsed})`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-once-old-")), path = join(dir, "stillfail.db");
   const oldDb = new DatabaseSync(path), oldPlain = new PlainStore(oldDb), oldVaults = new VaultStore(oldDb);
-  oldDb.exec(`PRAGMA journal_mode=WAL;
+  oldDb.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   oldPlain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -76,6 +78,7 @@ for (const oldUsed of [false, true]) test(`a restored one-use grant waits for a 
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "once", exp: 2000, at: 900 };
   oldDb.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const newDb = new DatabaseSync(path), newPlain = new PlainStore(newDb), newVaults = new VaultStore(newDb);
+  newDb.exec("PRAGMA synchronous=NORMAL");
   const prior = Promise.withResolvers<void>();
   const common = { proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never };
@@ -109,7 +112,7 @@ for (const oldUsed of [false, true]) test(`a restored one-use grant waits for a 
 for (const oldUsed of [false, true]) test(`a restored one-use browser grant waits for handover (old used: ${oldUsed})`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-once-browser-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "browser", name: "test", fields: { cookies: "test-only" }, notes: "",
     listing: { name: "test", kind: "browser", modes: ["browser"], hosts: ["example.com"] }, at: 1000 });
@@ -141,7 +144,7 @@ for (const oldUsed of [false, true]) test(`a restored one-use browser grant wait
 test("a one-use claim detects another connection claiming between its read and write", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-once-between-")), path = join(dir, "stillfail.db");
   const firstDb = new DatabaseSync(path), plain = new PlainStore(firstDb), vaults = new VaultStore(firstDb);
-  firstDb.exec(`PRAGMA journal_mode=WAL;
+  firstDb.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
@@ -150,6 +153,7 @@ test("a one-use claim detects another connection claiming between its read and w
   const grant = { v: 1, ws: "w", request: "r1", vault: "plain", item: "i1", mode: "env", hosts: [], scope: "once", exp: 2000, at: 900 };
   firstDb.prepare("INSERT INTO vault_grants(ws,id,session,body) VALUES(?,?,?,?)").run("w", "r1", "s1", JSON.stringify({ request, grant, uses: 0 }));
   const secondDb = new DatabaseSync(path), secondPlain = new PlainStore(secondDb), secondVaults = new VaultStore(secondDb);
+  secondDb.exec("PRAGMA synchronous=NORMAL");
   const common = { proxy: {} as never, data: dir, now: () => 1_000_000, home: () => "w", lock: () => null,
     hub: { store: { getSession: () => ({ archivedAt: null }), subscribe: () => {} } } as never };
   const first = new Secrets({ ...common, db: withoutUseReader(firstDb), plain, vaults });
@@ -185,7 +189,8 @@ test("a one-use claim detects another connection claiming between its read and w
 test("a failed one-use claim leaves the grant available to retry", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vault-once-fail-")), path = join(dir, "stillfail.db");
   const db = new DatabaseSync(path), plain = new PlainStore(db), vaults = new VaultStore(db);
-  db.exec(`CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+    CREATE TABLE vault_grants(ws TEXT NOT NULL,id TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(ws,id))`);
   plain.put({ ws: "w", id: "i1", owner: "p@example.com", version: 0, kind: "token", name: "test", fields: { value: "test-only" }, notes: "",
     listing: { name: "test", kind: "token", modes: ["env"], hosts: [] }, at: 1000 });
   const request = { id: "r1", ws: "w", vault: "plain", item: "i1", session: "s1", chat: "chat", owner: "p@example.com",

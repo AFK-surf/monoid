@@ -19,10 +19,12 @@ function oldStore(dir: string) {
   const card = JSON.stringify({ type: "text" });
   const entry = initial.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at,card) VALUES(?,?,'message','agent','a','choose',1,?)");
   const close = initial.db.prepare("INSERT INTO closed_cards(thread,n,viewer,at) VALUES(?,?,?,?)");
+  initial.db.exec("BEGIN");
   for (const thread of threads) {
     entry.run(thread,1,card); close.run(thread,1,"p",100);
     for (let n=2;n<=200;n++) close.run(thread,n,"p",n % 3);
   }
+  initial.db.exec("COMMIT");
   initial.db.exec("DROP INDEX closed_cards_thread_at");
   initial.close();
   return { path, threads };
@@ -83,6 +85,7 @@ test("an older prepared deletion uses the cleanup installed on reopen", () => {
   store.db.exec("DROP TRIGGER legacy_closed_drop_thread");
   store.close();
   const old = new DatabaseSync(path);
+  old.exec("PRAGMA synchronous=NORMAL");
   const dropCards = old.prepare("DELETE FROM closed_cards WHERE thread=?");
   const dropThread = old.prepare("DELETE FROM threads WHERE id=?");
   store = Store.open(path);
@@ -99,6 +102,7 @@ test("old prepared writes and read snapshots agree as requested chats are prepar
   const dir = mkdtempSync(join(tmpdir(), "closed-cards-store-"));
   const { path, threads } = oldStore(dir);
   const old = new DatabaseSync(path);
+  old.exec("PRAGMA synchronous=NORMAL");
   const write = old.prepare("INSERT OR REPLACE INTO closed_cards(thread,n,viewer,at) VALUES(?,?,?,?)");
   const store = Store.open(path), builder = new ClosedCardsBuilder(path);
   let snapshot: DatabaseSync | null = null;
@@ -174,6 +178,7 @@ test("the readers retry an old chat after its closed cards are prepared", async 
 test("a removed native index leaves the current direct read on its snapshot", async () => {
   const dir = mkdtempSync(join(tmpdir(), "closed-cards-index-race-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path), other = new DatabaseSync(path);
+  other.exec("PRAGMA synchronous=NORMAL");
   const builder = new ClosedCardsBuilder(path);
   try {
     const thread = store.openThread("ember", "CHAT", "index-race", null, null).id;
@@ -232,6 +237,7 @@ test("the old time index answers a sparse window without preparing a long chat",
   const dir = mkdtempSync(join(tmpdir(), "closed-cards-sparse-"));
   const { path, threads } = oldStore(dir);
   const old = new DatabaseSync(path);
+  old.exec("PRAGMA synchronous=NORMAL");
   old.exec("CREATE INDEX closed_cards_at ON closed_cards(at)");
   old.close();
   const store = Store.open(path);
@@ -250,6 +256,7 @@ for (const [field, values] of [
   const dir = mkdtempSync(join(tmpdir(), "closed-cards-unrelated-int64-"));
   const { path, threads } = oldStore(dir);
   const old = new DatabaseSync(path);
+  old.exec("PRAGMA synchronous=NORMAL");
   old.exec("CREATE INDEX closed_cards_at ON closed_cards(at)");
   old.close();
   const store = Store.open(path);

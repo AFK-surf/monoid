@@ -9,9 +9,12 @@ import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/bac
 
 function database(size: number, path = ":memory:"): DatabaseSync {
   const db = new DatabaseSync(path);
+  if (path !== ":memory:") db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
   db.exec("CREATE TABLE decision_checks(id INTEGER PRIMARY KEY,session TEXT NOT NULL,created_at INTEGER NOT NULL,result TEXT NOT NULL)");
   const put = db.prepare("INSERT INTO decision_checks VALUES(?,?,?,?)");
+  db.exec("BEGIN");
   for (let id = 1; id <= size; id++) put.run(id, `s${id % 7}`, id, "{}");
+  db.exec("COMMIT");
   return db;
 }
 
@@ -87,6 +90,7 @@ for (const winner of ["old writes", "native index", "another opener", "shared ti
   `session installation rechecks ${winner} under the writer lock`, () => {
     const dir = mkdtempSync(join(tmpdir(), "decision-session-install-")), path = join(dir, "station.db");
     const db = database(winner === "old writes" ? 40 : 100, path), old = new DatabaseSync(path, { timeout: 5000 });
+    old.exec("PRAGMA synchronous=NORMAL");
     try {
       let intercepted = false;
       const observed = new Proxy(db, { get(target, property) {
@@ -125,6 +129,7 @@ for (const winner of ["native session", "separate session", "shared time"] as co
   `time installation rechecks ${winner} before choosing a shared session lookup`, () => {
     const dir = mkdtempSync(join(tmpdir(), "decision-shared-install-")), path = join(dir, "station.db");
     const db = database(100, path), old = new DatabaseSync(path, { timeout: 5000 });
+    old.exec("PRAGMA synchronous=NORMAL");
     try {
       let intercepted = false;
       const observed = new Proxy(db, { get(target, property) {

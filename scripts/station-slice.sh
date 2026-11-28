@@ -115,6 +115,16 @@ long="$long test/read-tail.test.ts:9 test/reader-config-select.test.ts:9 test/fo
 long="$long test/replica-chat-pion-switch.test.ts:8 test/packed-pion-switch.test.ts:6"
 long="$long test/builders-vault-pion-switch.test.ts:6 test/w6-selection-coldstart.test.ts:6"
 long="$long test/sessions-foundation.test.ts:5 test/reader-sessions-pion-switch.test.ts:5"
+# Unlisted tests of 5 s or more (measured four side by side on pvg-office-1 Linux x64, 2026-11-28, after setting
+# PRAGMA synchronous=NORMAL / wrapping fixture-seeding loops in transactions for the 13 fsync-bound SQLite tests).
+long="$long test/vault-restore-startup.test.ts:18 test/vault-once-handover.test.ts:12 test/share.test.ts:11"
+long="$long test/w9-cross-engine-handover.test.ts:10 test/lock-forks.test.ts:9 test/repo-branch-cleanup.test.ts:8"
+long="$long test/vault-keeper.test.ts:7 test/comma-stats-age-fair.test.ts:7 test/waiting-progress.test.ts:7"
+long="$long test/card-outbox-scan.test.ts:7 test/legacy-closed-index-store.test.ts:7 test/slack-routes.test.ts:7"
+long="$long test/reclaim-storage.test.ts:6 test/mb-live-vault-devices-parity.test.ts:6 test/open-stuck.test.ts:6"
+long="$long test/projects-classification.test.ts:6 test/worktree-cow.test.ts:6 test/legacy-decision-time-store.test.ts:6"
+long="$long test/chat-handover-flush.test.ts:5 test/logins.test.ts:5 test/comma-stats-build-bounded.test.ts:5"
+long="$long test/legacy-agent-build.test.ts:5"
 ls test/*.test.ts | awk -v i="$i" -v n="$n" -v long="$long" '
   function put(f, c,   g, b) { b = 0; for (g = 1; g < n; g++) if (load[g] < load[b]) b = g; load[b] += c; if (b == i) print f }
   BEGIN { k = split(long, l, " ") }
