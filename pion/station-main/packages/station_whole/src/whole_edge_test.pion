@@ -967,6 +967,103 @@ test "connects_os_fail_closed_ack_on_callback_false" {
   rt.stop()
 }
 
+test "connects_os_r9_group_sse_ordered_async_queue_and_stale_gen_drop" {
+  let mem = station_ops::MemFs::new()
+  let h = MockMuxHarness::new(1000L, fn(_id, _op, _json, _payload, _q) {})
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let seen : Array[String] = []
+  let pending_cbs : Array[(Bool) -> Unit] = []
+  let disconnects : Array[String] = []
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => seen.push(m.text)
+        _ => seen.push("other")
+      }
+      pending_cbs.push(on_done)
+    },
+    on_card_answer: fn(_cid, _ans, on_done) -> Unit { on_done(false) },
+    on_interactive: fn(_cid, _eid, _p, on_done) -> Unit { on_done(false) },
+    on_disconnect: fn(_cid, r) -> Unit { disconnects.push(r) },
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
+  let seed = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  edge_assert(rt.register_group("grp-async", "http://127.0.0.1:9999", seed, "bot-1", "Bot") is Ok(_))
+  rt.running_connects.set("grp-async", true)
+  let user_seed = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+  let (id1, ev1) = match station_connects::group_sign_event(
+    user_seed,
+    "d_alice",
+    "u_alice",
+    1L,
+    1001L,
+    0L,
+    "",
+    station_connects::GROUP_LOBBY,
+    "msg.post",
+    base_codec::json_obj([("text", base_codec::json_str("first"))]),
+  ) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let (id2, ev2) = match station_connects::group_sign_event(
+    user_seed,
+    "d_alice",
+    "u_alice",
+    2L,
+    1002L,
+    0L,
+    "",
+    station_connects::GROUP_LOBBY,
+    "msg.post",
+    base_codec::json_obj([("text", base_codec::json_str("second"))]),
+  ) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let frame1 = base_codec::json_stringify(
+    base_codec::json_obj([
+      (
+        "stamped",
+        base_codec::json_obj([
+          ("id", base_codec::json_str(id1)),
+          ("aseq", base_codec::json_int(1)),
+          ("event", ev1),
+        ]),
+      ),
+    ]),
+  )
+  let frame2 = base_codec::json_stringify(
+    base_codec::json_obj([
+      (
+        "stamped",
+        base_codec::json_obj([
+          ("id", base_codec::json_str(id2)),
+          ("aseq", base_codec::json_int(2)),
+          ("event", ev2),
+        ]),
+      ),
+    ]),
+  )
+  // Feed 2 ordered Ed25519-signed SSE events in ONE chunk!
+  let chunk = "id: 1\nevent: event\ndata: " + frame1 + "\n\nid: 2\nevent: event\ndata: " + frame2 + "\n\n"
+  let _ = rt.feed_group_sse("grp-async", chunk, 1005L)
+  // Event 1 is in-flight -> Event 2 MUST NOT be dispatched yet!
+  edge_assert(seen.length() == 1 && seen[0] == "first")
+  edge_assert(pending_cbs.length() == 1)
+  edge_assert(disconnects.length() == 0)
+  // Confirm Event 1 -> Event 2 is now dispatched in order (zero NeedSync)!
+  (pending_cbs[0])(true)
+  edge_assert(seen.length() == 2 && seen[1] == "second")
+  edge_assert(pending_cbs.length() == 2)
+  edge_assert(disconnects.length() == 0)
+  // Simulate stream close BEFORE Event 2 confirms -> stale callback MUST be ignored!
+  let _ = rt.stop_connect("grp-async")
+  (pending_cbs[1])(true)
+  edge_assert(seen.length() == 2)
+  rt.stop()
+}
+
 test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   let mem = station_ops::MemFs::new()
   let h = MockMuxHarness::new(1000L, fn(_id, _op, _json, _payload, _q) {})

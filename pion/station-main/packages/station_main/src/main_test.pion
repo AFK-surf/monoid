@@ -1808,4 +1808,32 @@ test "W17C-1 R8 canonical legacy cross-ws symlink & parent/child collision check
     Some(c) => assert_str_eq(c, "/real/data/sessions/unique-a/workspace")
     None => panic("expected unshared existing legacy dir to be allowed")
   }
+  // (6) R9 P0: Non-NotFound FsErr (PermissionDenied / ELOOP) MUST fail closed immediately (NO parent fallback)!
+  let eacces_ops = station_ops::OpsFs::{
+    ..custom_ops,
+    realpath: fn(p : String) -> Result[String, station_ops::FsErr] {
+      if p == "/data" { Ok("/real/data") }
+      else if p == "/data/sessions" { Ok("/real/data/sessions") }
+      else if p == "/data/sessions/unique-a/workspace" { Ok("/real/data/sessions/unique-a/workspace") }
+      else if p == "/data/sessions/perm-denied/workspace" { Err(station_ops::FsErr::PermissionDenied("EACCES")) }
+      else if p == "/data/sessions/loop-link/workspace" { Err(station_ops::FsErr::Other("ELOOP")) }
+      else { Err(station_ops::FsErr::NotFound) }
+    },
+  }
+  assert_true(
+    canonicalize_with_existing_ancestor(eacces_ops.realpath, "/data/sessions/perm-denied/workspace", "/").is_err(),
+    "PermissionDenied must fail closed without parent fallback",
+  )
+  assert_true(
+    canonicalize_with_existing_ancestor(eacces_ops.realpath, "/data/sessions/loop-link/workspace", "/").is_err(),
+    "ELOOP must fail closed without parent fallback",
+  )
+  assert_true(
+    verify_legacy_session_workspace_against(eacces_ops, "/data/sessions/unique-a/workspace", "/data", ["/data/sessions/perm-denied/workspace"], "/") is None,
+    "PermissionDenied on other workspace path must fail closed",
+  )
+  assert_true(
+    verify_legacy_session_workspace_against(eacces_ops, "/data/sessions/unique-a/workspace", "/data", ["/data/sessions/loop-link/workspace"], "/") is None,
+    "ELOOP on other workspace path must fail closed",
+  )
 }

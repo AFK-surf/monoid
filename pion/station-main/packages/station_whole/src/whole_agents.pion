@@ -1265,7 +1265,8 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
     "profile_id TEXT NOT NULL, " +
     "runtime TEXT NOT NULL, " +
     "cwd TEXT NOT NULL, " +
-    "created_at INTEGER NOT NULL);",
+    "created_at INTEGER NOT NULL, " +
+    "reused INTEGER NOT NULL DEFAULT 1);",
   ]
   for i in 0..<init_sqls.length() {
     match db.exec(init_sqls[i]) {
@@ -1276,6 +1277,7 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
       }
     }
   }
+  let _ = db.exec("ALTER TABLE runner_launches ADD COLUMN reused INTEGER NOT NULL DEFAULT 1;")
   // PRAGMA user_version = 1 migration: recompute `runner_session_totals` for all sessions from
   // `runner_output`, enforce the 16 MiB ring-buffer retention trim, and bump `user_version = 1`
   // atomically inside a single transaction.
@@ -1379,6 +1381,7 @@ pub struct RunnerLaunchRecord {
   pub runtime : String
   pub cwd : String
   pub created_at : Int64
+  pub reused : Bool
 }
 
 pub fn WholeAgents::record_runner_launch(
@@ -1391,7 +1394,7 @@ pub fn WholeAgents::record_runner_launch(
   }
   match db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
     match tx.run(
-      "INSERT OR REPLACE INTO runner_launches (instance_id, session_key, ws, profile_id, runtime, cwd, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+      "INSERT OR REPLACE INTO runner_launches (instance_id, session_key, ws, profile_id, runtime, cwd, created_at, reused) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
       [
         base_codec::json_str(rec.instance_id),
         base_codec::json_str(rec.session_key),
@@ -1400,6 +1403,7 @@ pub fn WholeAgents::record_runner_launch(
         base_codec::json_str(rec.runtime),
         base_codec::json_str(rec.cwd),
         sql_db::int64_to_json(rec.created_at),
+        base_codec::json_int(if rec.reused { 1 } else { 0 }),
       ],
     ) {
       Ok(_) => Ok(())
@@ -1420,7 +1424,7 @@ pub fn WholeAgents::get_runner_launch(
     Err(e) => return Err(e)
   }
   match db.first(
-    "SELECT instance_id, session_key, ws, profile_id, runtime, cwd, created_at FROM runner_launches WHERE instance_id = ?1 LIMIT 1",
+    "SELECT instance_id, session_key, ws, profile_id, runtime, cwd, created_at, reused FROM runner_launches WHERE instance_id = ?1 LIMIT 1",
     [base_codec::json_str(instance_id)],
   ) {
     Ok(Some(row)) => {
@@ -1439,11 +1443,32 @@ pub fn WholeAgents::get_runner_launch(
           runtime: get_s("runtime"),
           cwd: get_s("cwd"),
           created_at: adopted_row_i64(row, "created_at"),
+          reused: adopted_row_i64(row, "reused") != 0L,
         }),
       )
     }
     Ok(None) => Ok(None)
     Err(e) => Err("get_runner_launch failed: " + e.message)
+  }
+}
+
+pub fn WholeAgents::mark_runner_launch_reused(
+  self : WholeAgents,
+  instance_id : String,
+) -> Unit {
+  if instance_id.length() == 0 {
+    return
+  }
+  match self.open_adopted_db() {
+    Ok(db) => {
+      let _ = db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        match tx.run("UPDATE runner_launches SET reused = 1 WHERE instance_id = ?1", [base_codec::json_str(instance_id)]) {
+          Ok(_) => Ok(())
+          Err(e) => Err(e)
+        }
+      })
+    }
+    Err(_) => ()
   }
 }
 

@@ -1245,6 +1245,9 @@ pub struct ConnectsOsRuntime {
   group_sse_streams : Map[String, Int]
   sse_stream_to_connect : Map[Int, String]
   group_utf8_decoders : Map[String, Utf8ChunkDecoder]
+  group_pending_sse : Map[String, Array[station_connects::SseEvent]]
+  group_inflight_gen : Map[String, Int64]
+  group_stream_gen : Map[String, Int64]
   pending_feishu_refresh : Map[Int64, String]
   pending_async_calls : Map[Int64, String]
   pending_feishu_catchup : Map[String, Bool]
@@ -1271,6 +1274,9 @@ pub fn ConnectsOsRuntime::new(
     group_sse_streams: Map::new(),
     sse_stream_to_connect: Map::new(),
     group_utf8_decoders: Map::new(),
+    group_pending_sse: Map::new(),
+    group_inflight_gen: Map::new(),
+    group_stream_gen: Map::new(),
     pending_feishu_refresh: Map::new(),
     pending_async_calls: Map::new(),
     pending_feishu_catchup: Map::new(),
@@ -2036,12 +2042,24 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
   }
 }
 
+fn ConnectsOsRuntime::bump_group_stream_gen(self : ConnectsOsRuntime, connect_id : String) -> Int64 {
+  let next_g = match self.group_stream_gen.get(connect_id) {
+    Some(v) => v + 1L
+    None => 1L
+  }
+  self.group_stream_gen.set(connect_id, next_g)
+  self.group_pending_sse.remove(connect_id)
+  self.group_inflight_gen.remove(connect_id)
+  next_g
+}
+
 fn ConnectsOsRuntime::on_group_sse_closed(
   self : ConnectsOsRuntime,
   connect_id : String,
   stream_id : Int,
   reason : String,
 ) -> Unit {
+  let _ = self.bump_group_stream_gen(connect_id)
   self.sse_stream_to_connect.remove(stream_id)
   self.group_sse_streams.remove(connect_id)
   self.group_utf8_decoders.remove(connect_id)
@@ -2147,6 +2165,107 @@ pub fn ConnectsOsRuntime::handle_mux_reply(
   }
 }
 
+fn ConnectsOsRuntime::pump_group_sse(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  now_ms : Int64,
+) -> Int {
+  if !self.is_connect_running(connect_id) || self.group_inflight_gen.get(connect_id) is Some(_) {
+    return 0
+  }
+  let g = match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Group(grp)) => grp
+    _ => return 0
+  }
+  let mut delivered = 0
+  while self.is_connect_running(connect_id) && self.group_inflight_gen.get(connect_id) is None {
+    let q = match self.group_pending_sse.get(connect_id) {
+      Some(arr) => arr
+      None => break
+    }
+    if q.length() == 0 {
+      break
+    }
+    let head = q[0]
+    let rest : Array[station_connects::SseEvent] = []
+    for i in 1..<q.length() {
+      rest.push(q[i])
+    }
+    self.group_pending_sse.set(connect_id, rest)
+    let cur_gen = match self.group_stream_gen.get(connect_id) {
+      Some(v) => v
+      None => 0L
+    }
+    match g.take_sse(head, now_ms) {
+      station_connects::GroupStep::Event(ev) => {
+        self.group_inflight_gen.set(connect_id, cur_gen)
+        let in_sync_call : Array[Bool] = [true]
+        let settled : Array[Bool] = [false]
+        let sync_ok : Array[Bool] = [false]
+        (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev, fn(ok : Bool) -> Unit {
+          if settled[0] {
+            return
+          }
+          settled[0] = true
+          let live_gen = match self.group_stream_gen.get(connect_id) {
+            Some(v) => v
+            None => 0L
+          }
+          if live_gen != cur_gen {
+            return
+          }
+          self.group_inflight_gen.remove(connect_id)
+          if ok && self.is_connect_running(connect_id) {
+            g.commit_pending(now_ms)
+            if in_sync_call[0] {
+              sync_ok[0] = true
+            } else {
+              let _ = self.pump_group_sse(connect_id, (self.bridge.now_fn)())
+            }
+          } else {
+            g.discard_pending()
+            match self.group_sse_streams.get(connect_id) {
+              Some(sid) => self.on_group_sse_closed(connect_id, sid, "event_rejected")
+              None => {
+                let _ = self.bump_group_stream_gen(connect_id)
+                self.running_connects.remove(connect_id)
+                g.machine.on_close(now_ms, Some("event_rejected"))
+                self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting("event_rejected"))
+                if !self.stopped {
+                  (self.callbacks.on_disconnect)(connect_id, "event_rejected")
+                }
+              }
+            }
+          }
+        })
+        in_sync_call[0] = false
+        if sync_ok[0] {
+          delivered = delivered + 1
+        }
+      }
+      station_connects::GroupStep::NeedSync(space, cur) => {
+        g.discard_pending()
+        let reason = "need_sync:" + space + ":" + cur.to_string()
+        match self.group_sse_streams.get(connect_id) {
+          Some(sid) => self.on_group_sse_closed(connect_id, sid, reason)
+          None => {
+            let _ = self.bump_group_stream_gen(connect_id)
+            self.running_connects.remove(connect_id)
+            g.machine.on_close(now_ms, Some(reason))
+            self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+            if !self.stopped {
+              (self.callbacks.on_disconnect)(connect_id, reason)
+            }
+          }
+        }
+        break
+      }
+      _ => ()
+    }
+  }
+  delivered
+}
+
 pub fn ConnectsOsRuntime::feed_group_sse(
   self : ConnectsOsRuntime,
   connect_id : String,
@@ -2160,73 +2279,17 @@ pub fn ConnectsOsRuntime::feed_group_sse(
     Some(ConnectorEntry::Group(g)) => {
       g.machine.on_heard(now_ms)
       let evs = g.sse.feed(chunk)
-      let mut delivered = 0
-      for i in 0..<evs.length() {
-        if !self.is_connect_running(connect_id) {
-          break
+      if evs.length() > 0 {
+        let q = match self.group_pending_sse.get(connect_id) {
+          Some(existing) => existing
+          None => []
         }
-        match g.take_sse(evs[i], now_ms) {
-          station_connects::GroupStep::Event(ev) => {
-            if self.is_connect_running(connect_id) {
-              let settled : Array[Bool] = [false]
-              let sync_delivered : Array[Bool] = [false]
-              let reject_now : Array[Bool] = [false]
-              (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev, fn(ok : Bool) -> Unit {
-                if settled[0] {
-                  return
-                }
-                settled[0] = true
-                if ok && self.is_connect_running(connect_id) {
-                  g.commit_pending(now_ms)
-                  sync_delivered[0] = true
-                } else {
-                  reject_now[0] = true
-                  // Fail-closed: discard pending cursor commit, close SSE stream & trigger backoff reconnect
-                  // so the rejected event and any trailing events in the stream are redelivered in order!
-                  g.discard_pending()
-                  match self.group_sse_streams.get(connect_id) {
-                    Some(sid) => self.on_group_sse_closed(connect_id, sid, "event_rejected")
-                    None => {
-                      self.running_connects.remove(connect_id)
-                      g.machine.on_close(now_ms, Some("event_rejected"))
-                      self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting("event_rejected"))
-                      if !self.stopped {
-                        (self.callbacks.on_disconnect)(connect_id, "event_rejected")
-                      }
-                    }
-                  }
-                }
-              })
-              if sync_delivered[0] {
-                delivered = delivered + 1
-              } else if reject_now[0] {
-                break
-              }
-            } else {
-              g.discard_pending()
-              break
-            }
-          }
-          station_connects::GroupStep::NeedSync(space, cur) => {
-            g.discard_pending()
-            let reason = "need_sync:" + space + ":" + cur.to_string()
-            match self.group_sse_streams.get(connect_id) {
-              Some(sid) => self.on_group_sse_closed(connect_id, sid, reason)
-              None => {
-                self.running_connects.remove(connect_id)
-                g.machine.on_close(now_ms, Some(reason))
-                self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
-                if !self.stopped {
-                  (self.callbacks.on_disconnect)(connect_id, reason)
-                }
-              }
-            }
-            break
-          }
-          _ => ()
+        for i in 0..<evs.length() {
+          q.push(evs[i])
         }
+        self.group_pending_sse.set(connect_id, q)
       }
-      Ok(delivered)
+      Ok(self.pump_group_sse(connect_id, now_ms))
     }
     _ => Err("not a group connector: " + connect_id)
   }
@@ -2311,12 +2374,20 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
             station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
             station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
           }
-          let _ = f.catch_up(cid, tr, fn(ev : station_connects::ChatEvent) -> Bool {
-            let sync_ok : Array[Bool] = [false]
-            (self.callbacks.on_event)(cid, plat, ev, fn(ok : Bool) -> Unit { sync_ok[0] = ok })
-            sync_ok[0]
-          })
-          self.save_feishu_threads_state(cid, f)
+          let _ = f.catch_up_async(
+            cid,
+            tr,
+            fn(ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+              (self.callbacks.on_event)(cid, plat, ev, fn(ok : Bool) -> Unit {
+                on_done(ok && self.is_connect_running(cid))
+              })
+            },
+            fn() -> Unit {
+              if self.is_connect_running(cid) {
+                self.save_feishu_threads_state(cid, f)
+              }
+            },
+          )
           actions.push(cid + ":feishu_catch_up")
         }
         if f.tokens.cached(now_ms) is None && f.machine.is_connected() {

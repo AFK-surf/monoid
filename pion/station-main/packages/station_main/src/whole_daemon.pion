@@ -916,36 +916,9 @@ fn handle_connect_inbound_event(
     station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
     station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
   }
-  let existing_tid : Option[Int64] = match st_db.db.first(
-    "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
-    [
-      base_codec::json_str(meta.config_surface),
-      base_codec::json_str(ch),
-      base_codec::json_str(tts),
-    ],
-  ) {
-    Ok(Some(row)) => match row.get("id") {
-      Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
-      _ => None
-    }
-    _ => None
-  }
-  // Security (P0-1 / R8 P1-5): Enforce workspace visibility FIRST (BEFORE `query_thread_moved_to`
-  // or attachment download) so an inbound event from workspace A NEVER forwards or touches a thread owned by B!
-  match existing_tid {
-    Some(id) => {
-      let vis = match station_whole::thread_visible_in_ws(st_db, id, meta.ws, core.config.home_workspace) {
-        Ok(b) => b
-        Err(_) => false
-      }
-      if !vis {
-        return finish(false)
-      }
-    }
-    None => ()
-  }
-  // R6/R7/R8 P1-5: Query local SQLite `handed_over` scoped strictly to `meta.ws`; when moved to
-  // another station, forward asynchronously via `ask_peer_rpc` and ONLY ACK the provider inside `on_done`!
+  // R9 P1-5: Query `query_thread_moved_to` FIRST (strictly SQL-filtered by `meta.ws`, matching
+  // both in-flight `s.ws = meta.ws` and completed `s.ws = 'handed:' || meta.ws` which
+  // `thread_visible_in_ws` intentionally hides from local lists!).
   let moved_station_opt = query_thread_moved_to(
     st_db,
     meta.config_surface,
@@ -965,6 +938,34 @@ fn handle_connect_inbound_event(
       return true
     }
     _ => ()
+  }
+  let existing_tid : Option[Int64] = match st_db.db.first(
+    "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
+    [
+      base_codec::json_str(meta.config_surface),
+      base_codec::json_str(ch),
+      base_codec::json_str(tts),
+    ],
+  ) {
+    Ok(Some(row)) => match row.get("id") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+      _ => None
+    }
+    _ => None
+  }
+  // Security (P0-1 / R9 P1-5): For local delivery, enforce workspace visibility BEFORE attachment
+  // download or message persistence so workspace A NEVER touches a thread owned by workspace B!
+  match existing_tid {
+    Some(id) => {
+      let vis = match station_whole::thread_visible_in_ws(st_db, id, meta.ws, core.config.home_workspace) {
+        Ok(b) => b
+        Err(_) => false
+      }
+      if !vis {
+        return finish(false)
+      }
+    }
+    None => ()
   }
   let routed_elsewhere = moved_station_opt is Some(_)
   let ok = handle_connect_inbound_event_local(
@@ -8459,8 +8460,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.replica.kept_log.entries.length() > 0 {
             let _ = st.replica.persist_kept_log()
           }
-          st.live_runners.prepare_handover(st.core)
-          match st.core.export_handover(host_shim::wall_ms()) {
+          let ho_wall_ms = host_shim::wall_ms()
+          match st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match st.core.export_handover(ho_wall_ms) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
               let body = base_codec::json_stringify(snap.to_json())
