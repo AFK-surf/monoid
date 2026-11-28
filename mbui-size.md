@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6d17e28e2](https://github.com/AFK-surf/monoid/commit/6d17e28e27b1b2955d09c57cf9e05da77997c3d1) feat(station-main): wire 10 interactive call_ops a | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
 | [256a6e6f1](https://github.com/AFK-surf/monoid/commit/256a6e6f1a314819c4bec7734251b4fb3c483c93) fix(ui,mbui): soften scroll-edge .soft fade curve  | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
 | [2cc9a6279](https://github.com/AFK-surf/monoid/commit/2cc9a627904b345c85a1191d94d48af05f20cf35) fix(ui,mbui): align iOS 27 sheet grabber, modal ti | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
 | [cba4de5f0](https://github.com/AFK-surf/monoid/commit/cba4de5f05ca9a62bf03454d1637dd6f03937070) refactor(mbui): hoist invariant reads out of iter  | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [487d6f517](https://github.com/AFK-surf/monoid/commit/487d6f5174104f7ce3174ec71e3bea12f0531996) feat(station-main): catch up 22 Node commits for o | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.73 | 131.94 |
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
-| [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6d17e28e2](https://github.com/AFK-surf/monoid/commit/6d17e28e27b1b2955d09c57cf9e05da77997c3d1) feat(station-main): wire 10 interactive call_ops a | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.77 |
 | [256a6e6f1](https://github.com/AFK-surf/monoid/commit/256a6e6f1a314819c4bec7734251b4fb3c483c93) fix(ui,mbui): soften scroll-edge .soft fade curve  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [2cc9a6279](https://github.com/AFK-surf/monoid/commit/2cc9a627904b345c85a1191d94d48af05f20cf35) fix(ui,mbui): align iOS 27 sheet grabber, modal ti | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.79 |
 | [cba4de5f0](https://github.com/AFK-surf/monoid/commit/cba4de5f05ca9a62bf03454d1637dd6f03937070) refactor(mbui): hoist invariant reads out of iter  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.95 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7861b1124](https://github.com/AFK-surf/monoid/commit/7861b112483ad1ffe8119a07e32ab3670d9fa75e) feat(pion/client-core): add AuthCapability, WireOu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.71 |
 | [487d6f517](https://github.com/AFK-surf/monoid/commit/487d6f5174104f7ce3174ec71e3bea12f0531996) feat(station-main): catch up 22 Node commits for o | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.75 |
-| [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.66 |
