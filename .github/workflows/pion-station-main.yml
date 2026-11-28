@@ -429,6 +429,9 @@ jobs:
           vault_out="$("$BIN" --smoke-vault-sqlite)"
           echo "$vault_out"
           printf '%s\n' "$vault_out" | grep -q '"ok":true'
+          w17c3a_out="$("$BIN" --smoke-w17c3a-sqlite)"
+          echo "$w17c3a_out"
+          printf '%s\n' "$w17c3a_out" | grep -q '"ok":true'
           set +e
           "$BIN" --unknown >/dev/null 2>&1
           rc=$?

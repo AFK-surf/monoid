@@ -297,7 +297,7 @@ test "w17c3a R2: drive.mkdir.post workspace isolation, shared transfers, CRDT 41
     Ok(_) => panic("oversized progress.PUT must be rejected 413")
   }
 
-  // 4. `board.drafts`: `files` is `[]` (array, not `{}`), rev monotonicity, and `put_aside` called on gone
+  // 4. `board.drafts`: `files` is `[]` (array, not `{}`), `:`/`.`, `draftOf` normalization, `put_aside` on gone
   match (api.admin.host.call)("board.drafts.GET", make_test_api_req_as("GET", "/board/drafts", home_owner), [], base_codec::json_obj([])) {
     Ok(res) => match base_codec::json_get(res, "files") {
       Some(base_codec::Json::Arr(_)) => ()
@@ -306,13 +306,46 @@ test "w17c3a R2: drive.mkdir.post workspace isolation, shared transfers, CRDT 41
     Err(e) => panic("board.drafts.GET failed: " + e.message)
   }
   let d1 = base_codec::json_obj([("drafts", base_codec::json_arr([
-    base_codec::json_obj([("id", base_codec::json_str("d1")), ("owner", base_codec::json_str("u-owner")), ("rev", base_codec::json_int(1)), ("gone", base_codec::json_bool(false)), ("at", base_codec::json_int(10)), ("updatedAt", base_codec::json_int(10)), ("title", base_codec::json_str("Live"))]),
+    base_codec::json_obj([
+      ("id", base_codec::json_str("new:board-1.2")),
+      ("owner", base_codec::json_str("u-owner")),
+      ("rev", base_codec::json_int(1)),
+      ("gone", base_codec::json_bool(false)),
+      ("at", base_codec::json_int(10)),
+      ("updatedAt", base_codec::json_int(10)),
+      ("title", base_codec::json_str("  Live  ")),
+      ("station", base_codec::json_str("st-w17c3a")),
+      ("extraJunk", base_codec::json_str("MUST-BE-STRIPPED")),
+    ]),
   ]))])
-  let _ = (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1)
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("MUST-BE-STRIPPED") || !s.contains("new:board-1.2") {
+        panic("draftOf normalization failed: " + s)
+      }
+    }
+    Err(e) => panic("board.drafts.PUT d1 failed: " + e.message)
+  }
   let d1_gone = base_codec::json_obj([("drafts", base_codec::json_arr([
-    base_codec::json_obj([("id", base_codec::json_str("d1")), ("owner", base_codec::json_str("u-owner")), ("rev", base_codec::json_int(2)), ("gone", base_codec::json_bool(true)), ("at", base_codec::json_int(10)), ("updatedAt", base_codec::json_int(20))]),
+    base_codec::json_obj([
+      ("id", base_codec::json_str("new:board-1.2")),
+      ("owner", base_codec::json_str("u-owner")),
+      ("rev", base_codec::json_int(2)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int(20)),
+      ("title", base_codec::json_str("MUST-BE-DROPPED")),
+    ]),
   ]))])
-  let _ = (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1_gone)
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1_gone) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("MUST-BE-DROPPED") {
+        panic("gone draft must drop live fields: " + s)
+      }
+    }
+    Err(e) => panic("board.drafts.PUT d1_gone failed: " + e.message)
+  }
   if aside_count != 1 { panic("expected put_aside_draft_files to be called when live draft becomes gone") }
 
   // 5. `resources.process.end`: Node-aligned visibility (visible chat member can end; cross-ws 404; untracked 409)
@@ -323,5 +356,65 @@ test "w17c3a R2: drive.mkdir.post workspace isolation, shared transfers, CRDT 41
   match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/4242/end", home_member), ["4242"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
     Ok(res) => if stopped_pid != 4242 || json_field_bool(res, "ended") != Some(true) { panic("resources.process.end failed") }
     Err(e) => panic("resources.process.end failed: " + e.message)
+  }
+}
+
+test "w17c3a R3: sha256 poster path, >8MiB bounded 206 read, corrupt board.drafts recovery, drive_for_ws fail-closed 500" {
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/sessions/s-main/workspace/uploads")
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/thumbs")
+  let video_path = "/tmp/w17c3a/sessions/s-main/workspace/uploads/demo.mp4"
+  let _ = (base_fs.write_file)(video_path, "MP4")
+  let poster_path = "/tmp/w17c3a/thumbs/" + ro_poster_hash(video_path) + ".poster.jpg"
+  let _ = (base_fs.write_file)(poster_path, "SHA256-POSTER")
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p.ends_with("giant.bin") {
+        Some(station_jobs::FsStat::{ kind: "file", size: 9L * 1024L * 1024L, executable: false, mode: 420, mtime_ms: 1L, dev: 1L, ino: 1L })
+      } else { (base_fs.stat)(p) }
+    },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      if p.ends_with("giant.bin") {
+        if off != 0L || len != 8L * 1024L * 1024L { panic("unexpected read_range on giant.bin") }
+        Some("BOUNDED-CHUNK".to_bytes())
+      } else { (base_fs.read_range)(p, off, len) }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] {
+      if p.ends_with("giant.bin") { panic("MUST NEVER call read_bytes on >8MiB file!") }
+      (base_fs.read_bytes)(p)
+    },
+  }
+  let (api, _, hooks, _, _) = make_w17c3a_r2_fixture(fs_override=Some(fs))
+  let key_id = "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let owner = PeerIdentity::AuthenticatedMember(make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"), key_id)
+
+  // B6: sha256 poster hit
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/poster?name=demo.mp4", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "SHA256-POSTER" {
+        panic("sha256 poster failed: status=" + r.status.to_string())
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // B5: >8MiB returns 206 + content-range + stillfail-total without calling read_bytes
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/files?name=giant.bin", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 206 || find_header(r.headers, "stillfail-total") != Some((9 * 1024 * 1024).to_string()) || find_header(r.headers, "content-range").is_none() {
+        panic("expected 206 + content-range + stillfail-total for >8MiB file")
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // P2: drive.mkdir.post fails closed 500 when drive_for_ws is None
+  hooks.drive_for_ws = None
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", home_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-home")),
+    ("path", base_codec::json_str("x")),
+  ])) {
+    Err(e) => if e.status != 500 { panic("expected 500 when drive_for_ws is None, got " + e.status.to_string()) }
+    Ok(_) => panic("drive.mkdir.post must fail closed 500 when drive_for_ws is None")
   }
 }
