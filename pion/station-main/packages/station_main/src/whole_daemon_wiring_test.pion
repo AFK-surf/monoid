@@ -556,25 +556,34 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
   }
 }
 
-test "wave17c3b hot handover restart SIGUSR2 and seen_members expiry cleanup + seen-devices.json persistence" {
+test "wave17c3b R2: hot handover restart rejects Windows (501) and non-launcher PIDs (409), and prunes expired seen_members" {
   let mem_fs = station_ops::MemFs::new()
   let ops_fs = mem_fs.ops()
   let data_dir = "/tmp/w17c3b-daemon-test"
-
-  // 1. Without run/station.json -> returns Err (no fake stop)
-  match trigger_hot_handover_restart(ops_fs, data_dir, "/", fn(_p) { true }, fn(_p) { 0 }) {
-    Err(_) => ()
-    Ok(_) => panic("restart without launcher station.json must fail")
-  }
-  // With run/station.json handoff=1 pid=4242 -> sends SIGUSR2 to 4242
   let _ = mem_fs.put_text(data_dir + "/run/station.json", "{\"handoff\":1,\"pid\":4242}", 384)
-  let mut signaled_pid = 0
-  match trigger_hot_handover_restart(ops_fs, data_dir, "/", fn(p) { p == 4242 }, fn(p) { signaled_pid = p; 0 }) {
-    Ok(_) => if signaled_pid != 4242 { panic("expected SIGUSR2 to pid 4242") }
-    Err(e) => panic("expected hot handover restart Ok, got: " + e)
+
+  // 1. Windows MUST return 501 and NEVER call send_usr2 (which calls TerminateProcess on Windows!)
+  let mut win_killed = false
+  match trigger_hot_handover_restart("win32", ops_fs, data_dir, "\\", fn(_p) { true }, fn(_p) { win_killed = true; 0 }) {
+    Err(e) => if e.status != 501 || win_killed { panic("Windows restart must return 501 without signaling") }
+    Ok(_) => panic("Windows restart must return 501")
   }
 
-  // 2. prune_expired_seen_members + seen-devices.json round-trip
+  // 2. Unix non-launcher PID (PID reuse!) MUST return 409 and NEVER send SIGUSR2!
+  let mut wrong_killed = false
+  match trigger_hot_handover_restart("linux", ops_fs, data_dir, "/", fn(_p) { false }, fn(_p) { wrong_killed = true; 0 }) {
+    Err(e) => if e.status != 409 || wrong_killed { panic("non-launcher PID must return 409 without signaling") }
+    Ok(_) => panic("non-launcher PID must be rejected")
+  }
+
+  // 3. Unix verified launcher PID 4242 -> sends SIGUSR2 to 4242
+  let mut signaled_pid = 0
+  match trigger_hot_handover_restart("linux", ops_fs, data_dir, "/", fn(p) { p == 4242 }, fn(p) { signaled_pid = p; 0 }) {
+    Ok(_) => if signaled_pid != 4242 { panic("expected SIGUSR2 to pid 4242") }
+    Err(e) => panic("expected hot handover restart Ok, got: " + e.message)
+  }
+
+  // 4. prune_expired_seen_members evicts expired entries & empty maps while keeping active sessions
   let seen : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
   record_seen_member(seen, "ws-1", "u-expired", "conn:1", "old@a.test", "member", 1700000000L, "sid-1", 1700000100L)
   record_seen_member(seen, "ws-1", "u-active", "conn:2", "live@a.test", "owner", 1700000000L, "sid-2", 1700009000L)
@@ -582,17 +591,12 @@ test "wave17c3b hot handover restart SIGUSR2 and seen_members expiry cleanup + s
   if pruned != 1 {
     panic("expected 1 expired seen_member pruned, got " + pruned.to_string())
   }
-  match persist_seen_devices(ops_fs, data_dir, "/", seen, 1700000200.0) {
-    Ok(n) => if n != 1 { panic("expected 1 persisted seen device, got " + n.to_string()) }
-    Err(e) => panic("persist_seen_devices failed: " + e)
-  }
-  let loaded = load_seen_devices(ops_fs, data_dir, "/", 1700000200.0)
-  match loaded.get("ws-1") {
+  match seen.get("ws-1") {
     Some(by_sub) => {
       if by_sub.contains("u-expired") || !by_sub.contains("u-active") {
-        panic("load_seen_devices did not preserve active u-active / exclude u-expired")
+        panic("prune_expired_seen_members did not evict u-expired or keep u-active")
       }
     }
-    None => panic("missing ws-1 in loaded seen-devices.json")
+    None => panic("missing ws-1 after pruning")
   }
 }

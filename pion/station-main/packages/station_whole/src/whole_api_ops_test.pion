@@ -58,9 +58,10 @@ fn make_test_api_req(method : String, path : String) -> station_api::ApiRequest 
   make_test_api_req_as(method, path, make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"))
 }
 
-fn make_mem_whole_api_fixture(
+fn make_mem_whole_api_fixture_full(
   seen_store_override : Option[station_api::SeenStore] = None,
-) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks) {
+  job_fs_override : Option[station_jobs::FsPort] = None,
+) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks, WholeApiRuntimePort) {
   let mem_fs = station_ops::MemFs::new()
   let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{}", 384)
   let ops_fs = mem_fs.ops()
@@ -70,7 +71,10 @@ fn make_mem_whole_api_fixture(
   }
   let store = WholeStore::new_pre_handover_with_sep("/tmp/w17c2-api-test", "/")
   store.vault_store = Some(station_vault::VaultStore::in_memory())
-  let job_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let job_fs = match job_fs_override {
+    Some(f) => f
+    None => mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  }
   let agents_cfg = WholeAgentsConfig::{
     data_dir: "/tmp/w17c2-api-test",
     assets_dir: "/tmp/w17c2-api-test/assets",
@@ -182,6 +186,13 @@ fn make_mem_whole_api_fixture(
   )
   api.read_only_handover = false
   api.hooks.read_only_handover_cell = hooks.read_only_handover_cell
+  (store, agents, api, updates, mem_fs, hooks, port)
+}
+
+fn make_mem_whole_api_fixture(
+  seen_store_override : Option[station_api::SeenStore] = None,
+) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks) {
+  let (store, agents, api, updates, mem_fs, hooks, _) = make_mem_whole_api_fixture_full(seen_store_override=seen_store_override)
   (store, agents, api, updates, mem_fs, hooks)
 }
 
@@ -211,8 +222,26 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   }
 
   let unimplemented_call_ops : Array[String] = [
+    "updates.install",
+    "updates.check",
+    "updates.wait",
+    "network.station.restart",
+    "workspaces.join",
+    "copies.restore",
+    "copies.s3.test",
     "drive.mkdir.post",
     "transfers.cancel",
+    "xshare.hosts.put",
+    "accounts.profiles.createKeyed",
+    "accounts.profiles.createMachine",
+    "accounts.profiles.pace",
+    "accounts.profiles.resetQuota",
+    "accounts.profiles.quota",
+    "accounts.profiles.login",
+    "accounts.profiles.login.get",
+    "accounts.profiles.login.delete",
+    "mcpServers.reloadAll",
+    "mcpServers.reloadOne",
     "stars.GET",
     "stars.PUT",
     "progress.GET",
@@ -220,11 +249,25 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "presetProjects.GET",
     "board.drafts.PUT",
     "resources.process.end",
+    "screens.browser.open",
     "links.preview",
     "feedback.report",
+    "signins.fill",
+    "logins.machine.list",
     "hub.session.stop",
     "hub.session.retry",
     "hub.session.compact",
+    "vault.grants.post",
+    "vault.denials.post",
+    "vault.saves.post",
+    "vault.described.post",
+    "vault.removed.post",
+    "vault.browses.post",
+    "vault.plain.grants.post",
+    "vault.plain.denials.post",
+    "vault.plain.saves.post",
+    "vault.plain.described.post",
+    "vault.plain.removed.post",
     "projects.rename",
     "projects.merge",
   ]

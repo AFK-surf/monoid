@@ -792,6 +792,51 @@ fn sort_str_pairs(pairs : Array[(String, String)]) -> Array[(String, String)] {
   out
 }
 
+/// Strip `userinfo@` credentials from any `http://` or `https://` URL before exposing in views or errors.
+pub fn redact_url_userinfo(url : String) -> String {
+  let lower = ascii_lower(url)
+  let scheme_len = if str_starts_with(lower, "http://") {
+    7
+  } else if str_starts_with(lower, "https://") {
+    8
+  } else {
+    return url
+  }
+  let rest = url.slice(scheme_len, url.length())
+  let mut auth_end = rest.length()
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 || c == 92 {
+      auth_end = i
+      break
+    }
+  }
+  let authority = rest.slice(0, auth_end)
+  let mut at_idx = -1
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      at_idx = i
+    }
+  }
+  if at_idx < 0 {
+    return url
+  }
+  url.slice(0, scheme_len) + rest.slice(at_idx + 1, rest.length())
+}
+
+fn redact_error_urls(msg : String) -> String {
+  // Replace any `http(s)://userinfo@host` occurrences inside error messages.
+  let parts = msg.split(" ")
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(" ")
+    }
+    sb.write_string(redact_url_userinfo(parts[i]))
+  }
+  sb.to_string()
+}
+
 /// Masked JSON view of one managed server config + runtime state (`managed-mcp-config.ts:249-285`).
 pub fn mask_server_view(
   name : String,
@@ -803,7 +848,7 @@ pub fn mask_server_view(
     tools_json.push(base_codec::json_str(runtime.tools[i]))
   }
   let err_json = match runtime.error {
-    Some(e) => base_codec::json_str(e)
+    Some(e) => base_codec::json_str(redact_error_urls(e))
     None => base_codec::json_null()
   }
   let status_str = if entry.enabled { runtime.status } else { "disabled" }
@@ -839,7 +884,7 @@ pub fn mask_server_view(
       fields.push(("transport", base_codec::json_str(t_str)))
       fields.push(("enabled", base_codec::json_bool(entry.enabled)))
       fields.push(("shared", base_codec::json_bool(entry.shared)))
-      fields.push(("url", base_codec::json_str(entry.url)))
+      fields.push(("url", base_codec::json_str(redact_url_userinfo(entry.url))))
       if entry.headers.length() > 0 {
         let sorted = sort_str_pairs(entry.headers)
         let hf : Array[(String, base_codec::Json)] = []
