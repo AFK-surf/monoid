@@ -1,4 +1,5 @@
 // Pure Foundation/CoreGraphics state helpers for ios_nav.h, kept UIKit-free so macOS unit tests can verify them.
+#import <CommonCrypto/CommonDigest.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #include <math.h>
@@ -45,12 +46,13 @@ static inline MBIosNavOverflowAction mb_ios_nav_overflow_action(NSUInteger tabBa
 }
 
 // Whether `checkOverflowAfterLayout` should inspect per-tab frames when uncollapsed. Skips once `overflowLayoutKey`
-// already matches `lkey` so iOS 27.1+ prominent-tab bars do not re-walk regular tabs on every layout pass.
+// already matches `lkey` unless `provisional` is set (allowing one post-layout confirmation pass after `tabsChanged`
+// in case UIKit deferred prominent-bar layout past the synchronous `layoutIfNeeded`).
 static inline BOOL mb_ios_nav_should_check_overflow_after_layout(NSUInteger visibleRegularCap, NSString *lkey,
-                                                                 NSString *overflowLayoutKey,
+                                                                 NSString *overflowLayoutKey, BOOL provisional,
                                                                  NSUInteger tabBarItemCount, NSUInteger tabsCount) {
   if (visibleRegularCap > 0) return NO;
-  if (lkey.length && [lkey isEqualToString:overflowLayoutKey]) return NO;
+  if (!provisional && lkey.length && [lkey isEqualToString:overflowLayoutKey]) return NO;
   return tabBarItemCount > 0 && tabBarItemCount < tabsCount;
 }
 
@@ -106,6 +108,24 @@ static inline BOOL mb_ios_nav_slot_needs_bar_items(NSString *appliedActsKey, NSS
 // Cache key for rendered nav bar icon, badge, and letter images.
 static inline NSString *mb_ios_nav_icon_cache_key(char kind, CGFloat size, CGFloat scale, NSString *spec) {
   return [NSString stringWithFormat:@"%c:%.2f:%.2f:%@", kind, (double)size, (double)scale, spec ?: @""];
+}
+
+// Cache key for composite avatar icons (`nav_avatars`). Hashes specs longer than 256 characters (e.g. inline
+// base64 `data:` URLs) with SHA-256 so large URLs are not copied verbatim into NSCache keys on every lookup.
+static inline NSString *mb_ios_nav_avatar_cache_key(CGFloat size, CGFloat scale, NSString *spec) {
+  NSString *s = spec ?: @"";
+  if (s.length <= 256) return mb_ios_nav_icon_cache_key('a', size, scale, s);
+  NSData *utf8 = [s dataUsingEncoding:NSUTF8StringEncoding];
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(utf8.bytes, (CC_LONG)utf8.length, digest);
+  static const char hex[] = "0123456789abcdef";
+  char out[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+    out[i * 2] = hex[(digest[i] >> 4) & 0xF];
+    out[i * 2 + 1] = hex[digest[i] & 0xF];
+  }
+  out[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
+  return [NSString stringWithFormat:@"a#:%.2f:%.2f:%lu:%s", (double)size, (double)scale, (unsigned long)utf8.length, out];
 }
 
 // Compact deterministic key for a floating glass button spec + ink RGBA value, avoiding multi-line NSDictionary

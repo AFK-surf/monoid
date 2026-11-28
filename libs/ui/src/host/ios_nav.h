@@ -108,7 +108,7 @@ static UIImage *nav_icon(NSString *data, CGFloat size) {
 static UIImage *nav_picture(NSString *url, CGFloat size, BOOL round, void (^then)(void));
 static UIImage *nav_avatars(NSString *spec, CGFloat size, void (^then)(void)) {
   if (spec.length < 8) return nil;
-  NSString *cacheKey = mb_ios_nav_icon_cache_key('a', size, nav_display_scale(), spec);
+  NSString *cacheKey = mb_ios_nav_avatar_cache_key(size, nav_display_scale(), spec);
   UIImage *cached = [nav_img_cache() objectForKey:cacheKey];
   if (cached) return cached;
   NSArray<NSString *> *each = [[spec substringFromIndex:8] componentsSeparatedByString:@"\x1d"];
@@ -296,8 +296,6 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 @interface MBSlot : UIViewController
 @property(nonatomic, strong) NSDictionary<NSString *, UIBarButtonItem *> *barItems;
 @property(nonatomic, strong) NSDictionary<NSString *, NSDictionary *> *barSpecs;
-@property(nonatomic, strong) UIColor *barInk;
-@property(nonatomic, strong) UIColor *barAccent;
 @property(nonatomic, copy) NSString *appliedActsKey;
 @end
 
@@ -490,6 +488,7 @@ API_AVAILABLE(ios(18.0))
 // Number of regular tabs shown directly alongside our own `nav_more_id` tab (0 = not collapsed, showing allPlaces).
 @property(nonatomic) NSUInteger visibleRegularCap;
 @property(nonatomic, copy) NSString *overflowLayoutKey;
+@property(nonatomic) BOOL overflowCheckProvisional;
 @property(nonatomic) BOOL reconcilingOverflow;
 @property(nonatomic) BOOL overflowCheckPending;
 @property(nonatomic) CGRect lastLayoutBounds;
@@ -930,8 +929,6 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   slot.barItems = keptItems;
   slot.barSpecs = keptSpecs;
-  slot.barInk = ink;
-  slot.barAccent = accent;
   slot.appliedActsKey = self.actsKey;
   // Only the visible tab transitions; initial setup and the other tabs take their items at once.
   BOOL animate = allowAnimate && nav == self.selectedViewController && nav.isViewLoaded && nav.view.window != nil &&
@@ -1380,6 +1377,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   NSUInteger tabCount = self.tabs.count;
   if (itemCount == 0 || itemCount >= tabCount) {
     self.overflowLayoutKey = lkey;
+    self.overflowCheckProvisional = NO;
     return;
   }
   NSUInteger vis = 0;
@@ -1395,10 +1393,12 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   if (action == MBIosNavOverflowActionNotLaidOut) {
     self.overflowLayoutKey = nil;
+    self.overflowCheckProvisional = NO;
     return;
   }
   self.visibleRegularCap = vis;
   self.overflowLayoutKey = lkey;
+  self.overflowCheckProvisional = NO;
   [self rebuildDisplayedTabs];
   for (MBSlot *s in self.slotsById.allValues) s.appliedActsKey = nil;
   if (self.lastBarItems) {
@@ -1421,12 +1421,15 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   NSUInteger itemCount = self.tabBar.items.count;
   NSUInteger tabCount = self.tabs.count;
-  if (mb_ios_nav_should_check_overflow_after_layout(self.visibleRegularCap, lkey, self.overflowLayoutKey, itemCount, tabCount)) {
+  if (mb_ios_nav_should_check_overflow_after_layout(self.visibleRegularCap, lkey, self.overflowLayoutKey,
+                                                    self.overflowCheckProvisional, itemCount, tabCount)) {
     self.reconcilingOverflow = YES;
+    self.overflowCheckProvisional = NO;
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
-  } else if (itemCount > 0 && itemCount >= tabCount && ![lkey isEqualToString:self.overflowLayoutKey]) {
-    self.overflowLayoutKey = lkey;
+  } else if (itemCount > 0 && itemCount >= tabCount) {
+    self.overflowCheckProvisional = NO;
+    if (![lkey isEqualToString:self.overflowLayoutKey]) self.overflowLayoutKey = lkey;
   }
 }
 - (void)reconcileOverflow {
@@ -1435,8 +1438,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   CGSize sz = self.view.bounds.size;
   if (sz.width <= 0 || sz.height <= 0) return;
   NSString *lkey = [self currentLayoutKey];
-  if (self.visibleRegularCap == 0 && [lkey isEqualToString:self.overflowLayoutKey]) return;
+  // Trait changes that leave lkey unchanged (e.g. Light/Dark) already call washAction in the trait handler and do not
+  // affect tab selection or overflow layout.
+  if (self.visibleRegularCap == 0 && !self.overflowCheckProvisional && [lkey isEqualToString:self.overflowLayoutKey]) return;
   self.reconcilingOverflow = YES;
+  self.overflowCheckProvisional = NO;
   if (self.visibleRegularCap > 0 && ![lkey isEqualToString:self.overflowLayoutKey]) {
     self.visibleRegularCap = 0;
     [self rebuildDisplayedTabs];
@@ -1472,6 +1478,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.overflowPlaces = @[];
   self.visibleRegularCap = 0;
   self.overflowLayoutKey = nil;
+  self.overflowCheckProvisional = NO;
   UINavigationController *nav = [self navFor:@""];
   if (self.tabsKey.length || !self.tabs.count) {
     self.tabsKey = @"";
@@ -1579,7 +1586,13 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   if (tabsChanged && !self.view.window) self.overflowLayoutKey = nil;
   if (mb_ios_nav_needs_overflow_probe(bare, self.view.window != nil, self.visibleRegularCap, places.count,
                                       tabsChanged, lkey, self.overflowLayoutKey)) {
+    if (getenv("MBUI_NAV_LOG")) {
+      say([NSString stringWithFormat:@"NAVLOG overflow probe tabsChanged=%d lkey=%@ prev=%@",
+                                     tabsChanged ? 1 : 0, lkey, self.overflowLayoutKey ?: @"nil"]);
+    }
     self.reconcilingOverflow = YES;
+    // Allow one O(n) post-layout confirmation pass after tabsChanged in case UIKit defers prominent-bar layout.
+    self.overflowCheckProvisional = tabsChanged;
     if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
