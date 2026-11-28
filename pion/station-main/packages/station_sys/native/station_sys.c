@@ -10709,7 +10709,7 @@ int32_t sts_runner_sock_send_verified(
 int32_t sts_utimes_now(const char *path) {
     if (path == NULL || path[0] == '\0') return 0;
 #ifdef _WIN32
-    wchar_t *wp = sts_utf8_to_wide(path);
+    wchar_t *wp = utf8_to_wide(path);
     if (wp == NULL) return 0;
     HANDLE h = CreateFileW(
         wp,

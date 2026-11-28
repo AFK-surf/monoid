@@ -666,6 +666,28 @@ static void test_win_cli_prims(void) {
     printf("  [PASS] win cli prims (200B atomic write + dangling dir/file symlink)\n");
 }
 
+static void test_win_utimes_now(void) {
+    int64_t tlen = 0;
+    char *tmp = (char *)sts_tmpdir(&tlen);
+    assert(tmp != NULL && tlen > 0);
+    char dir[512], fpath[512], miss[512];
+    snprintf(dir, sizeof(dir), "%s\\sts-utimes-%lu", tmp, (unsigned long)GetCurrentProcessId());
+    snprintf(fpath, sizeof(fpath), "%s\\file.txt", dir);
+    snprintf(miss, sizeof(miss), "%s\\missing.txt", dir);
+    sts_free(tmp);
+    assert(sts_mkdir_p(dir) == 1);
+    const uint8_t msg[] = "utimes";
+    assert(sts_write_file_atomic(fpath, msg, (int64_t)(sizeof(msg) - 1), 420) == 1);
+    assert(sts_utimes_now(fpath) == 1);
+    assert(sts_utimes_now(dir) == 1);
+    assert(sts_utimes_now(miss) == 0);
+    assert(sts_utimes_now(NULL) == 0);
+    assert(sts_utimes_now("") == 0);
+    assert(DeleteFileA(fpath) != 0);
+    assert(RemoveDirectoryA(dir) != 0);
+    printf("  [PASS] win sts_utimes_now (file, dir, missing, null/empty)\n");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_win_fs_watch();
@@ -674,6 +696,7 @@ int main(void) {
     test_win_udp_and_info();
     test_win_drive_io_and_reparse();
     test_win_cli_prims();
+    test_win_utimes_now();
     test_js_lower_utf8();
     assert(sts_selftest_verified_send_cancel() == 0);
     printf("  [PASS] verified_send cancel state machine selftest\n");
@@ -2456,6 +2479,32 @@ int main(void) {
         free(payload);
         assert(unlink(sym) == 0 && unlink(dst) == 0 && unlink(src) == 0 && rmdir(cdir) == 0);
         printf("  [PASS] CoW clone primitives (clones_at=%d, clone_file, clone_tree, extent sharing)\n", can_clone);
+    }
+
+    {
+        char udir[256], uf[300], umiss[300];
+        snprintf(udir, sizeof(udir), "/tmp/sts-utimes-%ld", (long)getpid());
+        snprintf(uf, sizeof(uf), "%s/file.txt", udir);
+        snprintf(umiss, sizeof(umiss), "%s/missing.txt", udir);
+        assert(sts_mkdir_p(udir) == 1);
+        const uint8_t msg[] = "utimes";
+        assert(sts_write_file_atomic(uf, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        struct timespec old_ts[2];
+        old_ts[0].tv_sec = 1000000000;
+        old_ts[0].tv_nsec = 0;
+        old_ts[1].tv_sec = 1000000000;
+        old_ts[1].tv_nsec = 0;
+        assert(utimensat(AT_FDCWD, uf, old_ts, 0) == 0);
+        struct stat st_before, st_after;
+        assert(stat(uf, &st_before) == 0 && st_before.st_mtime == 1000000000);
+        assert(sts_utimes_now(uf) == 1);
+        assert(stat(uf, &st_after) == 0 && st_after.st_mtime > 1000000000);
+        assert(sts_utimes_now(udir) == 1);
+        assert(sts_utimes_now(umiss) == 0);
+        assert(sts_utimes_now(NULL) == 0);
+        assert(sts_utimes_now("") == 0);
+        assert(unlink(uf) == 0 && rmdir(udir) == 0);
+        printf("  [PASS] sts_utimes_now (file mtime refresh, dir, missing, null/empty)\n");
     }
 
     assert(sts_selftest_verified_send_cancel() == 0);
