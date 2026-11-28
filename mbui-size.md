@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.53 | 135.34 |
 | [3c16fe69f](https://github.com/AFK-surf/monoid/commit/3c16fe69fe9da64cded849b724ae6717161a0d43) fix(ui,mbui): add dock_first sheet hint and omit s | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.76 | 137.03 |
 | [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 | [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7d10e1bae](https://github.com/AFK-surf/monoid/commit/7d10e1bae342fcc0f29ad04552f8dc2e0b6ee29b) perf(ui/text): O(1) CJK range lookup, lazy rich li | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
 | [0d1a636af](https://github.com/AFK-surf/monoid/commit/0d1a636afb53cf81c9b5ecf2bf34702869b54c10) docs(releases): 0.1.11718 stable notes (#9095) | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
 | [9f2817e54](https://github.com/AFK-surf/monoid/commit/9f2817e54f553ef17254858e404889232dd16ca3) feat(mbui): compact grouped Profiles & Connects ro | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
-| [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.79 |
 | [3c16fe69f](https://github.com/AFK-surf/monoid/commit/3c16fe69fe9da64cded849b724ae6717161a0d43) fix(ui,mbui): add dock_first sheet hint and omit s | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.59 |
 | [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.03 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7d10e1bae](https://github.com/AFK-surf/monoid/commit/7d10e1bae342fcc0f29ad04552f8dc2e0b6ee29b) perf(ui/text): O(1) CJK range lookup, lazy rich li | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.93 |
 | [0d1a636af](https://github.com/AFK-surf/monoid/commit/0d1a636afb53cf81c9b5ecf2bf34702869b54c10) docs(releases): 0.1.11718 stable notes (#9095) | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.49 |
 | [9f2817e54](https://github.com/AFK-surf/monoid/commit/9f2817e54f553ef17254858e404889232dd16ca3) feat(mbui): compact grouped Profiles & Connects ro | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.84 |
-| [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.77 |
