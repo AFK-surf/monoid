@@ -281,13 +281,13 @@ fn form_rows_node(
   // (what its rows say of the station's rule, each worked out once for each change of it and told on only as it
   // changes: a decision made, or the rule turned off, runs none of the rows whose words stay as they were)
   let chosen_now = @signals.computed(fn(_) {
-    match items(view(), "models").iter().find_first(fn(m) { text(Some(m), "id") == model_id() }) {
+    let mid = model_id(); match items(view(), "models").iter().find_first(fn(m) { text(Some(m), "id") == mid }) {
       Some(m) => text(Some(m), "name")
       None =>
-        if model_id() == "" {
+        if mid == "" {
           @sf.t("web-pages.automaticDecisions.pickModel")
         } else {
-          @sf.t("web-pages.automaticDecisions.unavailable", args=[("model", model_id())])
+          @sf.t("web-pages.automaticDecisions.unavailable", args=[("model", mid)])
         }
     }
   })
