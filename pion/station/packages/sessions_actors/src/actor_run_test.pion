@@ -3750,3 +3750,235 @@ test "runChanged updates actor runtime and mirrors when no live agent is open, a
   assert_run(actors.current.gen.counters.active == 0, "active == 0")
   assert_run_rt_clean(host.rt)
 }
+
+test "trailing auth failure requeues unread steered message (including apart letter) and skips already-read steered message" {
+  let s = r2_new()
+  let mut pending_batch = 0
+  let mut pending_left = true
+  let mut open_calls = 0
+  let mut undelivered_args : Array[base_codec::Json] = []
+  let responder = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(is_some(get_actor(s.actors, "s1").turn))))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      pending_batch = pending_batch + 1
+      let handed_id = if pending_batch == 1 { "m1" } else if pending_batch == 2 { "m2-read" } else { "m3-unread" }
+      let is_apart = pending_batch >= 3
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr(handed_id)),
+                  ("apart", sessions_core::jbool(is_apart)),
+                  ("authorKind", sessions_core::jstr("person")),
+                  ("person", sessions_core::jstr("ada")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("msg:" + handed_id)),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "store.markUndelivered" {
+      undelivered_args = args
+      pending_left = true
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.open" {
+      open_calls = open_calls + 1
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(open_calls)),
+            ("generation", sessions_core::jint(open_calls)),
+            ("runtime", sessions_core::jstr("agy")),
+            ("profile", sessions_core::jstr("ag")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", args[0]), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" || f == "node.timed" || f == "node.words" {
+      return Some(Ok(args[0]))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-" + open_calls.to_string())))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  // Turn 1 starts on m1.
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"agy\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(open_calls == 1, "first process opened")
+
+  // m2-read is steered in and read (`phase: requesting`) BEFORE declare.
+  pending_left = true
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"kick\",\"args\":[],\"now\":1010}", s.disp)
+  s.drive(responder)
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"event\":{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}},\"now\":1020}",
+    s.disp,
+  )
+  s.drive(responder)
+
+  // Agent declares need_help, then an unread letter (apart: true, m3-unread) is steered while trailing 401 retries.
+  s.actors.heard("{\"call\":3,\"actor\":\"s1\",\"method\":\"declare\",\"args\":[{\"kind\":\"need_help\"}],\"now\":1030}", s.disp)
+  s.drive(responder)
+  pending_left = true
+  s.actors.heard("{\"call\":4,\"actor\":\"s1\",\"method\":\"kick\",\"args\":[],\"now\":1040}", s.disp)
+  s.drive(responder)
+
+  // Trailing 401 ends Turn 1: must mark ONLY m3-unread undelivered (NOT m2-read) and open fresh process immediately.
+  s.actors.heard(
+    "{\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}},\"generation\":1,\"actor\":\"s1\",\"read\":null,\"now\":1050}",
+    s.disp,
+  )
+  s.drive(responder)
+
+  assert_run(undelivered_args.length() == 2, "expected markUndelivered call")
+  let undel_str = base_codec::json_stringify(undelivered_args[1])
+  assert_run(undel_str.contains("m3-unread"), "unread steered letter must be marked undelivered: " + undel_str)
+  assert_run(!undel_str.contains("m2-read"), "already-read steered message must not be replayed: " + undel_str)
+  assert_run(open_calls == 2, "fresh process must open immediately for requeued message")
+  assert_run(s.actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(s.actors.host.rt)
+}
+
+test "apart: true letter steered after waiting clears stale declaration on requesting so mid-work 401 enters auth_retry" {
+  let s = r2_new()
+  let mut pending_batch = 0
+  let mut pending_left = true
+  let mut open_calls = 0
+  let responder = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(is_some(get_actor(s.actors, "s1").turn))))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      pending_batch = pending_batch + 1
+      let handed_id = if pending_batch == 1 { "m1" } else { "letter-apart" }
+      let is_apart = pending_batch == 2
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr(handed_id)),
+                  ("apart", sessions_core::jbool(is_apart)),
+                  ("authorKind", sessions_core::jstr("agent")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("msg:" + handed_id)),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.open" {
+      open_calls = open_calls + 1
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(open_calls)),
+            ("generation", sessions_core::jint(open_calls)),
+            ("runtime", sessions_core::jstr("agy")),
+            ("profile", sessions_core::jstr("ag")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", args[0]), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" || f == "node.timed" {
+      return Some(Ok(args[0]))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("GO_ON_AFTER_AUTH_WORDS")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-" + open_calls.to_string())))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"agy\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"declare\",\"args\":[{\"kind\":\"waiting\",\"seconds\":600}],\"now\":1010}", s.disp)
+  s.drive(responder)
+
+  // Steer an `apart: true` letter, then emit `phase: requesting` (model read it and started working).
+  pending_left = true
+  s.actors.heard("{\"call\":3,\"actor\":\"s1\",\"method\":\"kick\",\"args\":[],\"now\":1020}", s.disp)
+  s.drive(responder)
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"event\":{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}},\"now\":1030}",
+    s.disp,
+  )
+  s.drive(responder)
+
+  let a = get_actor(s.actors, "s1")
+  match a.turn {
+    Some(t) => assert_run(!is_some(t.declared), "stale waiting declaration must be cleared after reading apart letter")
+    None => panic("expected active turn before 401")
+  }
+
+  // Mid-work 401 must enter auth_retry (reopening process 2 with GO_ON_AFTER_AUTH), NOT trailing auth completion.
+  s.actors.heard(
+    "{\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}},\"generation\":1,\"actor\":\"s1\",\"read\":null,\"now\":1040}",
+    s.disp,
+  )
+  s.drive(responder)
+
+  assert_run(open_calls == 2, "mid-work 401 must open fresh process for auth_retry")
+  assert_run(d103_prompted(s, ["GO_ON_AFTER_AUTH_WORDS"]), "auth_retry must prompt GO_ON_AFTER_AUTH")
+  assert_run(!d103_logged(s, "trailing auth failure"), "must not classify mid-work 401 as trailing auth failure")
+  assert_run(s.actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(s.actors.host.rt)
+}

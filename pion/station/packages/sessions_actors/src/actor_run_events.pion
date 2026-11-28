@@ -460,7 +460,11 @@ pub fn ActorsGen::on_event_k(
     opt_str_is(sessions_core::str_of(sessions_core::jget(ev, "phase")), "requesting") {
       let keep = a.unread_preparing
       let removable = a.unread.length() - keep
-      if removable > 0 {
+      let keep_steered = a.steered_unread_preparing
+      let removable_steered = a.steered_unread.length() - keep_steered
+      let steered_upto = if removable_steered > 0 { a.steered_unread[removable_steered - 1].seq } else { 0 }
+      let notices_upto = if a.steered_notices.length() > 0 { a.steered_notices[a.steered_notices.length() - 1].seq } else { 0 }
+      if removable > 0 || steered_upto > 0 || notices_upto > 0 {
         let req_turn_id : Option[String] = match a.turn {
           Some(t) => Some(t.id)
           None => None
@@ -479,25 +483,54 @@ pub fn ActorsGen::on_event_k(
               tk(effect::Exit::Succeeded(()))
               return
             }
-            self.undeclare_k(a, tk)
+            self.undeclare_k(a, fn(ex_u : effect::Exit[Unit]) -> Unit {
+              match ex_u {
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  if !self.is_current(a, generation) || !same_turn() {
+                    tk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  if removable > 0 {
+                    let drop = if removable > a.unread.length() { a.unread.length() } else { removable }
+                    let tail : Array[base_codec::Json] = []
+                    for i in drop..<a.unread.length() {
+                      tail.push(a.unread[i])
+                    }
+                    a.unread = tail
+                  }
+                  if steered_upto > 0 {
+                    let next_su : Array[SteeredUnread] = []
+                    for i in 0..<a.steered_unread.length() {
+                      if a.steered_unread[i].seq > steered_upto {
+                        next_su.push(a.steered_unread[i])
+                      }
+                    }
+                    a.steered_unread = next_su
+                  }
+                  if notices_upto > 0 {
+                    let next_sn : Array[SteeredNotice] = []
+                    for i in 0..<a.steered_notices.length() {
+                      if a.steered_notices[i].seq > notices_upto {
+                        next_sn.push(a.steered_notices[i])
+                      }
+                    }
+                    a.steered_notices = next_sn
+                  }
+                  if removable > 0 {
+                    self.mirror(a)
+                  }
+                  tk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
           },
           fn(ex : effect::Exit[Unit]) -> Unit {
             match ex {
               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-              effect::Exit::Succeeded(_) => {
-                if !self.is_current(a, generation) || !same_turn() {
-                  k(effect::Exit::Succeeded(()))
-                  return
-                }
-                let tail : Array[base_codec::Json] = []
-                for i in removable..<a.unread.length() {
-                  tail.push(a.unread[i])
-                }
-                a.unread = tail
-                self.mirror(a)
-                finish_live()
-              }
+              effect::Exit::Succeeded(_) => finish_live()
             }
           },
         )

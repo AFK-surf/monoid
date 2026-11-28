@@ -81,6 +81,18 @@ priv struct CodexUpdate {
 }
 
 ///|
+priv struct SteeredUnread {
+  seq : Int
+  handed : Json
+}
+
+///|
+priv struct SteeredNotice {
+  seq : Int
+  text : String
+}
+
+///|
 priv struct Actor {
   key : String
   mut runtime : String
@@ -178,6 +190,14 @@ priv struct Actor {
   mut unread : Array[Json]
   /// how many of the last of `unread` are not written to it yet (a steer on its way): a `requesting` keeps them
   mut unread_preparing : Int
+  /// monotonic sequence for steered messages and station notices in the current turn
+  mut steered_seq : Int
+  /// every message (ordinary and `apart: true` letters) steered into the current turn and not yet read (`requesting`)
+  mut steered_unread : Array[SteeredUnread]
+  /// how many of the last of `steered_unread` are not written to the runtime yet
+  mut steered_unread_preparing : Int
+  /// station notices steered into the current turn and not yet read (`requesting`)
+  mut steered_notices : Array[SteeredNotice]
   mut delivery_interruptions : Int
   mut recoveries : Int
   mut recovery_deferred : Bool
@@ -444,6 +464,10 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         steered_for: [],
         unread: [],
         unread_preparing: 0,
+        steered_seq: 0,
+        steered_unread: [],
+        steered_unread_preparing: 0,
+        steered_notices: [],
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,
