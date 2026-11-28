@@ -186,7 +186,7 @@ struct LogUsePending {
 
 pub struct MdStore {
   pub mut db : sql::Sql
-  pub station : String
+  pub mut station : String
   read : Map[String, Option[Kept]]
   puts : Map[String, MdPut]
   mut put_order : Array[String]
@@ -256,6 +256,13 @@ pub fn MdStore::switch_db(self : MdStore, new_db : sql::Sql) -> Unit {
   self.clear()
   self.kept_there = true
   self.db = new_db
+}
+
+/// Rebind the default station key, discarding any cached markdown entries from the previous station.
+pub fn MdStore::set_station(self : MdStore, new_station : String) -> Unit {
+  self.clear()
+  self.kept_there = true
+  self.station = new_station
 }
 
 fn MdStore::kept_one(self : MdStore, key : String) -> Option[Kept] {

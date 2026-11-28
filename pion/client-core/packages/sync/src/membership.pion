@@ -358,13 +358,86 @@ pub enum AccountRefreshOutcome {
   Transient(String)
 }
 
+/// Single-owner extreme-I/O fallback marker persisted in `<account>.db` `meta` ONLY when a 401
+/// refresh invalidation cannot update `<dir>/accounts` even via zero-block in-place overwrite.
+pub let META_REJECTED_TUPLE_KEY : String = "membership:rejected_tuple"
+
+pub enum RejectedTupleCheck {
+  Allowed
+  Rejected
+  Unreadable(String)
+}
+
+/// Persist the single rejected `(session_id, refresh)` tuple into `<account>.db` `meta`.
+pub fn record_rejected_tuple_in_db(
+  db : sql::Sql,
+  session_id : String,
+  refresh : String,
+) -> Result[Unit, String] {
+  if refresh.length() == 0 {
+    return Err("empty refresh token")
+  }
+  let doc = base_codec::json_obj([
+    ("session", base_codec::json_str(session_id)),
+    ("refresh", base_codec::json_str(refresh)),
+  ])
+  match store::put_meta(db, META_REJECTED_TUPLE_KEY, base_codec::json_stringify(doc)) {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Remove the rejected tuple marker from `<account>.db` `meta` (called on fresh verified login,
+/// also self-healing any previously corrupted `meta("membership:rejected_tuple")` entry).
+pub fn clear_rejected_tuple_in_db(db : sql::Sql) -> Result[Unit, String] {
+  match store::delete_meta(db, META_REJECTED_TUPLE_KEY) {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Fail-closed check of `<account>.db` `meta("membership:rejected_tuple")` on cold startup:
+/// - absent -> `Allowed`
+/// - SQLite read error or corrupt / non-object JSON -> `Unreadable(reason)` (fail-closed!)
+/// - exact match on `(session_id, refresh)` -> `Rejected`
+/// - different tuple -> `Allowed`
+pub fn check_rejected_tuple_in_db(
+  db : sql::Sql,
+  session_id : String,
+  refresh : String,
+) -> RejectedTupleCheck {
+  match store::get_meta(db, META_REJECTED_TUPLE_KEY) {
+    sql::SqlResult::Err(e) => RejectedTupleCheck::Unreadable(e.to_string())
+    sql::SqlResult::Ok(None) => RejectedTupleCheck::Allowed
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Err(e) => RejectedTupleCheck::Unreadable("corrupt rejected_tuple json: " + e)
+      base_codec::JsonParseResult::Ok(j) => match j {
+        base_codec::Json::Obj(_) => match (base_codec::json_get(j, "session"), base_codec::json_get(j, "refresh")) {
+          (Some(base_codec::Json::Str(rsid)), Some(base_codec::Json::Str(rref))) => {
+            if rref.length() == 0 {
+              RejectedTupleCheck::Unreadable("empty refresh in rejected_tuple meta")
+            } else if rsid == session_id && rref == refresh {
+              RejectedTupleCheck::Rejected
+            } else {
+              RejectedTupleCheck::Allowed
+            }
+          }
+          _ => RejectedTupleCheck::Unreadable("invalid fields in rejected_tuple meta")
+        }
+        _ => RejectedTupleCheck::Unreadable("non-object rejected_tuple meta")
+      }
+    }
+  }
+}
+
 pub struct AccountRefreshHost {
   pub read_accounts_k : ((HostStorageRead) -> Unit) -> Unit
   pub write_accounts_k : (base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit
+  pub write_accounts_401_k : Option[(base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit]
   pub do_refresh_http_k : (String, Int64, (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit
   pub get_mem_tuple : (String) -> Option[(String, String)]
   pub on_adopt_or_update : (views::StoredAccount, String, Array[views::StoredAccount], Map[String, String]) -> Unit
-  pub on_invalidated : (String, String, String, Array[views::StoredAccount], Map[String, String]) -> Unit
+  pub on_invalidated : (String, String, String, Option[(Array[views::StoredAccount], Map[String, String])]) -> Unit
   pub now_ms : () -> Int64
 }
 
@@ -575,7 +648,7 @@ pub fn AccountRefreshCoordinator::rollback_account_cas_k(
 enum RefreshPostLockAction {
   None
   Adopt(views::StoredAccount, String, Array[views::StoredAccount], Map[String, String])
-  Invalidate(String, String, String, Array[views::StoredAccount], Map[String, String])
+  Invalidate(String, String, String, Option[(Array[views::StoredAccount], Map[String, String])])
 }
 
 /// Run the TS `accounts.ts`-aligned single-owner refresh flow for `(sub, expected_session, expected_refresh)`:
@@ -624,6 +697,10 @@ pub fn AccountRefreshCoordinator::refresh_k(
   let get_mem = host.get_mem_tuple
   let read_disk = host.read_accounts_k
   let write_disk = host.write_accounts_k
+  let write_disk_401 = match host.write_accounts_401_k {
+    Some(f) => f
+    None => host.write_accounts_k
+  }
   let do_http = host.do_refresh_http_k
   let on_adopt = host.on_adopt_or_update
   let on_inval = host.on_invalidated
@@ -633,7 +710,7 @@ pub fn AccountRefreshCoordinator::refresh_k(
     match act {
       RefreshPostLockAction::None => ()
       RefreshPostLockAction::Adopt(acct, sid, all_accts, all_sids) => on_adopt(acct, sid, all_accts, all_sids)
-      RefreshPostLockAction::Invalidate(isub, isid, iref, rem_accts, rem_sids) => on_inval(isub, isid, iref, rem_accts, rem_sids)
+      RefreshPostLockAction::Invalidate(isub, isid, iref, confirmed_opt) => on_inval(isub, isid, iref, confirmed_opt)
     }
   }
 
@@ -842,8 +919,8 @@ pub fn AccountRefreshCoordinator::refresh_k(
                         read_disk(fn(rd : HostStorageRead) -> Unit {
                           match rd {
                             HostStorageRead::ReadError(_) => {
-                              // Close live read gate immediately even when disk read fails (`removed=false`).
-                              let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, [], Map::new())
+                              // Disk state unknown (`None`): preserve unrelated sibling accounts in memory!
+                              let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, None)
                               clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, false), act)))
                             }
                             HostStorageRead::Absent => {
@@ -853,14 +930,15 @@ pub fn AccountRefreshCoordinator::refresh_k(
                               let disk_sessions = parse_stored_account_sessions(doc)
                               match parse_stored_accounts_strict(doc) {
                                 None => {
-                                  let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, [], Map::new())
+                                  // Corrupt disk JSON (`None`): preserve unrelated sibling accounts in memory!
+                                  let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, None)
                                   clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, false), act)))
                                 }
                                 Some(disk_list) => {
                                   let idx = find_stored_idx(disk_list, sub)
                                   if idx < 0 {
                                     disk_sessions.remove(sub)
-                                    let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, disk_list, disk_sessions)
+                                    let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, Some((disk_list, disk_sessions)))
                                     clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, true), act)))
                                     return
                                   }
@@ -878,11 +956,18 @@ pub fn AccountRefreshCoordinator::refresh_k(
                                   }
                                   disk_sessions.remove(sub)
                                   let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
-                                  write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
-                                    let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, next_list, disk_sessions)
+                                  write_disk_401(encoded, fn(wres : Result[Unit, String]) -> Unit {
                                     match wres {
-                                      Ok(_) => clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, true), act)))
-                                      Err(_) => clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, false), act)))
+                                      Ok(_) => {
+                                        let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, Some((next_list, disk_sessions)))
+                                        clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, true), act)))
+                                      }
+                                      Err(_) => {
+                                        // Disk removal failed (`None`): signals `removed=false` so runtime records
+                                        // `<active>.db` rejected tuple before unmounting while preserving siblings!
+                                        let act = RefreshPostLockAction::Invalidate(sub, expected_session, eff_refresh, None)
+                                        clk(effect::Exit::Succeeded((AccountRefreshOutcome::InvalidSession(status, msg, false), act)))
+                                      }
                                     }
                                   })
                                 }

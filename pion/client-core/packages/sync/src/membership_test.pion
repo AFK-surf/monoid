@@ -653,6 +653,7 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       http_calls += 1
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::Transient("must not be called"))))
@@ -671,7 +672,7 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       for i in 0..<all.length() { mem_accts.push(all[i]) }
       adopted_access = u.access
     },
-    on_invalidated: fn(_sub : String, _sid : String, _ref : String, _rem : Array[views::StoredAccount], _ss : Map[String, String]) -> Unit {},
+    on_invalidated: fn(_sub : String, _sid : String, _ref : String, _confirmed : Option[(Array[views::StoredAccount], Map[String, String])]) -> Unit {},
     now_ms: fn() -> Int64 { 1700000000000L },
   }
   let mut out1 : Option[AccountRefreshOutcome] = None
@@ -695,6 +696,7 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       sent_refresh = rtok
       hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
@@ -749,6 +751,7 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       write_called_on_stale_401 = true
       wk(Ok(()))
     },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       // Simulate another core rotating disk while HTTP was in-flight!
       disk_doc_ref[0] = HostStorageRead::Found(serialize_stored_accounts([alice_disk_rot4, bob0], sessions=Some(mem_sess)))
@@ -756,7 +759,7 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
     },
     get_mem_tuple: host1.get_mem_tuple,
     on_adopt_or_update: host1.on_adopt_or_update,
-    on_invalidated: fn(_sub : String, _sid : String, _ref : String, _rem : Array[views::StoredAccount], _ss : Map[String, String]) -> Unit {
+    on_invalidated: fn(_sub : String, _sid : String, _ref : String, _confirmed : Option[(Array[views::StoredAccount], Map[String, String])]) -> Unit {
       invalid_called = true
     },
     now_ms: fn() -> Int64 { 1700009999000L },
@@ -780,14 +783,18 @@ test "Slice 2B-1 Invariant 4: AccountRefreshCoordinator pre-request adoptStored,
       disk_doc_ref[0] = HostStorageRead::Found(doc)
       wk(Ok(()))
     },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
     get_mem_tuple: host1.get_mem_tuple,
     on_adopt_or_update: host1.on_adopt_or_update,
-    on_invalidated: fn(sub : String, _sid : String, _ref : String, rem : Array[views::StoredAccount], _ss : Map[String, String]) -> Unit {
+    on_invalidated: fn(sub : String, _sid : String, _ref : String, confirmed : Option[(Array[views::StoredAccount], Map[String, String])]) -> Unit {
       removed_sub = sub
-      rem_count = rem.length()
+      match confirmed {
+        Some((rem, _)) => { rem_count = rem.length() }
+        None => { rem_count = -2 }
+      }
     },
     now_ms: fn() -> Int64 { 1700019999000L },
   }
@@ -1132,12 +1139,13 @@ test "Slice 2B-1 R2: fail-closed direct auth.complete, unauth switch + sessions/
       }
     },
     write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Ok(())) },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
     get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sa", "ref-a")) },
     on_adopt_or_update: fn(_u, _s, _all, _ss) -> Unit {},
-    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { invalidated_called = true },
+    on_invalidated: fn(_sub, _sid, _ref, _confirmed) -> Unit { invalidated_called = true },
     now_ms: fn() -> Int64 { 200000L },
   }
   let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -2042,6 +2050,7 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
   let host_a = AccountRefreshHost::{
     read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_a[0])) },
     write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Err("enospc")) },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
         access: "acc-R2", refresh: "R2", access_expires: 999999L, name: None,
@@ -2052,7 +2061,7 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
       adopt_calls_a[0] += 1
       mem_ref_a[0] = u.refresh
     },
-    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit {},
+    on_invalidated: fn(_sub, _sid, _ref, _confirmed) -> Unit {},
     now_ms: fn() -> Int64 { 200000L },
   }
   let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -2068,8 +2077,8 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
   debug_assert(outcome_a[0].contains("enospc"), "200 write failure must return Transient(enospc)")
   debug_assert(adopt_calls_a[0] == 0 && mem_ref_a[0] == "R1", "200 write failure MUST NOT advance memory to un-persisted R2")
 
-  // 2. 401 invalidation whose disk write fails: STILL invokes `on_invalidated` (closing live read gate)
-  //    and returns `InvalidSession(401, ..., false)`.
+  // 2. 401 invalidation whose disk write fails: STILL invokes `on_invalidated` with `None`
+  //    (signaling disk state unknown / `removed=false` so runtime records rejected_tuple & preserves siblings!).
   let acct_b = views::StoredAccount::{
     sub: "u-b", email: "b@still.fail", name: "Bob", picture: "",
     access: "acc-b", refresh: "ref-b", access_expires: 999999L,
@@ -2093,14 +2102,18 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
         wk(Ok(()))
       }
     },
+    write_accounts_401_k: None,
     do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
       hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
     },
     get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-1", "R1")) },
     on_adopt_or_update: fn(_u, _sid, _all, _ss) -> Unit {},
-    on_invalidated: fn(_sub, _sid, _ref, rem, _ss) -> Unit {
+    on_invalidated: fn(_sub, _sid, _ref, confirmed) -> Unit {
       inval_fired_b[0] = true
-      inval_rem_b[0] = rem.length()
+      match confirmed {
+        Some((rem, _)) => { inval_rem_b[0] = rem.length() }
+        None => { inval_rem_b[0] = -2 }
+      }
     },
     now_ms: fn() -> Int64 { 200000L },
   }
@@ -2117,7 +2130,7 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
     })
   })
   let _ = rt.run_ready()
-  debug_assert(inval_fired_b[0] && !removed_flag_b[0], "401 write failure MUST still invoke on_invalidated with removed=false")
+  debug_assert(inval_fired_b[0] && inval_rem_b[0] == -2 && !removed_flag_b[0], "401 write failure MUST invoke on_invalidated(None) with removed=false")
 
   // 3. 401 invalidation with writable disk: removes `u-a`, preserves sibling `u-b`, and returns `removed=true`.
   fail_write_b[0] = false
@@ -2277,4 +2290,146 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
     }
   }
   debug_assert(saw_ws2_frame, "station transport & frame delivery restored on ULID_WS2 after re-login")
+}
+
+// ── Test 14 (R12): Single-owner rejected_tuple fallback, inactive sibling 401 ReadError preservation,
+//    unbound `:memory:` account.switch rejection, and default station rebind across account switches ──
+
+test "Slice 2B-1 R12: rejected_tuple fail-closed + self-heal, inactive 401 ReadError preserves active sibling, unbound account.switch rejected, and default station rebind" {
+  let rt = effect::Runtime::new()
+
+  // 1. P1-1: Single-owner `meta("membership:rejected_tuple")` record / strict fail-closed check / login self-heal!
+  let (_, rdb) = make_sim_db(rt)
+  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("absent rejected_tuple must be Allowed")
+  }
+  match record_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
+    Ok(_) => ()
+    Err(e) => panic("record_rejected_tuple_in_db failed: " + e)
+  }
+  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
+    RejectedTupleCheck::Rejected => ()
+    _ => panic("matching tuple must be Rejected")
+  }
+  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("newer tuple must be Allowed")
+  }
+  // Corrupt JSON / non-object / bad field types MUST return Unreadable (fail-closed!),
+  // and `clear_rejected_tuple_in_db` (called on fresh verified login) MUST self-heal it!
+  let _ = store::put_meta(rdb, META_REJECTED_TUPLE_KEY, "{corrupt-json")
+  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
+    RejectedTupleCheck::Unreadable(_) => ()
+    _ => panic("corrupt rejected_tuple json must fail closed with Unreadable")
+  }
+  let _ = store::put_meta(rdb, META_REJECTED_TUPLE_KEY, "{\"session\":123,\"refresh\":\"ref-1\"}")
+  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
+    RejectedTupleCheck::Unreadable(_) => ()
+    _ => panic("invalid field types in rejected_tuple must fail closed with Unreadable")
+  }
+  match clear_rejected_tuple_in_db(rdb) {
+    Ok(_) => ()
+    Err(e) => panic("clear_rejected_tuple_in_db failed: " + e)
+  }
+  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
+    RejectedTupleCheck::Allowed => ()
+    _ => panic("fresh login clear_rejected_tuple_in_db must self-heal")
+  }
+
+  // 2. P1-2: Active Alice + inactive sibling Bob -> Bob gets 401 while disk returns `ReadError` (and corrupt JSON):
+  //    `on_invalidated` MUST receive `None` (NEVER `Some([])`!), keeping Alice's active DB & read gate 100% intact!
+  let (_, alice_db) = make_sim_db(rt)
+  let acore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-alice", rt, alice_db, core_offline_transport(), fn() -> Unit {})
+  let _ = acore.set_db_account_sub("u-alice")
+  let _ = acore.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=1L)
+  let _ = acore.membership.bind_station_checked(ULID_WS1, "st-alice")
+  let alice_a = views::StoredAccount::{
+    sub: "u-alice", email: "alice@still.fail", name: "Alice", picture: "",
+    access: "acc-alice", refresh: "ref-alice", access_expires: 999999L,
+  }
+  let bob_a = views::StoredAccount::{
+    sub: "u-bob", email: "bob@still.fail", name: "Bob", picture: "",
+    access: "acc-bob", refresh: "ref-bob", access_expires: 100L,
+  }
+  acore.auth_store.register_account(alice_a)
+  acore.auth_store.register_account(bob_a)
+  acore.account_sessions.set("u-alice", "sid-alice")
+  acore.account_sessions.set("u-bob", "sid-bob")
+
+  let coord_sib = AccountRefreshCoordinator::new()
+  let mut phase_sib = 0
+  let mut got_none_confirmed = false
+  let host_sib = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit {
+      phase_sib += 1
+      if phase_sib == 1 {
+        let ss : Map[String, String] = Map::new()
+        ss.set("u-alice", "sid-alice")
+        ss.set("u-bob", "sid-bob")
+        rk(HostStorageRead::Found(serialize_stored_accounts([alice_a, bob_a], sessions=Some(ss))))
+      } else {
+        rk(HostStorageRead::ReadError("disk_eio"))
+      }
+    },
+    write_accounts_k: fn(_doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit { wk(Ok(())) },
+    write_accounts_401_k: None,
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+    },
+    get_mem_tuple: fn(sub : String) -> Option[(String, String)] {
+      if sub == "u-bob" { Some(("sid-bob", "ref-bob")) } else { Some(("sid-alice", "ref-alice")) }
+    },
+    on_adopt_or_update: fn(_u, _s, _all, _ss) -> Unit {},
+    on_invalidated: fn(inv_sub, inv_sid, inv_ref, confirmed_opt) -> Unit {
+      match confirmed_opt {
+        None => {
+          got_none_confirmed = true
+          // Mirror runtime `None` branch: invalidate only `inv_sub`, keep active Alice intact!
+          let _ = acore.invalidate_session(inv_sub, expected_session=Some(inv_sid), expected_refresh=Some(inv_ref), persist_accounts=false)
+        }
+        Some(_) => panic("401 ReadError MUST pass None to on_invalidated (never empty list)")
+      }
+    },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_sib.refresh_k(host_sib, "u-bob", "sid-bob", "ref-bob", fn(out : AccountRefreshOutcome) -> Unit {
+      match out {
+        AccountRefreshOutcome::InvalidSession(401, _, false) => ()
+        _ => panic("expected InvalidSession(401, _, false) on ReadError")
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(got_none_confirmed, "inactive Bob 401 ReadError delivered None confirmed snapshot")
+  debug_assert(!acore.membership.is_unauthenticated() && !acore.membership.is_session_invalidated(), "active Alice MUST stay authenticated & valid")
+  debug_assert(acore.can_read_workspace(ULID_WS1), "active Alice workspace read gate MUST stay open")
+  debug_assert(acore.auth_store.accounts.length() == 1 && acore.auth_store.accounts[0].sub == "u-alice", "only inactive Bob removed; Alice preserved")
+
+  // 3. P1-3 + P1-4: Alice 401 switches to unbound `:memory:` (`db_account_sub == None`, resets default station to `"st-local"`),
+  //    while sibling Bob remains in `auth_store.accounts`:
+  //    - `account.switch("u-bob")` MUST return `account_sub_mismatch` and NEVER bind `:memory:` or open read gate!
+  //    - `core.station`, `md_store.station`, `local_outbox.station`, `events.station`, `sync.station` ALL reset to `"st-local"`!
+  //    - Subsequent `switch_account_db(bob_db, "u-bob", ...)` binds Bob cleanly with ZERO `"st-alice"` residue!
+  let (_, mem_db_r12) = make_sim_db(rt)
+  let (_, bob_db_r12) = make_sim_db(rt)
+  acore.switch_to_unauthenticated_db(mem_db_r12)
+  acore.auth_store.register_account(bob_a)
+  debug_assert(acore.db_account_sub.is_none() && acore.membership.is_unauthenticated(), "unbound :memory: after 401")
+  debug_assert(acore.station == "st-local" && acore.md_store.station == "st-local" && acore.local_outbox.station == "st-local" && acore.events.station == "st-local" && acore.sync.station == "st-local", "switch_to_unauthenticated_db MUST rebind ALL default station consumers to st-local")
+  mt_expect_err_code(
+    mt_call(acore, 301L, "account.switch", base_codec::json_obj([("account", base_codec::json_str("u-bob"))])),
+    "account_sub_mismatch",
+    "account.switch on unbound :memory: MUST return account_sub_mismatch",
+  )
+  debug_assert(acore.db_account_sub.is_none(), "rejected account.switch MUST NOT bind :memory: to u-bob")
+  debug_assert(acore.membership.is_unauthenticated(), "rejected account.switch MUST NOT open read gate")
+  match acore.switch_account_db(bob_db_r12, "u-bob", target_workspace=Some("ws-default"), target_station=Some("st-local")) {
+    Ok(_) => ()
+    Err(e) => panic("real Bob switch_account_db after rejected account.switch failed: " + e)
+  }
+  debug_assert(mt_opt_str_is(acore.db_account_sub, "u-bob"), "real Bob DB bound cleanly")
+  debug_assert(acore.station == "st-local" && acore.events.station == "st-local" && acore.sync.station == "st-local" && acore.md_store.station == "st-local" && acore.local_outbox.station == "st-local", "Bob login MUST NOT leak Alice's st-alice")
 }

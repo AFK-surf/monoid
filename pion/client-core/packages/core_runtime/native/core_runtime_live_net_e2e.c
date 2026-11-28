@@ -1012,6 +1012,13 @@ int main(void) {
         char *m_gated_draft = wait_for_matching_msg(&g_host, "\"id\":604,", NULL, 10);
         assert(strstr(m_gated_draft, "persisted-alice-draft") == NULL);
 
+        // P1-3 E2E: On unbound `:memory:` with sibling Bob still listed, `account.switch("u-bob")`
+        // MUST fail with `account_sub_mismatch` and MUST NOT bind `:memory:` or open read gate!
+        send_json("{\"id\":6041,\"call\":\"account.switch\",\"params\":{\"account\":\"u-bob\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":6041,", "account_sub_mismatch", 10);
+        send_json("{\"id\":6042,\"call\":\"workspaces.list\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":6042,", "\"workspaces\":[]", 10);
+
         // Verify disk `accounts` ALREADY has ONLY `u-bob` (`u-live` synchronously CAS-removed)!
         af = fopen(accts_path, "r");
         assert(af != NULL);
@@ -1046,7 +1053,115 @@ int main(void) {
         // Hard-assert Bob's private `account-u-bob.db` is genuinely mounted & hydrated (`bob_marker` readable)!
         send_json("{\"id\":607,\"call\":\"settings.get\",\"params\":{\"key\":\"bob_marker\"}}");
         wait_for_matching_msg(&g_host, "\"id\":607,", "\"value\":\"bob-private-marker-phase9\"", 10);
-        printf("[live_net_e2e] Phase 9 PASSED (sync 401 removal + 0ms stop + cold-boot sibling Bob private DB mount)\n");
+        printf("[live_net_e2e] Phase 9 PASSED (sync 401 removal + P1-3 account.switch guard + 0ms stop + cold-boot Bob mount)\n");
+    }
+
+    // ── PHASE 10 (R12 P1-1 extreme I/O fallback + P1-4 same-process default station rebind):
+    //    10a. Both `write_atomic` AND `overwrite_inplace` fail (`chmod 0500` dir + `chmod 0400` accounts)
+    //         during Alice's 401 -> `meta("membership:rejected_tuple")` written to `account-u-live.db`
+    //         before `:memory:` switch -> after restoring perms, cold boot refuses Alice, prunes Alice
+    //         from `<dir>/accounts`, and mounts sibling Bob (`bob-private-marker-phase9`)!
+    //    10b. Cold boot Alice with persisted `WS1_ID/st-local` -> 401 -> same-process login as Bob
+    //         (no persisted station) -> no-arg `station.connect` MUST NOT leak `WS1_ID/st-local`! ──
+    printf("[live_net_e2e] Phase 10: extreme-IO rejected_tuple cold-boot prune + same-process default station rebind\n");
+    {
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+        assert(atomic_load(&g_host.post_stop_count) == 0);
+
+        char accts_path[256];
+        snprintf(accts_path, sizeof(accts_path), "%s/accounts", data_dir);
+        FILE *af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+              "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12A\"},"
+              "{\"sub\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"picture\":\"\","
+              "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12B\"}]", af);
+        fclose(af);
+
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":700,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":700,", "persisted-alice-draft", 10);
+
+        // Lock `<data_dir>` (0500) + `<data_dir>/accounts` (0400) so BOTH atomic rename and inplace overwrite fail
+        // while SQLite inside `<data_dir>/databases/` remains writable (if running non-root):
+        if (geteuid() != 0) {
+            assert(chmod(accts_path, 0400) == 0);
+            assert(chmod(data_dir, 0500) == 0);
+            send_json("{\"id\":701,\"call\":\"auth.refresh\",\"params\":{}}");
+            wait_for_matching_msg(&g_host, "\"id\":701,", "\"error\"", 10);
+
+            atomic_store(&g_host.stopped, 1);
+            mb_core_stop();
+            assert(chmod(data_dir, 0700) == 0);
+            assert(chmod(accts_path, 0600) == 0);
+
+            // Confirm disk `accounts` STILL had `[u-live, u-bob]` (both writes genuinely failed!):
+            af = fopen(accts_path, "r");
+            assert(af != NULL);
+            char abuf2[2048];
+            size_t an2 = fread(abuf2, 1, sizeof(abuf2) - 1, af);
+            fclose(af);
+            abuf2[an2] = '\0';
+            assert(strstr(abuf2, "\"sub\":\"u-live\"") != NULL && strstr(abuf2, "\"sub\":\"u-bob\"") != NULL);
+
+            // Cold restart MUST see `meta("membership:rejected_tuple")` in `account-u-live.db`, refuse Alice,
+            // prune `u-live` from `<dir>/accounts`, and mount sibling Bob (`bob-private-marker-phase9`)!
+            reset_host_ctx(&g_host);
+            mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+            wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+            send_json("{\"id\":702,\"call\":\"settings.get\",\"params\":{\"key\":\"bob_marker\"}}");
+            wait_for_matching_msg(&g_host, "\"id\":702,", "\"value\":\"bob-private-marker-phase9\"", 10);
+            send_json("{\"id\":703,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+            char *m_no_alice = wait_for_matching_msg(&g_host, "\"id\":703,", NULL, 10);
+            assert(strstr(m_no_alice, "persisted-alice-draft") == NULL);
+            atomic_store(&g_host.stopped, 1);
+            mb_core_stop();
+        } else {
+            atomic_store(&g_host.stopped, 1);
+            mb_core_stop();
+        }
+
+        // 10b (P1-4): Cold boot Alice (persisted `WS1_ID/st-local`) -> 401 -> same-process Bob login ->
+        // no-arg `station.connect` MUST NOT resolve to Alice's `WS1_ID/st-local`!
+        af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+              "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R12C\"}]", af);
+        fclose(af);
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":710,\"call\":\"auth.refresh\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":710,", "\"error\"", 10);
+
+        send_json("{\"id\":711,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_b10 = wait_for_matching_msg(&g_host, "\"id\":711,", "\"state\":\"", 10);
+        const char *sp10 = strstr(m_b10, "\"state\":\"");
+        assert(sp10 != NULL);
+        sp10 += 9;
+        char st10[128];
+        size_t s10i = 0;
+        while (sp10[s10i] != '\0' && sp10[s10i] != '"' && s10i + 1 < sizeof(st10)) {
+            st10[s10i] = sp10[s10i];
+            s10i++;
+        }
+        st10[s10i] = '\0';
+        char comp10[512];
+        snprintf(comp10, sizeof(comp10),
+                 "{\"id\":712,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_bob\"}}",
+                 st10);
+        send_json(comp10);
+        wait_for_matching_msg(&g_host, "\"id\":712,", "\"email\":\"bob@still.fail\"", 10);
+        send_json("{\"id\":713,\"call\":\"station.connect\",\"params\":{}}");
+        char *m_conn10 = wait_for_matching_msg(&g_host, "\"id\":713,", NULL, 10);
+        assert(strstr(m_conn10, WS1_ID) == NULL);
+        printf("[live_net_e2e] Phase 10 PASSED (extreme-IO rejected_tuple prune + zero station leak across account switch)\n");
     }
 
     atomic_store(&g_host.stopped, 1);

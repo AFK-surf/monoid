@@ -29,7 +29,7 @@
 // - Non-blocking `flock(LOCK_EX | LOCK_NB)` (POSIX) / UTF-16 `CreateFileW` + `LockFileEx` (Windows).
 // - Second instance fails fast (`0` -> `data_dir_locked`) without blocking or touching any DB.
 // - Released on `pion_core_runtime_stop()` or automatically by the OS kernel on crash / `SIGKILL`.
-#define ACCOUNTS_MAX_BYTES (16 * 1024 * 1024)
+#define PION_ACCOUNTS_MAX_BYTES (16u * 1024u * 1024u)
 
 static _Atomic int64_t g_owner_lock_next_id = 1;
 static _Atomic int64_t g_owner_lock_active_id = 0;
@@ -63,6 +63,125 @@ static void join_dir_file(char *out, size_t cap, const char *dir, size_t dlen, c
     memcpy(out + pos, name, nlen + 1);
 }
 
+#ifdef _WIN32
+static int ensure_dir_recursive_wide(const wchar_t *wdir) {
+    if (wdir == NULL || wdir[0] == L'\0') {
+        return -1;
+    }
+    size_t n = wcslen(wdir);
+    if (n >= 4096) {
+        return -1;
+    }
+    wchar_t buf[4096];
+    memcpy(buf, wdir, (n + 1) * sizeof(wchar_t));
+    while (n > 1 && (buf[n - 1] == L'/' || buf[n - 1] == L'\\')) {
+        if (n == 3 && buf[1] == L':') {
+            break;
+        }
+        buf[--n] = L'\0';
+    }
+    size_t start = 0;
+    if (n >= 2 && buf[1] == L':') {
+        start = (n >= 3 && (buf[2] == L'/' || buf[2] == L'\\')) ? 3 : 2;
+    } else if (n >= 2 && (buf[0] == L'\\' || buf[0] == L'/') && (buf[1] == L'\\' || buf[1] == L'/')) {
+        // UNC prefix: skip `\\server\share\`
+        size_t p = 2;
+        int parts = 0;
+        while (p < n && parts < 2) {
+            while (p < n && buf[p] != L'\\' && buf[p] != L'/') p++;
+            while (p < n && (buf[p] == L'\\' || buf[p] == L'/')) p++;
+            parts++;
+        }
+        start = p;
+    } else if (buf[0] == L'/' || buf[0] == L'\\') {
+        start = 1;
+    }
+    for (size_t i = start; i <= n; i++) {
+        if (i == n || buf[i] == L'/' || buf[i] == L'\\') {
+            if (i == start) {
+                continue;
+            }
+            wchar_t saved = buf[i];
+            buf[i] = L'\0';
+            if (!CreateDirectoryW(buf, NULL)) {
+                DWORD err = GetLastError();
+                if (err != ERROR_ALREADY_EXISTS) {
+                    buf[i] = saved;
+                    return -1;
+                }
+            }
+            buf[i] = saved;
+        }
+    }
+    return 0;
+}
+#else
+static int ensure_dir_recursive_posix(const char *dir) {
+    if (dir == NULL || dir[0] == '\0') {
+        return -1;
+    }
+    size_t n = strlen(dir);
+    if (n >= 4096) {
+        return -1;
+    }
+    char buf[4096];
+    memcpy(buf, dir, n + 1);
+    while (n > 1 && buf[n - 1] == '/') {
+        buf[--n] = '\0';
+    }
+    size_t start = (buf[0] == '/') ? 1 : 0;
+    for (size_t i = start; i <= n; i++) {
+        if (i == n || buf[i] == '/') {
+            if (i == start) {
+                continue;
+            }
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (mkdir(buf, 0700) != 0 && errno != EEXIST) {
+                buf[i] = saved;
+                return -1;
+            }
+            buf[i] = saved;
+        }
+    }
+    return 0;
+}
+
+static int fsync_fd_strict(int fd) {
+    int rc;
+    do {
+        rc = fsync(fd);
+    } while (rc != 0 && errno == EINTR);
+    return (rc == 0) ? 0 : -1;
+}
+
+static int fdatasync_fd_strict(int fd) {
+    int rc;
+    do {
+#if defined(__APPLE__)
+        rc = fsync(fd);
+#else
+        rc = fdatasync(fd);
+#endif
+    } while (rc != 0 && errno == EINTR);
+    return (rc == 0) ? 0 : -1;
+}
+
+static int fsync_dir_strict(const char *dir_path) {
+    int dfd = open(dir_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0) {
+        return -1;
+    }
+    int rc = fsync_fd_strict(dfd);
+    int saved = errno;
+    if (close(dfd) != 0 && rc == 0) {
+        return -1;
+    }
+    errno = saved;
+    return rc;
+}
+#endif
+
 // Acquire process-lifetime exclusive ownership of `<dir>/.core.lock` (0ms non-blocking):
 // - returns handle >= 1 on success
 // - returns 0 if already owned by another core instance (in-process or another process)
@@ -94,7 +213,10 @@ int64_t pion_core_dir_owner_lock_acquire(const char *dir, int64_t dir_len) {
         atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
         return -1;
     }
-    (void)CreateDirectoryW(wdir, NULL);
+    if (ensure_dir_recursive_wide(wdir) != 0) {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
     HANDLE h = CreateFileW(
         wlock,
         GENERIC_READ | GENERIC_WRITE,
@@ -117,7 +239,10 @@ int64_t pion_core_dir_owner_lock_acquire(const char *dir, int64_t dir_len) {
     }
     g_owner_lock_handle = h;
 #else
-    (void)mkdir(dir_copy, 0700);
+    if (ensure_dir_recursive_posix(dir_copy) != 0) {
+        atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
+        return -1;
+    }
     int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (fd < 0) {
         atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
@@ -172,8 +297,8 @@ void pion_core_dir_owner_lock_release(int64_t handle) {
     atomic_store_explicit(&g_owner_lock_active_id, 0, memory_order_release);
 }
 
-// ── Synchronous atomic `<dir>/accounts` read / write / remove under exclusive `.core.lock` ──
-// Returns 1 = Found (use `data`/`len`), 0 = Absent (`ENOENT`), -1 = I/O or invalid path error.
+// ── Synchronous atomic `<dir>/accounts` read / write / inplace-shrink / remove under exclusive `.core.lock` ──
+// Returns 1 = Found (use `data`/`len`), 0 = Absent (`ENOENT`), -1 = I/O, >16 MiB, or invalid path error.
 int32_t pion_core_accounts_read(const char *dir, int64_t dir_len) {
     if (g_accts_buf != NULL) {
         free(g_accts_buf);
@@ -214,14 +339,19 @@ int32_t pion_core_accounts_read(const char *dir, int64_t dir_len) {
     size_t total = 0;
     for (;;) {
         if (total == cap) {
-            if (cap >= ACCOUNTS_MAX_BYTES) {
-                free(buf);
-                CloseHandle(h);
-                return -1;
+            if (cap >= PION_ACCOUNTS_MAX_BYTES) {
+                uint8_t probe = 0;
+                DWORD got_extra = 0;
+                if (!ReadFile(h, &probe, 1, &got_extra, NULL) || got_extra > 0) {
+                    free(buf);
+                    CloseHandle(h);
+                    return -1;
+                }
+                break;
             }
             size_t ncap = cap * 2;
-            if (ncap > ACCOUNTS_MAX_BYTES) {
-                ncap = ACCOUNTS_MAX_BYTES;
+            if (ncap > PION_ACCOUNTS_MAX_BYTES) {
+                ncap = PION_ACCOUNTS_MAX_BYTES;
             }
             uint8_t *nbuf = (uint8_t *)realloc(buf, ncap);
             if (nbuf == NULL) {
@@ -261,14 +391,22 @@ int32_t pion_core_accounts_read(const char *dir, int64_t dir_len) {
     size_t total = 0;
     for (;;) {
         if (total == cap) {
-            if (cap >= ACCOUNTS_MAX_BYTES) {
-                free(buf);
-                close(fd);
-                return -1;
+            if (cap >= PION_ACCOUNTS_MAX_BYTES) {
+                uint8_t probe = 0;
+                ssize_t extra;
+                do {
+                    extra = read(fd, &probe, 1);
+                } while (extra < 0 && errno == EINTR);
+                if (extra != 0) {
+                    free(buf);
+                    close(fd);
+                    return -1;
+                }
+                break;
             }
             size_t ncap = cap * 2;
-            if (ncap > ACCOUNTS_MAX_BYTES) {
-                ncap = ACCOUNTS_MAX_BYTES;
+            if (ncap > PION_ACCOUNTS_MAX_BYTES) {
+                ncap = PION_ACCOUNTS_MAX_BYTES;
             }
             uint8_t *nbuf = (uint8_t *)realloc(buf, ncap);
             if (nbuf == NULL) {
@@ -313,7 +451,8 @@ int32_t pion_core_accounts_write_atomic(
     int64_t dir_len,
     const uint8_t *bytes,
     int64_t len) {
-    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 || (len > 0 && bytes == NULL)) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 ||
+        (uint64_t)len > (uint64_t)PION_ACCOUNTS_MAX_BYTES || (len > 0 && bytes == NULL)) {
         return -1;
     }
     char dir_copy[3840];
@@ -346,7 +485,9 @@ int32_t pion_core_accounts_write_atomic(
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wdst, 4096) <= 0) {
         return -1;
     }
-    (void)CreateDirectoryW(wdir, NULL);
+    if (ensure_dir_recursive_wide(wdir) != 0) {
+        return -1;
+    }
     (void)DeleteFileW(wtmp);
     HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
@@ -374,7 +515,9 @@ int32_t pion_core_accounts_write_atomic(
     }
     return 0;
 #else
-    (void)mkdir(dir_copy, 0700);
+    if (ensure_dir_recursive_posix(dir_copy) != 0) {
+        return -1;
+    }
     (void)unlink(tmp_path);
     int fd = open(tmp_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
     if (fd < 0) {
@@ -393,7 +536,7 @@ int32_t pion_core_accounts_write_atomic(
         }
         off += (size_t)n;
     }
-    if (fsync(fd) != 0) {
+    if (fsync_fd_strict(fd) != 0) {
         close(fd);
         (void)unlink(tmp_path);
         return -1;
@@ -406,10 +549,132 @@ int32_t pion_core_accounts_write_atomic(
         (void)unlink(tmp_path);
         return -1;
     }
-    int dfd = open(dir_copy, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        (void)close(dfd);
+    if (fsync_dir_strict(dir_copy) != 0) {
+        return -1;
+    }
+    return 0;
+#endif
+}
+
+// Single-owner zero-block in-place overwrite fallback for 401 removal under `ENOSPC`:
+// only succeeds when `len <= existing_file_size <= PION_ACCOUNTS_MAX_BYTES`, writes `bytes`
+// followed by trailing JSON spaces (`0x20`) to preserve file size with 0 new blocks / 0 new inodes,
+// and calls `fdatasync` (POSIX) / `FlushFileBuffers` (Windows).
+int32_t pion_core_accounts_overwrite_inplace(
+    const char *dir,
+    int64_t dir_len,
+    const uint8_t *bytes,
+    int64_t len) {
+    if (dir == NULL || dir_len <= 0 || dir_len >= 3840 || len < 0 ||
+        (uint64_t)len > (uint64_t)PION_ACCOUNTS_MAX_BYTES || (len > 0 && bytes == NULL)) {
+        return -1;
+    }
+    char dir_copy[3840];
+    memcpy(dir_copy, dir, (size_t)dir_len);
+    dir_copy[dir_len] = '\0';
+    char accts_path[4096];
+    join_dir_file(accts_path, sizeof(accts_path), dir_copy, (size_t)dir_len, "accounts");
+    if (accts_path[0] == '\0') {
+        return -1;
+    }
+    uint8_t spaces[4096];
+    memset(spaces, ' ', sizeof(spaces));
+#ifdef _WIN32
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, accts_path, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(
+        wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    LARGE_INTEGER fsz;
+    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart < len ||
+        (uint64_t)fsz.QuadPart > (uint64_t)PION_ACCOUNTS_MAX_BYTES) {
+        CloseHandle(h);
+        return -1;
+    }
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    if (!SetFilePointerEx(h, zero, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        DWORD wrote = 0;
+        if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            return -1;
+        }
+        off += (size_t)wrote;
+    }
+    size_t pad = (size_t)(fsz.QuadPart - len);
+    while (pad > 0) {
+        DWORD chunk = (pad > sizeof(spaces)) ? (DWORD)sizeof(spaces) : (DWORD)pad;
+        DWORD wrote = 0;
+        if (!WriteFile(h, spaces, chunk, &wrote, NULL) || wrote == 0) {
+            CloseHandle(h);
+            return -1;
+        }
+        pad -= (size_t)wrote;
+    }
+    if (!FlushFileBuffers(h)) {
+        CloseHandle(h);
+        return -1;
+    }
+    CloseHandle(h);
+    return 0;
+#else
+    int fd = open(accts_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size < (off_t)len || (uint64_t)st.st_size > (uint64_t)PION_ACCOUNTS_MAX_BYTES) {
+        close(fd);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < (size_t)len) {
+        ssize_t n = pwrite(fd, bytes + off, (size_t)len - off, (off_t)off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    size_t pad = (size_t)st.st_size - (size_t)len;
+    while (pad > 0) {
+        size_t chunk = (pad > sizeof(spaces)) ? sizeof(spaces) : pad;
+        ssize_t n = pwrite(fd, spaces, chunk, (off_t)off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return -1;
+        }
+        off += (size_t)n;
+        pad -= (size_t)n;
+    }
+    if (fdatasync_fd_strict(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        return -1;
     }
     return 0;
 #endif
@@ -442,10 +707,8 @@ int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len) {
     if (unlink(accts_path) != 0 && errno != ENOENT) {
         return -1;
     }
-    int dfd = open(dir_copy, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        (void)close(dfd);
+    if (fsync_dir_strict(dir_copy) != 0) {
+        return -1;
     }
     return 0;
 #endif

@@ -71,7 +71,7 @@ pub struct ChangingOverlay {
 }
 
 pub struct LocalOutbox {
-  pub station : String
+  pub mut station : String
   pub mut db : sql::Sql
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub transport : StationTransport
@@ -172,6 +172,10 @@ pub fn LocalOutbox::switch_db(self : LocalOutbox, new_db : sql::Sql) -> Unit {
 
 pub fn LocalOutbox::set_error_hook(self : LocalOutbox, cb : (String, String) -> Unit) -> Unit {
   self.on_error = cb
+}
+
+pub fn LocalOutbox::set_station(self : LocalOutbox, new_station : String) -> Unit {
+  self.station = new_station
 }
 
 fn station_unregistered_hint(station : String) -> String {

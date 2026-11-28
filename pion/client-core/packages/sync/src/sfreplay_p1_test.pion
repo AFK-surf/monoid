@@ -212,7 +212,7 @@ test "sfreplay_p1: accounts & workspaces mbui wire shapes + account.switch valid
   let cross_err = sf_call_err_code(core, 5L, "account.switch", base_codec::json_obj([
     ("account", base_codec::json_str("sub-bob")),
   ]))
-  debug_assert(cross_err == "unsupported", "cross-account DB switch must honestly return unsupported")
+  debug_assert(cross_err == "account_sub_mismatch", "cross-account DB switch must honestly return account_sub_mismatch")
   let still_alice_2 = match core.auth_store.active_sub {
     Some(s) => s == "sub-alice"
     None => false

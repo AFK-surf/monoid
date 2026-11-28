@@ -24,6 +24,7 @@ extern int32_t pion_core_accounts_read(const char *dir, int64_t dir_len);
 extern const uint8_t *pion_core_accounts_data(void);
 extern int64_t pion_core_accounts_len(void);
 extern int32_t pion_core_accounts_write_atomic(const char *dir, int64_t dir_len, const uint8_t *bytes, int64_t len);
+extern int32_t pion_core_accounts_overwrite_inplace(const char *dir, int64_t dir_len, const uint8_t *bytes, int64_t len);
 extern int32_t pion_core_accounts_remove_atomic(const char *dir, int64_t dir_len);
 extern int mb_core_deliver_media(
     uint64_t call,
@@ -759,18 +760,60 @@ int main(int argc, char **argv) {
         // After releasing `h2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
         assert(run_exec_lock_probe(argv[0], data_dir) == 0);
 
-        // Verify zero-block `pion_core_accounts_remove_atomic` on an isolated temp dir:
+        // Verify zero-block `pion_core_accounts_overwrite_inplace` (ENOSPC shrink fallback for [Alice, Bob] -> [Bob])
+        // + `pion_core_accounts_remove_atomic` on an isolated temp dir:
         char rm_dir[256];
         snprintf(rm_dir, sizeof(rm_dir), "%s_rm", data_dir);
         assert(mkdir(rm_dir, 0700) == 0);
         int64_t rlen = (int64_t)strlen(rm_dir);
-        const char *sample = "[{\"sub\":\"u-rm\"}]";
-        assert(pion_core_accounts_write_atomic(rm_dir, rlen, (const uint8_t *)sample, (int64_t)strlen(sample)) == 0);
+        const char *two_accts = "[{\"sub\":\"u-alice\",\"refresh\":\"ref-a\"},{\"sub\":\"u-bob\",\"refresh\":\"ref-b\"}]";
+        const char *one_acct = "[{\"sub\":\"u-bob\",\"refresh\":\"ref-b\"}]";
+        assert(pion_core_accounts_write_atomic(rm_dir, rlen, (const uint8_t *)two_accts, (int64_t)strlen(two_accts)) == 0);
+        assert(pion_core_accounts_overwrite_inplace(rm_dir, rlen, (const uint8_t *)one_acct, (int64_t)strlen(one_acct)) == 0);
         assert(pion_core_accounts_read(rm_dir, rlen) == 1);
+        assert(pion_core_accounts_len() == (int64_t)strlen(two_accts)); // exact size preserved (0 new blocks!)
+        assert(memcmp(pion_core_accounts_data(), one_acct, strlen(one_acct)) == 0);
+        for (size_t pi = strlen(one_acct); pi < strlen(two_accts); pi++) {
+            assert(pion_core_accounts_data()[pi] == ' ');
+        }
+        // In-place overwrite MUST reject growing beyond existing file size:
+        char oversized_inplace[256];
+        memset(oversized_inplace, 'x', sizeof(oversized_inplace));
+        assert(pion_core_accounts_overwrite_inplace(rm_dir, rlen, (const uint8_t *)oversized_inplace, (int64_t)sizeof(oversized_inplace)) == -1);
         assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0);
         assert(pion_core_accounts_read(rm_dir, rlen) == 0);
         assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0); // idempotent on ENOENT
-        printf("[core_runtime_e2e] .core.lock cross-process flock + stale handle immunity + remove_atomic OK\n");
+
+        // P2-1: Recursive directory creation (3-level nested nonexistent path) BEFORE `.core.lock`!
+        char nested_dir[320];
+        snprintf(nested_dir, sizeof(nested_dir), "%s_nested/lv1/lv2/lv3", data_dir);
+        int64_t hn = pion_core_dir_owner_lock_acquire(nested_dir, (int64_t)strlen(nested_dir));
+        assert(hn >= 1);
+        pion_core_dir_owner_lock_release(hn);
+        struct stat st_nest;
+        assert(stat(nested_dir, &st_nest) == 0 && S_ISDIR(st_nest.st_mode));
+
+        // P2-2: Unified 16 MiB inclusive boundary — 16 MiB write/read both succeed; 16 MiB + 1 both fail!
+        const size_t max_bytes = 16u * 1024u * 1024u;
+        uint8_t *big_buf = (uint8_t *)malloc(max_bytes + 1);
+        assert(big_buf != NULL);
+        memset(big_buf, ' ', max_bytes + 1);
+        big_buf[0] = '[';
+        big_buf[1] = ']';
+        assert(pion_core_accounts_write_atomic(rm_dir, rlen, big_buf, (int64_t)max_bytes) == 0);
+        assert(pion_core_accounts_read(rm_dir, rlen) == 1);
+        assert(pion_core_accounts_len() == (int64_t)max_bytes);
+        assert(pion_core_accounts_write_atomic(rm_dir, rlen, big_buf, (int64_t)(max_bytes + 1)) == -1);
+        char big_path[320];
+        snprintf(big_path, sizeof(big_path), "%s/accounts", rm_dir);
+        FILE *bf = fopen(big_path, "wb");
+        assert(bf != NULL);
+        assert(fwrite(big_buf, 1, max_bytes + 1, bf) == max_bytes + 1);
+        fclose(bf);
+        assert(pion_core_accounts_read(rm_dir, rlen) == -1);
+        assert(pion_core_accounts_remove_atomic(rm_dir, rlen) == 0);
+        free(big_buf);
+        printf("[core_runtime_e2e] .core.lock flock + stale immunity + inplace shrink + nested mkdir + 16 MiB boundary OK\n");
     }
 
     // 7c. R11 E2E: Real `fork()+execl()` single-owner `<dir>/.core.lock` fail-fast enforcement:

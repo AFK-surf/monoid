@@ -2578,6 +2578,7 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
   let core = ClientCore::new("ws-biz", "st1", rt, db, station.transport(), fn() -> Unit {})
 
   // Seed account docs for accounts & vault
+  let _ = core.set_db_account_sub("bob@still.fail")
   let _ = store::put_account_doc(db, "accounts", "[{\"email\":\"alice@still.fail\"},{\"email\":\"bob@still.fail\"}]")
   let _ = store::put_account_doc(db, "active_account", "\"alice@still.fail\"")
   let _ = store::put_account_doc(db, "vault_status", "{\"enabled\":true,\"unlocked\":true,\"vaultCount\":1,\"secretCount\":1}")

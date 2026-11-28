@@ -24,6 +24,7 @@ extern "C" fn pion_core_accounts_read(dir : Ptr, dir_len : Int64) -> Int
 extern "C" fn pion_core_accounts_data() -> Ptr
 extern "C" fn pion_core_accounts_len() -> Int64
 extern "C" fn pion_core_accounts_write_atomic(dir : Ptr, dir_len : Int64, bytes : Ptr, len : Int64) -> Int
+extern "C" fn pion_core_accounts_overwrite_inplace(dir : Ptr, dir_len : Int64, bytes : Ptr, len : Int64) -> Int
 extern "C" fn pion_core_accounts_remove_atomic(dir : Ptr, dir_len : Int64) -> Int
 
 struct AccountInfo {
@@ -309,7 +310,11 @@ fn read_accounts_file_state(dir : String) -> sync::HostStorageRead {
   }
 }
 
-fn write_accounts_file_json(dir : String, doc : base_codec::Json) -> Result[Unit, String] {
+fn write_accounts_file_json(
+  dir : String,
+  doc : base_codec::Json,
+  allow_inplace_fallback : Bool = false,
+) -> Result[Unit, String] {
   let raw_bs = base_codec::json_stringify(doc).to_bytes()
   let dbs = dir.to_bytes()
   let rc = pion_core_accounts_write_atomic(
@@ -318,25 +323,87 @@ fn write_accounts_file_json(dir : String, doc : base_codec::Json) -> Result[Unit
     bytes_data_ptr(raw_bs),
     raw_bs.length().to_int64(),
   )
-  let _ = raw_bs.length()
   if rc == 0 {
+    let _ = raw_bs.length()
     let _ = dbs.length()
     return Ok(())
   }
-  // Zero-block ENOSPC fallback: if clearing the last account (`[]`), atomically unlink `<dir>/accounts`!
+  // Zero-block ENOSPC fallback:
+  // - If clearing the last account (`[]`), atomically unlink `<dir>/accounts`.
+  // - If 401 removal still has surviving sibling accounts (`allow_inplace_fallback=true`),
+  //   perform zero-block space-padded in-place overwrite (`len <= existing_file_size`).
   let is_empty = match doc {
     base_codec::Json::Arr(xs) => xs.length() == 0
     _ => false
   }
   if is_empty {
     let rrc = pion_core_accounts_remove_atomic(bytes_data_ptr(dbs), dbs.length().to_int64())
+    let _ = raw_bs.length()
     let _ = dbs.length()
     if rrc == 0 {
       return Ok(())
     }
+    return Err("accounts remove failed")
   }
+  if allow_inplace_fallback {
+    let irc = pion_core_accounts_overwrite_inplace(
+      bytes_data_ptr(dbs),
+      dbs.length().to_int64(),
+      bytes_data_ptr(raw_bs),
+      raw_bs.length().to_int64(),
+    )
+    let _ = raw_bs.length()
+    let _ = dbs.length()
+    if irc == 0 {
+      return Ok(())
+    }
+  }
+  let _ = raw_bs.length()
   let _ = dbs.length()
   Err("accounts atomic write failed")
+}
+
+fn serialize_account_infos(accounts : Array[AccountInfo]) -> base_codec::Json {
+  let stored : Array[views::StoredAccount] = []
+  let sessions : Map[String, String] = Map::new()
+  for i in 0..<accounts.length() {
+    let a = accounts[i]
+    stored.push(views::StoredAccount::{
+      sub: a.sub,
+      email: a.email,
+      name: a.name,
+      picture: a.picture,
+      access: a.access,
+      refresh: a.refresh,
+      access_expires: a.access_expires,
+    })
+    if a.session.length() > 0 {
+      sessions.set(a.sub, a.session)
+    }
+  }
+  sync::serialize_stored_accounts(stored, sessions=Some(sessions))
+}
+
+fn resolve_default_station_for_ws(db : sql::Sql, ws : String) -> String {
+  if ws.length() == 0 || ws == "ws-default" {
+    return "st-local"
+  }
+  let cloud_sts = sync::list_workspace_stations(db, ws)
+  if cloud_sts.length() > 0 {
+    return ws + "/" + cloud_sts[0].id
+  }
+  match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Ok(st_rows) => {
+      let prefix = ws + "/"
+      for i in 0..<st_rows.length() {
+        if st_rows[i].address.starts_with(prefix) {
+          return st_rows[i].address
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  "st-local"
 }
 
 fn read_accounts_file_sync(dir : String) -> Array[AccountInfo] {
@@ -1281,8 +1348,11 @@ fn runtime_make_refresh_host(
       rk(read_accounts_file_state(sess.dir))
     },
     write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
-      wk(write_accounts_file_json(sess.dir, doc))
+      wk(write_accounts_file_json(sess.dir, doc, allow_inplace_fallback=false))
     },
+    write_accounts_401_k: Some(fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      wk(write_accounts_file_json(sess.dir, doc, allow_inplace_fallback=true))
+    }),
     do_refresh_http_k: fn(rtok : String, now_ms : Int64, hk : (effect::Exit[Result[sync::RefreshedTokens, sync::RefreshTokenError]]) -> Unit) -> Unit {
       sync::refresh_token_k(sess.sh, req_origin, rtok, now_ms, hk)
     },
@@ -1330,8 +1400,7 @@ fn runtime_make_refresh_host(
       inv_sub : String,
       inv_sid : String,
       inv_ref : String,
-      remaining_accts : Array[views::StoredAccount],
-      remaining_sessions : Map[String, String],
+      confirmed_opt : Option[(Array[views::StoredAccount], Map[String, String])],
     ) -> Unit {
       let cur_sub = sess.core.membership.effective_sub()
       let was_active_sub = !sess.core.membership.is_unauthenticated() && inv_sub == cur_sub
@@ -1342,8 +1411,48 @@ fn runtime_make_refresh_host(
         expected_refresh=Some(inv_ref),
         persist_accounts=false,
       )
-      sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
-      if invalidated && (was_active_sub || remaining_accts.length() == 0) {
+      let mut remaining_count = 0
+      match confirmed_opt {
+        Some((remaining_accts, remaining_sessions)) => {
+          sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
+          remaining_count = remaining_accts.length()
+        }
+        None => {
+          // Extreme I/O fallback (P1-1): when disk removal failed or disk was unreadable for the
+          // active account, record `(inv_sid, inv_ref)` in `<active>.db` `meta` BEFORE unmounting
+          // to `:memory:` so cold restart refuses to reopen the rejected DB!
+          if invalidated && was_active_sub {
+            let _ = sync::record_rejected_tuple_in_db(sess.db, inv_sid, inv_ref)
+          }
+          // P1-2: when disk state is unknown (`None`), filter ONLY the matching `(inv_sub, inv_sid, inv_ref)`
+          // out of memory and preserve all unrelated sibling accounts (NEVER log out a valid active sibling!).
+          let kept_accts : Array[views::StoredAccount] = []
+          let kept_sessions : Map[String, String] = Map::new()
+          for i in 0..<sess.accounts.length() {
+            let a = sess.accounts[i]
+            let matches_inv = a.sub == inv_sub &&
+            (inv_sid.length() == 0 || a.session == inv_sid) &&
+            a.refresh == inv_ref
+            if !matches_inv {
+              kept_accts.push(views::StoredAccount::{
+                sub: a.sub,
+                email: a.email,
+                name: a.name,
+                picture: a.picture,
+                access: a.access,
+                refresh: a.refresh,
+                access_expires: a.access_expires,
+              })
+              if a.session.length() > 0 {
+                kept_sessions.set(a.sub, a.session)
+              }
+            }
+          }
+          sync_mem_accounts_from_list(sess, kept_accts, kept_sessions)
+          remaining_count = kept_accts.length()
+        }
+      }
+      if invalidated && (was_active_sub || remaining_count == 0) {
         runtime_switch_to_unauth_memory_db(sess, clear_desired_stations=true)
         let _ = store::put_account_doc(
           sess.db,
@@ -1742,21 +1851,66 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
-  // Account-owned DB lifecycle (Invariant 1):
+  // Account-owned DB lifecycle (Invariant 1 + P1-1 single-owner rejected_tuple cold-start gate):
   // - When signed out (`accounts` empty), NEVER open or touch `default.db`: open `:memory:`.
-  // - When signed in, open `account-<sanitized_sub>.db` and restore persisted `default_ws` + `default_st`!
-  let is_unauth = accounts.length() == 0
-  let db = match if is_unauth {
-    open_and_migrate_account_db(sh, ":memory:")
-  } else {
-    open_and_migrate_account_db(sh, encode_account_db_name(accounts[0].sub))
-  } {
-    Ok(d) => d
-    Err(msg) => {
-      shell_native::stop()
-      pion_core_dir_owner_lock_release(owner_lock)
-      emit_fatal(msg)
-      return 0
+  // - When signed in, open `account-<sanitized_sub>.db` and check `meta("membership:rejected_tuple")`
+  //   fail-closed: if rejected, close it, prune the rejected head from `<dir>/accounts` (with zero-block
+  //   fallback), and advance to the next surviving sibling (or stay fail-closed `:memory:` if pruning fails!).
+  let mut active_db_opt : Option[sql::Sql] = None
+  while accounts.length() > 0 {
+    let cand = accounts[0]
+    let cand_db = match open_and_migrate_account_db(sh, encode_account_db_name(cand.sub)) {
+      Ok(d) => d
+      Err(msg) => {
+        shell_native::stop()
+        pion_core_dir_owner_lock_release(owner_lock)
+        emit_fatal(msg)
+        return 0
+      }
+    }
+    match sync::check_rejected_tuple_in_db(cand_db, cand.session, cand.refresh) {
+      sync::RejectedTupleCheck::Allowed => {
+        active_db_opt = Some(cand_db)
+        break
+      }
+      sync::RejectedTupleCheck::Rejected => {
+        cand_db.close()
+        let next_accts : Array[AccountInfo] = []
+        for i in 1..<accounts.length() {
+          next_accts.push(accounts[i])
+        }
+        accounts.clear()
+        match write_accounts_file_json(dir, serialize_account_infos(next_accts), allow_inplace_fallback=true) {
+          Ok(_) => {
+            for i in 0..<next_accts.length() {
+              accounts.push(next_accts[i])
+            }
+          }
+          Err(reason) => {
+            log_runtime_warn("failed to prune rejected head account on cold start (" + reason + "); staying fail-closed unauthenticated")
+            break
+          }
+        }
+      }
+      sync::RejectedTupleCheck::Unreadable(reason) => {
+        cand_db.close()
+        log_runtime_warn("rejected_tuple meta unreadable (" + reason + "); staying fail-closed unauthenticated until fresh login")
+        accounts.clear()
+        break
+      }
+    }
+  }
+  let is_unauth = active_db_opt.is_none()
+  let db = match active_db_opt {
+    Some(d) => d
+    None => match open_and_migrate_account_db(sh, ":memory:") {
+      Ok(d) => d
+      Err(msg) => {
+        shell_native::stop()
+        pion_core_dir_owner_lock_release(owner_lock)
+        emit_fatal(msg)
+        return 0
+      }
     }
   }
   let mut default_ws = match prefs_map.get("workspace") {
@@ -1776,24 +1930,7 @@ pub extern "C" fn pion_core_runtime_start(
   if default_ws.length() == 0 {
     default_ws = "ws-default"
   }
-  let mut default_st = "st-local"
-  let cloud_default_sts = sync::list_workspace_stations(db, default_ws)
-  if cloud_default_sts.length() > 0 {
-    default_st = default_ws + "/" + cloud_default_sts[0].id
-  } else {
-    match store::list_stations(db, kind="overview") {
-      sql::SqlResult::Ok(st_rows) => {
-        let prefix = default_ws + "/"
-        for i in 0..<st_rows.length() {
-          if st_rows[i].address.starts_with(prefix) {
-            default_st = st_rows[i].address
-            break
-          }
-        }
-      }
-      sql::SqlResult::Err(_) => ()
-    }
-  }
+  let default_st = resolve_default_station_for_ws(db, default_ws)
   // Only loopback test HTTP station URLs (`http://127.0.0.1:...`) use `shell_http_transport`.
   // Production `cloud_origin` (e.g. `https://app.still.fail`) is NEVER used as a station HTTP URL;
   // production stations connect over `MeshStationTransport` (`shell_mesh_transport` + `attach_station_transport`).
@@ -2711,36 +2848,53 @@ fn finish_verified_auth_complete_k(
                   }
                   Ok(_) => ()
                 }
+                // Fresh verified OAuth login self-heals any prior `membership:rejected_tuple` marker!
+                let _ = sync::clear_rejected_tuple_in_db(new_db)
                 sess.db = new_db
                 old_db.close()
                 match st.person_lock_opt {
                   Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, new_stored.sub) }
                   None => ()
                 }
-                if sess.core.workspace == "ws-default" {
-                  let mut target_ws = match sess.prefs.get("workspace") {
-                    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
-                    _ => ""
+                // P1-4: Resolve target workspace & station from the newly mounted account DB and rebind
+                // ALL default station consumers so zero residue leaks from any previous account!
+                let mut target_ws = if sess.core.workspace != "ws-default" && sess.core.membership.is_workspace_readable(sess.core.workspace) {
+                  sess.core.workspace
+                } else {
+                  ""
+                }
+                if target_ws.length() == 0 {
+                  match sess.prefs.get("workspace") {
+                    Some(base_codec::Json::Str(s)) => if s.length() > 0 && sess.core.membership.is_workspace_readable(s) {
+                      target_ws = s
+                    }
+                    _ => ()
                   }
-                  if target_ws.length() == 0 {
-                    match store::list_workspaces(new_db) {
-                      sql::SqlResult::Ok(ws_rows) => {
-                        for i in 0..<ws_rows.length() {
-                          if sess.core.membership.is_workspace_readable(ws_rows[i].id) {
-                            target_ws = ws_rows[i].id
-                            break
-                          }
+                }
+                if target_ws.length() == 0 {
+                  match store::list_workspaces(new_db) {
+                    sql::SqlResult::Ok(ws_rows) => {
+                      for i in 0..<ws_rows.length() {
+                        if sess.core.membership.is_workspace_readable(ws_rows[i].id) {
+                          target_ws = ws_rows[i].id
+                          break
                         }
                       }
-                      sql::SqlResult::Err(_) => ()
                     }
+                    sql::SqlResult::Err(_) => ()
                   }
-                  if target_ws.length() > 0 {
-                    sess.core.switch_workspace(target_ws)
-                  }
+                }
+                if target_ws.length() == 0 {
+                  target_ws = "ws-default"
+                }
+                let target_st = resolve_default_station_for_ws(new_db, target_ws)
+                sess.core.rebind_default_station(target_st, target_ws)
+                if target_ws != "ws-default" {
+                  sess.core.switch_workspace(target_ws)
                 }
               }
               None => {
+                let _ = sync::clear_rejected_tuple_in_db(sess.db)
                 sess.core.membership.set_unauthenticated(false)
                 sess.core.membership.clear_session_invalidated()
               }

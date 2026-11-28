@@ -53,14 +53,14 @@ let PENDING_WIRE_MAX : Int = 256
 
 pub struct ClientCore {
   pub mut workspace : String
-  pub station : String
+  pub mut station : String
   pub rt : effect::Runtime
   pub mut db : sql::Sql
   pub md_store : store::MdStore
   pub outbox : outbox::FrameOutbox[CoreEvent]
-  pub events : StationEvents
+  pub mut events : StationEvents
   pub local_outbox : LocalOutbox
-  pub sync : SyncScheduler
+  pub mut sync : SyncScheduler
   pub auth : AuthGenTracker
   pub membership : MembershipAuthority
   pub doing : DoingTracker
@@ -1587,6 +1587,41 @@ pub fn ClientCore::viewer_role(self : ClientCore) -> String {
   self.viewer_role
 }
 
+/// Rebind the default `(station, workspace)` across `ClientCore` and ALL station/workspace consumers
+/// (`self.station`, `self.workspace`, `self.md_store`, `self.local_outbox`, `self.router`, `self.events`,
+/// `self.sync`, and `wire_station_hooks`), ensuring zero residue leaks across same-process account switches!
+pub fn ClientCore::rebind_default_station(
+  self : ClientCore,
+  new_station : String,
+  new_ws : String,
+) -> Unit {
+  let off = core_offline_transport()
+  self.events.stop()
+  self.events.reset_state()
+  self.events.set_transport(off)
+  self.sync.bump_epoch()
+  self.sync.set_transport(off)
+  let eff_ws = if new_ws.length() > 0 { new_ws } else { "ws-default" }
+  let eff_st = if new_station.length() > 0 { new_station } else { "st-local" }
+  let prev_email = self.events.viewer_email
+  let prev_selves = self.events.viewer_selves
+  self.workspace = eff_ws
+  self.station = eff_st
+  self.md_store.set_station(eff_st)
+  self.local_outbox.set_station(eff_st)
+  self.router.workspace = eff_ws
+  let next_events = StationEvents::new(eff_ws, eff_st, self.db, self.outbox, off)
+  if !self.membership.is_unauthenticated() && prev_email.length() > 0 {
+    next_events.set_viewer_email(prev_email)
+    next_events.set_viewer_selves(prev_selves)
+  }
+  let next_sync = SyncScheduler::new(eff_ws, eff_st, next_events, off)
+  self.events = next_events
+  self.sync = next_sync
+  self.wire_station_hooks(eff_st, next_events, next_sync)
+  self.auth.ensure_workspace(eff_ws)
+}
+
 /// Atomically switch ALL DB holders (`self.db`, `md_store`, `router`, `events`, `local_outbox`,
 /// `composers`, `membership`) from unauthenticated startup (`:memory:`) to `sub`'s dedicated SQLite DB.
 /// Refuses switching if already bound to a different account (`account_sub_mismatch`).
@@ -1600,6 +1635,8 @@ pub fn ClientCore::switch_account_db(
   host_purges_shared : Bool = false,
   host_purges_read : Option[HostStorageRead] = None,
   emit_auth_boundary : Bool = true,
+  target_workspace : Option[String] = None,
+  target_station : Option[String] = None,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1662,6 +1699,16 @@ pub fn ClientCore::switch_account_db(
     Ok(_) => ()
   }
   let _ = self.retry_pending_purges(emit_boundary=emit_auth_boundary)
+  let next_ws = match target_workspace {
+    Some(w) => if w.length() > 0 { w } else { "ws-default" }
+    None => self.workspace
+  }
+  let next_st = match target_station {
+    Some(s) => if s.length() > 0 { s } else { "st-local" }
+    None => self.station
+  }
+  self.rebind_default_station(next_st, next_ws)
+  self.outbox.clear()
   self.restore_lock_state()
   self.restore_notify_state()
   self.viewer_role = match self.membership.role_of(self.workspace) {
@@ -1676,8 +1723,9 @@ pub fn ClientCore::switch_account_db(
 
 /// Atomically transition ALL DB holders back to a clean unauthenticated `:memory:` DB
 /// (e.g. when the last signed-in account is permanently removed on 401 refresh failure).
-/// Clears `db_account_sub`, stops all station streams, discards all outbound frames and
-/// account-scoped registries, and leaves the runtime ready for a fresh same-process sign-in!
+/// Clears `db_account_sub`, stops all station streams, rebinds default station/workspace to
+/// `("st-local", "ws-default")`, discards all outbound frames and account-scoped registries,
+/// and leaves the runtime ready for a fresh same-process sign-in!
 pub fn ClientCore::switch_to_unauthenticated_db(self : ClientCore, new_mem_db : sql::Sql) -> Unit {
   self.events.stop()
   self.events.reset_state()
@@ -1715,11 +1763,12 @@ pub fn ClientCore::switch_to_unauthenticated_db(self : ClientCore, new_mem_db : 
   self.clear_account_scoped_runtime_state()
   self.viewer_sub = ""
   self.viewer_role = "member"
-  self.workspace = "ws-default"
 
   self.db_account_sub = None
   self.membership.reset_for_db_switch()
   self.membership.set_unauthenticated(true)
+  self.rebind_default_station("st-local", "ws-default")
+  self.outbox.clear()
   let _ = self.auth.bump_all()
 }
 
@@ -7102,6 +7151,12 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         if acct.length() == 0 {
           return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "empty account" }))
         }
+        if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+            code: "account_sub_mismatch",
+            message: "account switch requires reopening the target account database",
+          }))
+        }
         if self.auth_store.accounts.length() > 0 {
           // Resolve by `sub` or `email` against signed-in accounts; refuse unknown accounts without writing `active_account`.
           let mut found_account = false
@@ -7119,18 +7174,22 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           if !found_account {
             return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "account not found: " + acct }))
           }
-          // Multi-account SQLite DB re-open is not yet wired: refuse cross-account DB switch honestly
-          // without mutating `active_sub`, `viewer_sub`, or `active_account` (preventing cross-account data mix!).
+          // Strictly require `self.db_account_sub == Some(target_sub)` (NEVER bind `:memory:` or a mismatched DB!).
           match self.db_account_sub {
             Some(open_sub) => {
               if open_sub != target_sub {
                 return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
-                  code: "unsupported",
-                  message: "multi-account db switch not yet wired",
+                  code: "account_sub_mismatch",
+                  message: "account switch requires reopening the target account database",
                 }))
               }
             }
-            None => ()
+            None => {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+                code: "account_sub_mismatch",
+                message: "account switch requires reopening the target account database",
+              }))
+            }
           }
           match self.auth_store.switch_account(target_sub) {
             Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: msg }))
@@ -7179,12 +7238,17 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             Some(open_sub) => {
               if open_sub != resolved_sub {
                 return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
-                  code: "unsupported",
-                  message: "multi-account db switch not yet wired",
+                  code: "account_sub_mismatch",
+                  message: "account switch requires reopening the target account database",
                 }))
               }
             }
-            None => ()
+            None => {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+                code: "account_sub_mismatch",
+                message: "account switch requires reopening the target account database",
+              }))
+            }
           }
         }
         return self.router.handle(req)

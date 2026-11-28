@@ -1040,7 +1040,7 @@ struct KeptSub {
 pub struct Slice1Router {
   pub mut db : sql::Sql
   pub md_store : store::MdStore
-  pub workspace : String
+  pub mut workspace : String
   subs : Map[Int64, ActiveSub]
   sub_ids : Array[Int64]
   kept : Map[String, KeptSub]
