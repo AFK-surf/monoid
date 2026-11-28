@@ -2543,70 +2543,19 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     }
   }
 
-  // ---- Test 1A: REAL `EdgeMuxHub::from_transport` + REAL `stop_all_on_shutdown_with` for Spawning + Connecting (happy path -> true) ----
+  // ---- Test 1A: Unified `stop_all_on_shutdown_with` for Spawning + Connecting via verified peer-PID send (happy path -> true) ----
   let mem_a = station_ops::MemFs::new()
   let ops_a = mem_a.ops()
-  let events_a : Array[host_shim::HostEvent] = []
-  let mut ev_idx_a = 0
   let mut now_a = 1000L
-  let mut next_sid_a = 500L
-  let mut open_calls_a = 0
-  let mut write_calls_a = 0
-  let mut close_calls_a = 0
-  let written_payloads_a : Array[String] = []
+  let mut verified_sends_a = 0
   let mut spawn_dead_a = false
   let mut conn_dead_a = false
-  let sid_is_spawn : Map[Int64, Bool] = Map::new()
   let tr_a = builders_core::MuxTransport::{
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       now_a = now_a + 25L
-      if ev_idx_a < events_a.length() {
-        let ev = events_a[ev_idx_a]
-        ev_idx_a = ev_idx_a + 1
-        Some(ev)
-      } else {
-        None
-      }
+      None
     },
-    call_async: fn(id : Int64, op : String, json_str : String, payload : Option[Bytes]) -> Unit {
-      if op == "unix.open" {
-        open_calls_a = open_calls_a + 1
-        let sid = next_sid_a
-        next_sid_a = next_sid_a + 1L
-        sid_is_spawn.set(sid, json_str.contains("r-sp-a.sock"))
-        let res_json = "{\"id\":" + sid.to_string() + "}"
-        events_a.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: res_json, bytes: None }))
-      } else if op == "tcp.write" {
-        write_calls_a = write_calls_a + 1
-        match payload {
-          Some(b) => {
-            let txt = b.to_string()
-            written_payloads_a.push(txt)
-            // Verify real attach + signal TERM group:true + done framing!
-            assert_true(txt.contains("\"op\":\"attach\""), "shutdown tcp.write must include attach")
-            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "shutdown tcp.write must include TERM group:true")
-            assert_true(txt.contains("\"op\":\"done\""), "shutdown tcp.write must include done for pre-delivery runner")
-          }
-          None => panic("expected tcp.write payload")
-        }
-        // Mark corresponding runner dead upon receiving TERM+done!
-        if json_str.contains("500") {
-          match sid_is_spawn.get(500L) {
-            Some(true) => spawn_dead_a = true
-            _ => conn_dead_a = true
-          }
-        }
-        if json_str.contains("501") {
-          match sid_is_spawn.get(501L) {
-            Some(true) => spawn_dead_a = true
-            _ => conn_dead_a = true
-          }
-        }
-        events_a.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
-      } else if op == "tcp.close" {
-        close_calls_a = close_calls_a + 1
-      }
-    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
@@ -2644,7 +2593,7 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   }
   let child_a = station_sys::ChildProcess::{ handle: 0L, pid: 4601 }
   let sp_sess_a = make_sess(401, "s-sp-a", "r-sp-a", 4601, LiveRunnerPhase::Spawning(8001L, child_a, Bytes::new(0), Bytes::new(0), 99999L), true)
-  let cn_sess_a = make_sess(402, "s-cn-a", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), false)
+  let cn_sess_a = make_sess(402, "s-cn-a", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true)
   mgr_a.sessions.set("s-sp-a", sp_sess_a)
   mgr_a.sessions.set("s-cn-a", cn_sess_a)
   let mut closed_child_count_a = 0
@@ -2672,41 +2621,34 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
         RunnerFileProbe::ConfirmedAbsent
       }
     },
+    runner_sock_send_verified_fn=fn(sock, pid, payload, _to) -> Int {
+      let txt = payload.to_string()
+      assert_true(txt.contains("\"op\":\"attach\""), "shutdown send must include attach")
+      assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "shutdown send must include TERM group:true")
+      assert_true(txt.contains("\"op\":\"done\""), "shutdown send must include done when committed")
+      verified_sends_a = verified_sends_a + 1
+      if sock == "/tmp/r-sp-a.sock" && pid == 4601 { spawn_dead_a = true }
+      if sock == "/tmp/r-cn-a.sock" && pid == 4603 { conn_dead_a = true }
+      0
+    },
     close_child_fn=fn(_c) { closed_child_count_a = closed_child_count_a + 1 },
     max_wait_ms=500L,
-    flush_ms=50L,
   )
-  assert_true(ok_a, "R26 1A: real EdgeMuxHub stop_all_on_shutdown_with succeeds when Spawning+Connecting open, write TERM+done, and exit")
-  assert_true(open_calls_a == 2, "R26 1A: issued 2 unix.open calls (Spawning + Connecting)")
-  assert_true(write_calls_a == 2, "R26 1A: issued 2 tcp.write calls via EdgeMuxHub after ShellDone")
-  assert_true(close_calls_a == 2, "R26 1A: closed both sockets via EdgeMuxHub")
-  assert_true(closed_child_count_a == 1, "R26 1A: closed Spawning child handle")
-  assert_true(mgr_a.draining_stopping_ids.length() == 0, "R26 1A: both stop markers cleared after OS exit")
+  assert_true(ok_a, "R28 1A: unified shutdown succeeds when Spawning+Connecting pass verified send and exit")
+  assert_true(verified_sends_a == 2, "R28 1A: issued 2 kernel-verified sends (Spawning + Connecting)")
+  assert_true(closed_child_count_a == 1, "R28 1A: closed Spawning child handle")
+  assert_true(mgr_a.draining_stopping_ids.length() == 0, "R28 1A: both stop markers cleared after OS exit")
 
-  // ---- Test 1B: REAL `EdgeMuxHub` where `Connecting` stays alive despite `tcp.write` ack -> MUST return false & keep marker ----
+  // ---- Test 1B: `Connecting` stays alive despite verified send returning 0 -> MUST return false & keep marker ----
   let mem_b = station_ops::MemFs::new()
   let ops_b = mem_b.ops()
-  let events_b : Array[host_shim::HostEvent] = []
-  let mut ev_idx_b = 0
   let mut now_b = 1000L
   let tr_b = builders_core::MuxTransport::{
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       now_b = now_b + 50L
-      if ev_idx_b < events_b.length() {
-        let ev = events_b[ev_idx_b]
-        ev_idx_b = ev_idx_b + 1
-        Some(ev)
-      } else {
-        None
-      }
+      None
     },
-    call_async: fn(id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
-      if op == "unix.open" {
-        events_b.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":600}", bytes: None }))
-      } else if op == "tcp.write" {
-        events_b.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
-      }
-    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
@@ -2728,49 +2670,26 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     now_ms_fn=fn() -> Int64 { now_b },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
     probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { 0 },
     close_child_fn=fn(_c) {},
     max_wait_ms=200L,
-    flush_ms=50L,
   )
-  assert_true(!ok_b, "R26 1B: Connecting runner still alive after tcp.write ack MUST return false (exit code 1)")
-  assert_true(mgr_b.draining_stopping_ids.length() == 1, "R26 1B: unconfirmed Connecting stop marker preserved")
-  assert_true(ops_b.read_text("/data/run/whole-live-runners.json").is_ok(), "R26 1B: unconfirmed marker persisted to disk")
+  assert_true(!ok_b, "R28 1B: Connecting runner still alive after verified send MUST return false (exit code 1)")
+  assert_true(mgr_b.draining_stopping_ids.length() == 1, "R28 1B: unconfirmed Connecting stop marker preserved")
+  assert_true(ops_b.read_text("/data/run/whole-live-runners.json").is_ok(), "R28 1B: unconfirmed marker persisted to disk")
 
-  // ---- Test 1C-i (R27 P1-1): Connecting with active turn + SQLite commit SUCCEEDS -> sends `done` & returns true ----
+  // ---- Test 1C-i (R27/R28 P1-1): Connecting with active turn + SQLite commit SUCCEEDS -> sends `done` & returns true ----
   let mem_c1 = station_ops::MemFs::new()
   let ops_c1 = mem_c1.ops()
-  let events_c1 : Array[host_shim::HostEvent] = []
-  let mut ev_idx_c1 = 0
   let mut now_c1 = 1000L
   let mut c1_dead = false
   let mut c1_saw_done = false
   let tr_c1 = builders_core::MuxTransport::{
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       now_c1 = now_c1 + 25L
-      if ev_idx_c1 < events_c1.length() {
-        let ev = events_c1[ev_idx_c1]
-        ev_idx_c1 = ev_idx_c1 + 1
-        Some(ev)
-      } else {
-        None
-      }
+      None
     },
-    call_async: fn(id : Int64, op : String, _json_str : String, payload : Option[Bytes]) -> Unit {
-      if op == "unix.open" {
-        events_c1.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":610}", bytes: None }))
-      } else if op == "tcp.write" {
-        match payload {
-          Some(b) => {
-            let txt = b.to_string()
-            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\""), "1C-i must send TERM")
-            if txt.contains("\"op\":\"done\"") { c1_saw_done = true }
-          }
-          None => panic("expected payload")
-        }
-        c1_dead = true
-        events_c1.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
-      }
-    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
@@ -2799,47 +2718,30 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
       if c1_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
     },
     probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
+      let txt = b.to_string()
+      assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\""), "1C-i must send TERM")
+      if txt.contains("\"op\":\"done\"") { c1_saw_done = true }
+      c1_dead = true
+      0
+    },
     close_child_fn=fn(_c) {},
     max_wait_ms=300L,
-    flush_ms=50L,
   )
-  assert_true(ok_c1 && c1_saw_done, "R27 1C-i: committed active turn sends done, exits, and returns true")
-  assert_true(mgr_c1.draining_stopping_ids.length() == 0, "R27 1C-i: stop marker cleared")
+  assert_true(ok_c1 && c1_saw_done, "R28 1C-i: committed active turn sends done, exits, and returns true")
+  assert_true(mgr_c1.draining_stopping_ids.length() == 0, "R28 1C-i: stop marker cleared")
 
-  // ---- Test 1C-ii (R27 P1-1): Connecting with active turn + SQLite commit FAILS -> NO `done`, preserves pending_end_turns, returns false ----
+  // ---- Test 1C-ii (R27/R28 P1-1): Connecting with active turn + SQLite commit FAILS -> NO `done`, preserves pending_end_turns, returns false ----
   let mem_c2 = station_ops::MemFs::new()
   let ops_c2 = mem_c2.ops()
-  let events_c2 : Array[host_shim::HostEvent] = []
-  let mut ev_idx_c2 = 0
   let mut now_c2 = 1000L
   let mut c2_writes = 0
   let tr_c2 = builders_core::MuxTransport::{
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       now_c2 = now_c2 + 50L
-      if ev_idx_c2 < events_c2.length() {
-        let ev = events_c2[ev_idx_c2]
-        ev_idx_c2 = ev_idx_c2 + 1
-        Some(ev)
-      } else {
-        None
-      }
+      None
     },
-    call_async: fn(id : Int64, op : String, _json_str : String, payload : Option[Bytes]) -> Unit {
-      if op == "unix.open" {
-        events_c2.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":620}", bytes: None }))
-      } else if op == "tcp.write" {
-        c2_writes = c2_writes + 1
-        match payload {
-          Some(b) => {
-            let txt = b.to_string()
-            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "1C-ii must send TERM group:true")
-            assert_true(!txt.contains("\"op\":\"done\""), "R27 1C-ii: uncommitted turn MUST NEVER send done!")
-          }
-          None => panic("expected payload")
-        }
-        events_c2.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
-      }
-    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
@@ -2880,30 +2782,32 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     now_ms_fn=fn() -> Int64 { now_c2 },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
     probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
+      c2_writes = c2_writes + 1
+      let txt = b.to_string()
+      assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "1C-ii must send TERM group:true")
+      assert_true(!txt.contains("\"op\":\"done\""), "R28 1C-ii: uncommitted turn MUST NEVER send done!")
+      0
+    },
     close_child_fn=fn(_c) {},
     max_wait_ms=200L,
-    flush_ms=50L,
   )
-  assert_true(!ok_c2, "R27 1C-ii: failed turn commit MUST return false (exit code 1)")
-  assert_true(c2_writes == 1, "R27 1C-ii: sent 1 TERM-only tcp.write without done")
-  assert_true(mgr_c2.pending_end_turns.contains("s-c2"), "R27 1C-ii: uncommitted turn preserved in pending_end_turns")
-  assert_true(ops_c2.read_text("/data/run/whole-live-runners.json").is_ok(), "R27 1C-ii: pending_end_turns persisted to disk")
+  assert_true(!ok_c2, "R28 1C-ii: failed turn commit MUST return false (exit code 1)")
+  assert_true(c2_writes == 1, "R28 1C-ii: sent 1 TERM-only verified send without done")
+  assert_true(mgr_c2.pending_end_turns.contains("s-c2"), "R28 1C-ii: uncommitted turn preserved in pending_end_turns")
+  assert_true(ops_c2.read_text("/data/run/whole-live-runners.json").is_ok(), "R28 1C-ii: pending_end_turns persisted to disk")
 
-  // ---- Test 1D (R27 P1-2): Unknown OS identity for Spawning + Connecting -> 0 unix.open, 0 tcp.write, keeps markers, returns false ----
+  // ---- Test 1D (R27/R28 P1-2): Unknown OS identity for Spawning + Connecting -> 0 sends, keeps markers, returns false ----
   let mem_d = station_ops::MemFs::new()
   let ops_d = mem_d.ops()
   let mut now_d = 1000L
-  let mut d_opens = 0
-  let mut d_writes = 0
+  let mut d_sends = 0
   let tr_d = builders_core::MuxTransport::{
     wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
       now_d = now_d + 50L
       None
     },
-    call_async: fn(_id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
-      if op == "unix.open" { d_opens = d_opens + 1 }
-      if op == "tcp.write" { d_writes = d_writes + 1 }
-    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
@@ -2929,14 +2833,160 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
       if rid == "r-sp-a" { RunnerFileProbe::Live(sp_rinfo_a) } else { RunnerFileProbe::Live(cn_rinfo_a) }
     },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int {
+      d_sends = d_sends + 1
+      0
+    },
     close_child_fn=fn(_c) {},
     max_wait_ms=150L,
-    flush_ms=50L,
   )
-  assert_true(!ok_d, "R27 1D: Unknown OS identity MUST return false")
-  assert_true(d_opens == 0 && d_writes == 0, "R27 1D: Unknown OS identity MUST issue 0 unix.open and 0 tcp.write")
-  assert_true(mgr_d.draining_stopping_ids.length() == 2, "R27 1D: both stop markers preserved")
-  assert_true(ops_d.read_text("/data/run/whole-live-runners.json").is_ok(), "R27 1D: markers persisted to disk")
+  assert_true(!ok_d, "R28 1D: Unknown OS identity MUST return false")
+  assert_true(d_sends == 0, "R28 1D: Unknown OS identity MUST issue 0 verified sends")
+  assert_true(mgr_d.draining_stopping_ids.length() == 2, "R28 1D: both stop markers preserved")
+  assert_true(ops_d.read_text("/data/run/whole-live-runners.json").is_ok(), "R28 1D: markers persisted to disk")
+
+  // ---- Test 1E (R28 P1-1): Peer PID mismatch (-2) preserves stop marker and returns false ----
+  let mem_e = station_ops::MemFs::new()
+  let ops_e = mem_e.ops()
+  let mut now_e = 1000L
+  let tr_e = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_e = now_e + 50L
+      None
+    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_e },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_e = station_whole::EdgeMuxHub::from_transport(tr_e)
+  let mgr_e = LiveRunnerManager::new()
+  mgr_e.set_handover_state_path("/data/run/whole-live-runners.json")
+  let cn_sess_e = make_sess(431, "s-cn-e", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true)
+  mgr_e.sessions.set("s-cn-e", cn_sess_e)
+  let ok_e = mgr_e.stop_all_on_shutdown_with(
+    hub_e,
+    ops_e,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_e },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { -2 },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=150L,
+  )
+  assert_true(!ok_e, "R28 1E: peer PID mismatch (-2) MUST return false")
+  assert_true(mgr_e.draining_stopping_ids.length() == 1, "R28 1E: stop marker preserved on peer mismatch")
+  assert_true(ops_e.read_text("/data/run/whole-live-runners.json").is_ok(), "R28 1E: stop marker persisted on peer mismatch")
+
+  // ---- Test 1F (R28 P1-2): Connected `Ready` runner whose `tcp.write` returns Err or stays alive -> false; when exits -> true ----
+  let mem_f1 = station_ops::MemFs::new()
+  let ops_f1 = mem_f1.ops()
+  let events_f1 : Array[host_shim::HostEvent] = []
+  let mut ev_idx_f1 = 0
+  let mut now_f1 = 1000L
+  let tr_f1 = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_f1 = now_f1 + 50L
+      if ev_idx_f1 < events_f1.length() {
+        let ev = events_f1[ev_idx_f1]
+        ev_idx_f1 = ev_idx_f1 + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
+      if op == "tcp.write" {
+        events_f1.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "EPIPE", json: "", bytes: None }))
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_f1 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_f1 = station_whole::EdgeMuxHub::from_transport(tr_f1)
+  let mgr_f1 = LiveRunnerManager::new()
+  mgr_f1.set_handover_state_path("/data/run/whole-live-runners.json")
+  let ready_sess_f1 = make_sess(441, "s-rd-f1", "r-cn-a", 4603, LiveRunnerPhase::Ready(cn_rinfo_a, 700L), true)
+  mgr_f1.sessions.set("s-rd-f1", ready_sess_f1)
+  let ok_f1 = mgr_f1.stop_all_on_shutdown_with(
+    hub_f1,
+    ops_f1,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_f1 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { -1 },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=150L,
+  )
+  assert_true(!ok_f1, "R28 1F-fail: Ready runner with failed tcp.write & still alive MUST return false (exit code 1)")
+  assert_true(mgr_f1.draining_stopping_ids.length() == 1, "R28 1F-fail: Ready runner exact inst_id marker preserved")
+  assert_true(ops_f1.read_text("/data/run/whole-live-runners.json").is_ok(), "R28 1F-fail: Ready marker persisted to disk")
+
+  let mem_f2 = station_ops::MemFs::new()
+  let ops_f2 = mem_f2.ops()
+  let events_f2 : Array[host_shim::HostEvent] = []
+  let mut ev_idx_f2 = 0
+  let mut now_f2 = 1000L
+  let mut f2_dead = false
+  let tr_f2 = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_f2 = now_f2 + 25L
+      if ev_idx_f2 < events_f2.length() {
+        let ev = events_f2[ev_idx_f2]
+        ev_idx_f2 = ev_idx_f2 + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
+      if op == "tcp.write" {
+        f2_dead = true
+        events_f2.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_f2 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_f2 = station_whole::EdgeMuxHub::from_transport(tr_f2)
+  let mgr_f2 = LiveRunnerManager::new()
+  mgr_f2.set_handover_state_path("/data/run/whole-live-runners.json")
+  let ready_sess_f2 = make_sess(442, "s-rd-f2", "r-cn-a", 4603, LiveRunnerPhase::Ready(cn_rinfo_a, 701L), true)
+  mgr_f2.sessions.set("s-rd-f2", ready_sess_f2)
+  let ok_f2 = mgr_f2.stop_all_on_shutdown_with(
+    hub_f2,
+    ops_f2,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_f2 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if f2_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { 0 },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+  )
+  assert_true(ok_f2, "R28 1F-ok: Ready runner with tcp.write ack + OS exit clears marker and returns true")
+  assert_true(mgr_f2.draining_stopping_ids.length() == 0, "R28 1F-ok: Ready stop marker cleared after OS exit")
 
   // ---- Test 2: REAL `register_adopted_runner_with` + REAL `ShellMux` single stop-owner guard ----
   let mut adopt_opens = 0

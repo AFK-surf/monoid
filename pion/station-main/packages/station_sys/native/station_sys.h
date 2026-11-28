@@ -347,6 +347,20 @@ int32_t sts_clone_file(const char *src, const char *dst, int32_t excl);
 int32_t sts_clone_file_only(const char *src, const char *dst, int32_t excl);
 int32_t sts_clone_tree(const char *src_dir, const char *dst_dir);
 
+// Connect to a local `stillfail-runner` Unix socket / Windows named pipe, verify the connected
+// peer's OS kernel PID (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS, `GetNamedPipeServerProcessId`
+// on Windows) equals `expected_pid`, and ONLY if equal write all `len` bytes within `timeout_ms`.
+// Returns:
+//   0  peer verified == `expected_pid` and all `len` bytes written,
+//  -2  peer identity mismatch or unverifiable (0 bytes written!),
+//  -1  invalid arguments, connect error, write error, or timeout.
+int32_t sts_runner_sock_send_verified(
+    const char *sock_path,
+    int32_t expected_pid,
+    const uint8_t *data,
+    int64_t len,
+    int32_t timeout_ms);
+
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
 

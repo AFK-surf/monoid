@@ -66,6 +66,7 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
@@ -85,7 +86,6 @@
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
-#include <sys/un.h>
 #include <util.h>
 #else
 #include <pty.h>
@@ -10282,6 +10282,182 @@ int32_t sts_exec_replace(
     fprintf(stderr, "stillfail-station-pion: execv(%s) failed: %s\n", program, strerror(err));
     free(argv);
     return 127;
+#endif
+}
+
+int32_t sts_runner_sock_send_verified(
+    const char *sock_path,
+    int32_t expected_pid,
+    const uint8_t *data,
+    int64_t len,
+    int32_t timeout_ms) {
+    if (sock_path == NULL || sock_path[0] == '\0' || expected_pid <= 1 || data == NULL || len <= 0) {
+        return -1;
+    }
+    if (timeout_ms <= 0) {
+        timeout_ms = 200;
+    }
+#ifdef _WIN32
+    (void)timeout_ms;
+    wchar_t *wpath = utf8_to_wide(sock_path);
+    if (wpath == NULL) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    ULONG server_pid = 0;
+    if (!GetNamedPipeServerProcessId(h, &server_pid) || (int32_t)server_pid != expected_pid) {
+        CloseHandle(h);
+        return -2;
+    }
+    int64_t off = 0;
+    while (off < len) {
+        DWORD chunk = (len - off > 65536) ? 65536U : (DWORD)(len - off);
+        DWORD written = 0;
+        if (!WriteFile(h, data + off, chunk, &written, NULL) || written == 0) {
+            CloseHandle(h);
+            return -1;
+        }
+        off += (int64_t)written;
+    }
+    (void)FlushFileBuffers(h);
+    CloseHandle(h);
+    return 0;
+#else
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    size_t plen = strlen(sock_path);
+    if (plen >= sizeof(addr.sun_path)) {
+        return -1;
+    }
+    memcpy(addr.sun_path, sock_path, plen + 1);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close(fd);
+        return -1;
+    }
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+#ifdef __APPLE__
+    int one = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, (socklen_t)sizeof(one));
+#endif
+
+    struct timespec ts_start;
+    memset(&ts_start, 0, sizeof(ts_start));
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    int64_t start_ms = (int64_t)ts_start.tv_sec * 1000LL + (int64_t)(ts_start.tv_nsec / 1000000L);
+    int64_t deadline_ms = start_ms + (int64_t)timeout_ms;
+
+    if (connect(fd, (struct sockaddr *)&addr, (socklen_t)sizeof(addr)) != 0) {
+        if (errno != EINPROGRESS && errno != EWOULDBLOCK) {
+            close(fd);
+            return -1;
+        }
+        for (;;) {
+            struct timespec ts_now;
+            (void)clock_gettime(CLOCK_MONOTONIC, &ts_now);
+            int64_t now_ms = (int64_t)ts_now.tv_sec * 1000LL + (int64_t)(ts_now.tv_nsec / 1000000L);
+            int64_t rem = deadline_ms - now_ms;
+            if (rem <= 0) {
+                close(fd);
+                return -1;
+            }
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            int prc = poll(&pfd, 1, (int)(rem > 2147483647LL ? 2147483647LL : rem));
+            if (prc < 0) {
+                if (errno == EINTR) continue;
+                close(fd);
+                return -1;
+            }
+            if (prc == 0) {
+                close(fd);
+                return -1;
+            }
+            int so_err = 0;
+            socklen_t slen = (socklen_t)sizeof(so_err);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &slen) != 0 || so_err != 0) {
+                close(fd);
+                return -1;
+            }
+            break;
+        }
+    }
+
+#if defined(__linux__)
+    struct ucred cred;
+    socklen_t clen = (socklen_t)sizeof(cred);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) != 0
+        || clen < (socklen_t)sizeof(cred)
+        || (int32_t)cred.pid != expected_pid) {
+        close(fd);
+        return -2;
+    }
+#elif defined(__APPLE__)
+    pid_t peer_pid = 0;
+    socklen_t pidlen = (socklen_t)sizeof(peer_pid);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &peer_pid, &pidlen) != 0
+        || pidlen < (socklen_t)sizeof(peer_pid)
+        || (int32_t)peer_pid != expected_pid) {
+        close(fd);
+        return -2;
+    }
+#else
+    close(fd);
+    return -2;
+#endif
+
+    int64_t off = 0;
+    while (off < len) {
+#ifdef MSG_NOSIGNAL
+        ssize_t n = send(fd, data + off, (size_t)(len - off), MSG_NOSIGNAL);
+#else
+        ssize_t n = send(fd, data + off, (size_t)(len - off), 0);
+#endif
+        if (n > 0) {
+            off += (int64_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct timespec ts_now;
+            (void)clock_gettime(CLOCK_MONOTONIC, &ts_now);
+            int64_t now_ms = (int64_t)ts_now.tv_sec * 1000LL + (int64_t)(ts_now.tv_nsec / 1000000L);
+            int64_t rem = deadline_ms - now_ms;
+            if (rem <= 0) {
+                close(fd);
+                return -1;
+            }
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            int prc = poll(&pfd, 1, (int)(rem > 2147483647LL ? 2147483647LL : rem));
+            if (prc <= 0) {
+                if (prc < 0 && errno == EINTR) continue;
+                close(fd);
+                return -1;
+            }
+            continue;
+        }
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
 #endif
 }
 

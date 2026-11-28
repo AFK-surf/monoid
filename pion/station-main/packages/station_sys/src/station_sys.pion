@@ -115,6 +115,7 @@ extern "C" fn sts_same_cloneable_volume(dir_a : Ptr, dir_b : Ptr) -> Int
 extern "C" fn sts_clone_file(src : Ptr, dst : Ptr, excl : Int) -> Int
 extern "C" fn sts_clone_file_only(src : Ptr, dst : Ptr, excl : Int) -> Int
 extern "C" fn sts_clone_tree(src_dir : Ptr, dst_dir : Ptr) -> Int
+extern "C" fn sts_runner_sock_send_verified(sock_path : Ptr, expected_pid : Int, data : Ptr, len : Int64, timeout_ms : Int) -> Int
 
 extern "C" fn sts_peer_process(fd : Int, out_len : Ptr) -> Ptr
 extern "C" fn sts_process_usage(pids : Ptr, count : Int, out_len : Ptr) -> Ptr
@@ -1743,4 +1744,15 @@ pub fn clone_tree(src_dir : String, dst_dir : String) -> Result[Unit, Int] {
   } else {
     Err(rc)
   }
+}
+
+/// R28: Connect to a `stillfail-runner` Unix socket / Windows named pipe, verify the connected
+/// peer's OS kernel PID (`SO_PEERCRED` / `LOCAL_PEERPID` / `GetNamedPipeServerProcessId`) equals
+/// `expected_pid`, and ONLY if equal write `payload` within `timeout_ms`.
+/// Returns `0` (verified + written), `-2` (peer mismatch, 0 bytes written), or `-1` (connect/write error).
+pub fn runner_sock_send_verified(sock_path : String, expected_pid : Int, payload : Bytes, timeout_ms : Int) -> Int {
+  let rc = sts_runner_sock_send_verified(sock_path.as_cstr(), expected_pid, bytes_data_ptr(payload), payload.length().to_int64(), timeout_ms)
+  let _ = sock_path.length()
+  let _ = payload.length()
+  rc
 }

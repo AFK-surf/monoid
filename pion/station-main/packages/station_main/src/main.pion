@@ -461,15 +461,40 @@ fn run_smoke_runner(runner_bin : String) -> Int {
           if !mgr.is_draining_stop_target(iid, pinfo.id, pinfo.runner_pid, pinfo.started_at) {
             fail_msg = "is_draining_stop_target did not match spawn: marker"
           } else {
-            // Connect over `<rid>.sock`, send `attach` + `signal TERM group:true` + `done`!
-            let esrch_seen = stop_via_sock(pinfo.socket, "TERM")
-            if !esrch_seen {
-              // R23 P2: Escalate over verified `<rid>.sock` (`KILL group:true`), NEVER bare-PID `proc_kill`!
-              let _ = stop_via_sock(pinfo.socket, "KILL")
-              fail_msg = "runner did not exit after attach+TERM+done"
-            } else if !mgr.sweep_draining_stop_markers(host_shim::wall_ms())
-            || mgr.has_pending_draining_stop_for_session("s-smoke-runner") {
-              fail_msg = "sweep_draining_stop_markers did not clear marker after real OS ESRCH"
+            // R28: Verify kernel peer PID enforcement (`SO_PEERCRED`):
+            // 1. Wrong expected_pid (`runner_pid + 1`) MUST return -2 (0 bytes written, runner stays alive!).
+            let stop_bytes = (
+              station_drivers::encode_runner_attach()
+              + station_drivers::encode_runner_signal("TERM", true)
+              + station_drivers::encode_runner_done()
+            ).to_bytes()
+            let wrong_rc = station_sys::runner_sock_send_verified(pinfo.socket, pinfo.runner_pid + 1, stop_bytes, 1000)
+            if wrong_rc != -2 {
+              fail_msg = "runner_sock_send_verified(wrong_pid) expected -2, got " + wrong_rc.to_string()
+            } else if station_sys::proc_kill(spawn_pid, station_sys::SIG_PROBE, false) != 0 {
+              fail_msg = "runner died after rejected wrong-PID send!"
+            } else {
+              // 2. Exact expected_pid (`runner_pid`) MUST return 0 and cleanly terminate runner + child group!
+              let ok_rc = station_sys::runner_sock_send_verified(pinfo.socket, pinfo.runner_pid, stop_bytes, 1000)
+              if ok_rc != 0 {
+                fail_msg = "runner_sock_send_verified(exact_pid) expected 0, got " + ok_rc.to_string()
+              } else {
+                let exit_deadline = host_shim::now_ms() + 4000L
+                let mut esrch_seen = false
+                while host_shim::now_ms() < exit_deadline && !esrch_seen {
+                  let _ = host_shim::wait(50L)
+                  if station_sys::proc_kill_is_esrch(station_sys::proc_kill(spawn_pid, station_sys::SIG_PROBE, false)) {
+                    esrch_seen = true
+                  }
+                }
+                if !esrch_seen {
+                  let _ = stop_via_sock(pinfo.socket, "KILL")
+                  fail_msg = "runner did not exit after verified attach+TERM+done"
+                } else if !mgr.sweep_draining_stop_markers(host_shim::wall_ms())
+                || mgr.has_pending_draining_stop_for_session("s-smoke-runner") {
+                  fail_msg = "sweep_draining_stop_markers did not clear marker after real OS ESRCH"
+                }
+              }
             }
           }
         }
