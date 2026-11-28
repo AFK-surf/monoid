@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd9bea710](https://github.com/AFK-surf/monoid/commit/cd9bea710ec3962cc8e130f086d62c290593dad6) fix(cli): guard trailing argument slices in bin/st | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [a394ec41d](https://github.com/AFK-surf/monoid/commit/a394ec41db47ed51d1a5269f6d977c6d6e44728b) perf(core): combine said passes and index mine seq | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [e6de3d544](https://github.com/AFK-surf/monoid/commit/e6de3d544978c607e183a6447b40f60adad578b1) ci(scripts): include bin TypeScript files in ts_ro | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [546256e51](https://github.com/AFK-surf/monoid/commit/546256e51f492d8fd08fd4a8d3778407924acb7f) perf(cloud): batch feedbackOf queries and prefilte | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4ac7045e1](https://github.com/AFK-surf/monoid/commit/4ac7045e15b94f8570e1a881c394919358e71de1) fix(ci): skip remote release and store probes in c | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.47 | 125.35 |
 | [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.53 | 135.34 |
 | [3c16fe69f](https://github.com/AFK-surf/monoid/commit/3c16fe69fe9da64cded849b724ae6717161a0d43) fix(ui,mbui): add dock_first sheet hint and omit s | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.76 | 137.03 |
-| [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd9bea710](https://github.com/AFK-surf/monoid/commit/cd9bea710ec3962cc8e130f086d62c290593dad6) fix(cli): guard trailing argument slices in bin/st | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
 | [a394ec41d](https://github.com/AFK-surf/monoid/commit/a394ec41db47ed51d1a5269f6d977c6d6e44728b) perf(core): combine said passes and index mine seq | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
 | [e6de3d544](https://github.com/AFK-surf/monoid/commit/e6de3d544978c607e183a6447b40f60adad578b1) ci(scripts): include bin TypeScript files in ts_ro | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.66 |
 | [546256e51](https://github.com/AFK-surf/monoid/commit/546256e51f492d8fd08fd4a8d3778407924acb7f) perf(cloud): batch feedbackOf queries and prefilte | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4ac7045e1](https://github.com/AFK-surf/monoid/commit/4ac7045e15b94f8570e1a881c394919358e71de1) fix(ci): skip remote release and store probes in c | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.53 |
 | [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.79 |
 | [3c16fe69f](https://github.com/AFK-surf/monoid/commit/3c16fe69fe9da64cded849b724ae6717161a0d43) fix(ui,mbui): add dock_first sheet hint and omit s | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
-| [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.59 |
