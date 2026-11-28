@@ -1837,3 +1837,36 @@ test "W17C-1 R8 canonical legacy cross-ws symlink & parent/child collision check
     "ELOOP on other workspace path must fail closed",
   )
 }
+
+test "W17C-1 R10 surface_for_described slack:<team> & symmetric is_runner_live_strict" {
+  // 1. Peer Slack `surface_for_described` (`slack:<team>` vs fallback `slack:<cid>` vs other kinds)
+  let desc_with_team = base_codec::json_obj([
+    ("kind", base_codec::json_str("slack")),
+    ("team", base_codec::json_str("T_TEAM_R10")),
+  ])
+  assert_str_eq(surface_for_described("slack", desc_with_team, "c-slack-r10"), "slack:T_TEAM_R10")
+  let desc_no_team = base_codec::json_obj([("kind", base_codec::json_str("slack"))])
+  assert_str_eq(surface_for_described("slack", desc_no_team, "c-slack-r10"), "slack:c-slack-r10")
+  let desc_feishu = base_codec::json_obj([("kind", base_codec::json_str("feishu"))])
+  assert_str_eq(surface_for_described("feishu", desc_feishu, "c-fs-1"), "feishu:c-fs-1")
+
+  // 2. Symmetric `is_runner_live_strict` rejects both +6s and -6s skew
+  let rinfo = station_drivers::RunnerInfo::{
+    id: "r1",
+    pid: 100,
+    pgid: 100,
+    runner_pid: 99,
+    program: "",
+    args: [],
+    socket: "/tmp/s",
+    started_at: 100000L,
+    keeps: false,
+    pty: false,
+    cwd: None,
+  }
+  assert_true(station_drivers::is_runner_live_strict(rinfo, true, Some(104000L)), "+4s allowed")
+  assert_true(station_drivers::is_runner_live_strict(rinfo, true, Some(96000L)), "-4s allowed")
+  assert_true(!station_drivers::is_runner_live_strict(rinfo, true, Some(106000L)), "+6s rejected")
+  assert_true(!station_drivers::is_runner_live_strict(rinfo, true, Some(94000L)), "-6s rejected")
+  assert_true(!station_drivers::is_runner_live_strict(rinfo, true, None), "None rejected")
+}

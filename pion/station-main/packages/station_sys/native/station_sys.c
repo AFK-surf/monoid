@@ -1852,6 +1852,12 @@ void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {
     return NULL;
 }
 
+int32_t sts_is_child_pgroup_leader(int32_t child_pid, int32_t expected_ppid, int32_t expected_pgid) {
+    (void)child_pid;
+    (void)expected_ppid;
+    (void)expected_pgid;
+    return 0;
+}
 void *sts_boot_id(int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     return NULL;
@@ -6318,6 +6324,35 @@ void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {
 #endif
 }
 
+int32_t sts_is_child_pgroup_leader(int32_t child_pid, int32_t expected_ppid, int32_t expected_pgid) {
+    if (child_pid <= 1 || expected_ppid <= 1 || expected_pgid <= 1 || child_pid != expected_pgid) {
+        return 0;
+    }
+#ifdef __APPLE__
+    struct proc_bsdinfo info;
+    memset(&info, 0, sizeof(info));
+    int got = proc_pidinfo((int)child_pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info));
+    if (got <= 0) return 0;
+    return ((int32_t)info.pbi_ppid == expected_ppid && (int32_t)info.pbi_pgid == expected_pgid) ? 1 : 0;
+#else
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)child_pid);
+    FILE *f = fopen(path, "r");
+    if (f == NULL) return 0;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return 0;
+    buf[n] = '\0';
+    char *rp = strrchr(buf, ')');
+    if (rp == NULL || rp[1] != ' ') return 0;
+    int ppid = 0;
+    int pgrp = 0;
+    if (sscanf(rp + 2, "%*c %d %d", &ppid, &pgrp) != 2) return 0;
+    return (ppid == expected_ppid && pgrp == expected_pgid) ? 1 : 0;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // 3. POSIX Launcher Control Channel (fd e.g. fd 5; never touches fds 3/4)
 // ---------------------------------------------------------------------------
@@ -6729,7 +6764,8 @@ void *sts_realpath_err(const char *path, int64_t *out_len, int32_t *out_err) {
     if (path == NULL || path[0] == '\0') return NULL;
     char *resolved = realpath(path, NULL);
     if (resolved == NULL) {
-        if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
+        int e = errno;
+        if (out_err != NULL) *out_err = (e == ENOTDIR) ? -1 : sts_posix_map_errno(e);
         return NULL;
     }
     void *res = dup_bytes(resolved, strlen(resolved), out_len);

@@ -157,13 +157,20 @@ pub fn is_runner_live(info : RunnerInfo, pid_alive : Bool, os_start_time_ms : Op
 }
 
 /// Strict identity check used ONLY before sending fallback OS signals (`safe_kill_runner_info`):
-/// tight 5s slack and fail-closed (`None => false`) when OS start time is unavailable.
+/// tight symmetric 5s slack and fail-closed (`None => false`) when OS start time is unavailable.
 pub fn is_runner_live_strict(info : RunnerInfo, pid_alive : Bool, os_start_time_ms : Option[Int64]) -> Bool {
   if !pid_alive {
     return false
   }
   match os_start_time_ms {
-    Some(started) => started <= info.started_at + STRICT_KILL_SLACK_MS
+    Some(started) => {
+      let diff = if started >= info.started_at {
+        started - info.started_at
+      } else {
+        info.started_at - started
+      }
+      diff <= STRICT_KILL_SLACK_MS
+    }
     None => false
   }
 }

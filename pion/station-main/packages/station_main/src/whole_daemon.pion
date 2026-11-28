@@ -316,6 +316,21 @@ fn save_remote_connects_file(
   let _ = station_ops::write_private(ops_fs, path, body.to_bytes(), pid, 1, sep=sep)
 }
 
+/// Canonical external thread surface key shared by storage and `query_thread_moved_to`:
+/// Slack uses `slack:<team>` when `described.team` is present, otherwise `<kind>:<cid>`.
+pub fn surface_for_described(kind : String, described : base_codec::Json, cid : String) -> String {
+  let eff_kind = if kind.length() > 0 { kind } else { "slack" }
+  if eff_kind == "slack" {
+    let team = match base_codec::json_get(described, "team") {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+    if team.length() > 0 { "slack:" + team } else { "slack:" + cid }
+  } else {
+    eff_kind + ":" + cid
+  }
+}
+
 fn connect_meta_from_described(
   remote_id : String,
   described : base_codec::Json,
@@ -335,12 +350,7 @@ fn connect_meta_from_described(
     let w = get_s(described, "workspace")
     if w.length() > 0 { w } else { fallback_ws }
   }
-  let team = get_s(described, "team")
-  let surface = if kind == "slack" {
-    if team.length() > 0 { "slack:" + team } else { "slack:" + remote_id }
-  } else {
-    kind + ":" + remote_id
-  }
+  let surface = surface_for_described(kind, described, remote_id)
   let single = get_s(described, "mode") == "single-session"
   let require_mention = if !single {
     true
@@ -7404,10 +7414,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     // `hub.ts:801` `movedTo`, zero stale in-memory cache).
                     let moved_opt : Option[String] = match st.core.store.require_open() {
                       Ok(st_db) => {
-                        let desc_surf = match base_codec::json_get(desc, "kind") {
+                        let desc_kind = match base_codec::json_get(desc, "kind") {
                           Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "slack" }
                           _ => "slack"
                         }
+                        let desc_surf = surface_for_described(desc_kind, desc, remote_cid)
                         query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts, ws, st.core.config.home_workspace)
                       }
                       Err(_) => None
@@ -8456,14 +8467,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.handover_exported || !st.core.store.is_primary_open() {
             return Ok(())
           }
-          st.connects.stop()
-          if st.replica.kept_log.entries.length() > 0 {
-            let _ = st.replica.persist_kept_log()
-          }
           let ho_wall_ms = host_shim::wall_ms()
           match st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms) {
             Ok(_) => ()
             Err(e) => return Err(e)
+          }
+          st.connects.stop()
+          if st.replica.kept_log.entries.length() > 0 {
+            let _ = st.replica.persist_kept_log()
           }
           match st.core.export_handover(ho_wall_ms) {
             Ok(snap) => {

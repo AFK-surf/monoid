@@ -288,6 +288,20 @@ pub fn server_session_workspace_dir(
   station_whole::server_session_workspace_dir(data_dir, ws, session_key, sep)
 }
 
+/// Production OS `realpath` wrapper backed by `station_sys::realpath_err`, preserving real
+/// POSIX/Windows error semantics (`ENOENT` -> `FsErr::NotFound`, `EACCES`/`EPERM` -> `PermissionDenied`,
+/// `ELOOP`/`ENOTDIR`/IO -> `FsErr::Other`) instead of going through `client/shell` `fs.realpath`
+/// which collapses all errors to `null`.
+pub fn sys_realpath_checked(path : String) -> Result[String, station_ops::FsErr] {
+  match station_sys::realpath_err(path) {
+    Ok(resolved) => Ok(resolved)
+    Err(-2) => Err(station_ops::FsErr::NotFound)
+    Err(-3) => Err(station_ops::FsErr::PermissionDenied("EACCES"))
+    Err(-5) => Err(station_ops::FsErr::Other("ELOOP"))
+    Err(code) => Err(station_ops::FsErr::Other("realpath_err:" + code.to_string()))
+  }
+}
+
 /// Pure canonical cross-workspace collision check for a pre-existing legacy `row.workspace`:
 /// verifies `row_workspace` is a real non-symlink directory strictly inside `<data>/sessions/` and
 /// does NOT share, contain, or lie inside any canonicalized `other_ws_workspaces` entry (fail-closed).
@@ -297,13 +311,18 @@ pub fn verify_legacy_session_workspace_against(
   data_dir : String,
   other_ws_workspaces : Array[String],
   sep : String,
+  realpath_fn~ : Option[(String) -> Result[String, station_ops::FsErr]] = None,
 ) -> Option[String] {
+  let rp_fn = match realpath_fn {
+    Some(f) => f
+    None => ops_fs.realpath
+  }
   let trimmed = row_workspace.trim()
   if trimmed.length() == 0 || path_has_parent_traversal(trimmed) {
     return None
   }
   let sessions_root = nodepath::join(sep, [data_dir, "sessions"])
-  let canon_sessions = match canonicalize_with_existing_ancestor(ops_fs.realpath, sessions_root, sep) {
+  let canon_sessions = match canonicalize_with_existing_ancestor(rp_fn, sessions_root, sep) {
     Ok(c) => c
     Err(_) => return None
   }
@@ -314,7 +333,7 @@ pub fn verify_legacy_session_workspace_against(
   if meta.is_link || !meta.is_dir {
     return None
   }
-  let canon_ws = match (ops_fs.realpath)(trimmed) {
+  let canon_ws = match rp_fn(trimmed) {
     Ok(c) => c
     Err(_) => return None
   }
@@ -326,11 +345,11 @@ pub fn verify_legacy_session_workspace_against(
     if other_raw.length() == 0 {
       continue
     }
-    // R9 P0: Call `ops_fs.realpath(other_raw)` directly first; fall back to
+    // R9/R10 P0: Call `rp_fn(other_raw)` directly first; fall back to
     // `canonicalize_with_existing_ancestor` ONLY on `FsErr::NotFound`, failing closed on any other FsErr!
-    let other_canon_res : Result[String, String] = match (ops_fs.realpath)(other_raw) {
+    let other_canon_res : Result[String, String] = match rp_fn(other_raw) {
       Ok(c) => Ok(c)
-      Err(station_ops::FsErr::NotFound) => canonicalize_with_existing_ancestor(ops_fs.realpath, other_raw, sep)
+      Err(station_ops::FsErr::NotFound) => canonicalize_with_existing_ancestor(rp_fn, other_raw, sep)
       Err(e) => Err(station_ops::fs_err_msg(e))
     }
     match other_canon_res {
@@ -347,7 +366,9 @@ pub fn verify_legacy_session_workspace_against(
   Some(canon_ws)
 }
 
-/// Verifies a pre-existing legacy `row.workspace` against all other workspaces' sessions in SQLite.
+/// Verifies a pre-existing legacy `row.workspace` against all other workspaces' sessions in SQLite
+/// using real `sys_realpath_checked` (`station_sys::realpath_err`) so POSIX `EACCES`/`ELOOP`/`ENOTDIR`
+/// are never collapsed to `NotFound`.
 pub fn verify_legacy_session_workspace(
   st_opt : Option[station_store::Store],
   ops_fs : station_ops::OpsFs,
@@ -375,7 +396,14 @@ pub fn verify_legacy_session_workspace(
               _ => ()
             }
           }
-          verify_legacy_session_workspace_against(ops_fs, row_workspace, data_dir, others, sep)
+          verify_legacy_session_workspace_against(
+            ops_fs,
+            row_workspace,
+            data_dir,
+            others,
+            sep,
+            realpath_fn=Some(sys_realpath_checked),
+          )
         }
         Err(_) => None
       }
@@ -1581,7 +1609,9 @@ fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
   if !station_drivers::is_runner_live_strict(info, true, os_start) {
     return
   }
-  if info.pid > 1 && info.pgid == info.pid {
+  if info.pid > 1
+  && info.pgid == info.pid
+  && station_sys::is_child_pgroup_leader(info.pid, info.runner_pid, info.pgid) {
     if station_sys::proc_kill(info.pid, 0, false) == 0 {
       match station_sys::proc_start_time_ms(info.pid) {
         Some(child_start) => {
@@ -1912,7 +1942,7 @@ fn live_runner_verify_session_policy(
   )
   match resolve_session_launch_policy(
     live_cfg,
-    ctx.ops_fs.realpath,
+    sys_realpath_checked,
     row,
     rt_kind,
     core.config.home_workspace,
@@ -3200,7 +3230,7 @@ pub fn LiveRunnerManager::adopt_live_runner(
   } else {
     resolve_session_launch_policy(
       live_cfg,
-      ctx.ops_fs.realpath,
+      sys_realpath_checked,
       row,
       rt_kind,
       core.config.home_workspace,
@@ -3213,7 +3243,7 @@ pub fn LiveRunnerManager::adopt_live_runner(
   let runner_actual_cwd : Option[String] = match rinfo.cwd {
     Some(rc) => {
       if rc.trim().length() > 0 {
-        match canonicalize_with_existing_ancestor(ctx.ops_fs.realpath, rc.trim(), ctx.sep) {
+        match canonicalize_with_existing_ancestor(sys_realpath_checked, rc.trim(), ctx.sep) {
           Ok(c) => Some(c)
           Err(_) => Some(rc.trim())
         }
@@ -3760,7 +3790,7 @@ fn LiveRunnerManager::dispatch_prompt(
   )
   let policy = match resolve_session_launch_policy(
     live_cfg,
-    ctx.ops_fs.realpath,
+    sys_realpath_checked,
     row,
     rt_kind,
     core.config.home_workspace,
@@ -4326,9 +4356,16 @@ pub fn LiveRunnerManager::handle_role_done(
                 }
                 if usid >= 0L {
                   if sess.stopping || is_draining {
-                    // R5/R6/R8 P1-3: Send ONLY `signal TERM group:true` (NEVER `done` before `Exit` +
-                    // durable SQLite `endTurn` commit!) and enter `Stopping` waiting for runner Exit.
-                    let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_signal("TERM", true))
+                    // R10 P1-2: Send `attach` BEFORE `signal TERM group:true` so native
+                    // `stillfail-runner` registers this connection and pushes `Exit` promptly
+                    // (instead of waiting for the 5s KILL grace timeout), still omitting `done`
+                    // until `Exit` + durable SQLite `endTurn` commit.
+                    let _ = live_runner_send_sess(
+                      ctx,
+                      sess,
+                      usid,
+                      station_drivers::encode_runner_attach() + station_drivers::encode_runner_signal("TERM", true),
+                    )
                     // timer: 5s grace before KILL escalation while waiting for runner to stop child group
                     sess.phase = LiveRunnerPhase::Stopping(info, usid, now_ms + station_drivers::KILL_GRACE_MS, false)
                     if !is_draining {
@@ -5260,63 +5297,101 @@ pub fn LiveRunnerManager::prepare_handover(
   core : station_whole::WholeCore,
   wall_ms : Int64,
 ) -> Result[Unit, String] {
+  // R10 P1-4: First flush all manager-level `pending_end_turns`, `draining`, and active
+  // session `pending_end_turn` entries; fail handover immediately if any SQLite commit fails!
+  let mkeys = self.pending_end_turns.keys()
+  for mi in 0..<mkeys.length() {
+    match self.pending_end_turns.get(mkeys[mi]) {
+      Some(mpend) => live_runner_commit_manager_pending_end_turn(self, ctx, core, mpend)
+      None => ()
+    }
+  }
+  if self.pending_end_turns.length() > 0 {
+    return Err("handover failed: pending_end_turns SQLite flush incomplete")
+  }
+  let dcids = self.draining.keys()
+  for di in 0..<dcids.length() {
+    match self.draining.get(dcids[di]) {
+      Some(ds) => match ds.pending_end_turn {
+        Some(pend) => {
+          live_runner_commit_end_turn(self, ctx, core, ds, pend)
+          if ds.pending_end_turn is Some(_) {
+            return Err("handover failed: draining pending_end_turn SQLite commit failed for " + ds.session_key)
+          }
+        }
+        None => ()
+      }
+      None => ()
+    }
+  }
   let keys = self.sessions.keys()
   for i in 0..<keys.length() {
     let skey = keys[i]
     match self.sessions.get(skey) {
-      Some(sess) => match sess.phase {
-        LiveRunnerPhase::Exited | LiveRunnerPhase::Stopping(_, _, _, _) => ()
-        _ => {
-          let pre_delivery = match sess.phase {
-            LiveRunnerPhase::Spawning(_, _, _, _, _)
-            | LiveRunnerPhase::Connecting(_)
-            | LiveRunnerPhase::AcpInit(_, _)
-            | LiveRunnerPhase::AcpOpening(_, _)
-            | LiveRunnerPhase::CodexInit(_, _)
-            | LiveRunnerPhase::CodexOpening(_, _) => true
-            _ => sess.pending_prompt is Some(_) || sess.prompt_write_pending
+      Some(sess) => {
+        match sess.pending_end_turn {
+          Some(pend) => {
+            live_runner_commit_end_turn(self, ctx, core, sess, pend)
+            if sess.pending_end_turn is Some(_) {
+              return Err("handover failed: session pending_end_turn SQLite commit failed for " + skey)
+            }
           }
-          if pre_delivery && sess.current_turn_id is Some(tid) {
-            let st = match core.store.require_open() {
-              Ok(s) => s
-              Err(e) => {
-                let msg = "handover pre-delivery store not open for " + skey + ": " + e
-                ctx.log("[live-runner] " + msg)
-                return Err(msg)
-              }
+          None => ()
+        }
+        match sess.phase {
+          LiveRunnerPhase::Exited | LiveRunnerPhase::Stopping(_, _, _, _) => ()
+          _ => {
+            let pre_delivery = match sess.phase {
+              LiveRunnerPhase::Spawning(_, _, _, _, _)
+              | LiveRunnerPhase::Connecting(_)
+              | LiveRunnerPhase::AcpInit(_, _)
+              | LiveRunnerPhase::AcpOpening(_, _)
+              | LiveRunnerPhase::CodexInit(_, _)
+              | LiveRunnerPhase::CodexOpening(_, _) => true
+              _ => sess.pending_prompt is Some(_) || sess.prompt_write_pending
             }
-            match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-              match t.run(
-                "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
-                [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
-              ) {
-                Err(e) => return Err(e)
-                Ok(_) => ()
+            if pre_delivery && sess.current_turn_id is Some(tid) {
+              let st = match core.store.require_open() {
+                Ok(s) => s
+                Err(e) => {
+                  let msg = "handover pre-delivery store not open for " + skey + ": " + e
+                  ctx.log("[live-runner] " + msg)
+                  return Err(msg)
+                }
               }
-              match t.run(
-                "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
-                [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
-              ) {
-                Err(e) => return Err(e)
-                Ok(_) => ()
+              match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                match t.run(
+                  "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
+                  [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
+                ) {
+                  Err(e) => return Err(e)
+                  Ok(_) => ()
+                }
+                match t.run(
+                  "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+                  [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
+                ) {
+                  Err(e) => return Err(e)
+                  Ok(_) => ()
+                }
+                Ok(())
+              }) {
+                Ok(_) => {
+                  sess.current_turn_id = None
+                  let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                  actor.phase = station_sessions::ActorPhase::Idle
+                  actor.has_process = false
+                }
+                Err(e) => {
+                  let msg = "handover pre-delivery SQLite close failed for " + skey + ": " + e.message
+                  ctx.log("[live-runner] " + msg)
+                  return Err(msg)
+                }
               }
-              Ok(())
-            }) {
-              Ok(_) => {
-                sess.current_turn_id = None
-                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-                actor.phase = station_sessions::ActorPhase::Idle
-                actor.has_process = false
-              }
-              Err(e) => {
-                let msg = "handover pre-delivery SQLite close failed for " + skey + ": " + e.message
-                ctx.log("[live-runner] " + msg)
-                return Err(msg)
-              }
+            } else {
+              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+              actor.has_process = true
             }
-          } else {
-            let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-            actor.has_process = true
           }
         }
       }

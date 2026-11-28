@@ -1248,6 +1248,7 @@ pub struct ConnectsOsRuntime {
   group_pending_sse : Map[String, Array[station_connects::SseEvent]]
   group_inflight_gen : Map[String, Int64]
   group_stream_gen : Map[String, Int64]
+  group_read_paused : Map[String, Bool]
   pending_feishu_refresh : Map[Int64, String]
   pending_async_calls : Map[Int64, String]
   pending_feishu_catchup : Map[String, Bool]
@@ -1277,6 +1278,7 @@ pub fn ConnectsOsRuntime::new(
     group_pending_sse: Map::new(),
     group_inflight_gen: Map::new(),
     group_stream_gen: Map::new(),
+    group_read_paused: Map::new(),
     pending_feishu_refresh: Map::new(),
     pending_async_calls: Map::new(),
     pending_feishu_catchup: Map::new(),
@@ -1692,7 +1694,8 @@ pub fn ConnectsOsRuntime::start_connect(
         self.statuses.set(connect_id, station_connects::ConnectStatus::Error("invalid anchor_url"))
         return Err("disallowed Group anchor URL scheme: " + g.anchor_url)
       }
-      // Close any prior stream handle before opening a new one.
+      // Close any prior stream handle and advance generation before opening a new one.
+      let _ = self.reset_group_stream_state(connect_id)
       match self.group_sse_streams.get(connect_id) {
         Some(old_sid) => {
           self.group_sse_streams.remove(connect_id)
@@ -1757,6 +1760,7 @@ pub fn ConnectsOsRuntime::start_connect(
 
 pub fn ConnectsOsRuntime::stop_connect(self : ConnectsOsRuntime, connect_id : String) -> Unit {
   self.running_connects.remove(connect_id)
+  let _ = self.reset_group_stream_state(connect_id)
   self.group_utf8_decoders.remove(connect_id)
   match self.group_sse_streams.get(connect_id) {
     Some(sid) => {
@@ -2042,7 +2046,7 @@ fn ConnectsOsRuntime::dispatch_ws_frame(
   }
 }
 
-fn ConnectsOsRuntime::bump_group_stream_gen(self : ConnectsOsRuntime, connect_id : String) -> Int64 {
+fn ConnectsOsRuntime::reset_group_stream_state(self : ConnectsOsRuntime, connect_id : String) -> Int64 {
   let next_g = match self.group_stream_gen.get(connect_id) {
     Some(v) => v + 1L
     None => 1L
@@ -2050,7 +2054,18 @@ fn ConnectsOsRuntime::bump_group_stream_gen(self : ConnectsOsRuntime, connect_id
   self.group_stream_gen.set(connect_id, next_g)
   self.group_pending_sse.remove(connect_id)
   self.group_inflight_gen.remove(connect_id)
+  self.group_read_paused.remove(connect_id)
   next_g
+}
+
+fn ConnectsOsRuntime::has_group_backpressure(self : ConnectsOsRuntime, connect_id : String) -> Bool {
+  if self.group_inflight_gen.contains(connect_id) {
+    return true
+  }
+  match self.group_pending_sse.get(connect_id) {
+    Some(arr) => arr.length() > 0
+    None => false
+  }
 }
 
 fn ConnectsOsRuntime::on_group_sse_closed(
@@ -2059,7 +2074,7 @@ fn ConnectsOsRuntime::on_group_sse_closed(
   stream_id : Int,
   reason : String,
 ) -> Unit {
-  let _ = self.bump_group_stream_gen(connect_id)
+  let _ = self.reset_group_stream_state(connect_id)
   self.sse_stream_to_connect.remove(stream_id)
   self.group_sse_streams.remove(connect_id)
   self.group_utf8_decoders.remove(connect_id)
@@ -2142,7 +2157,11 @@ pub fn ConnectsOsRuntime::handle_mux_reply(
               let _ = self.feed_group_sse(connect_id, text, (self.bridge.now_fn)())
             }
             if self.is_connect_running(connect_id) {
-              let _ = self.arm_group_sse_read(stream_id)
+              if self.has_group_backpressure(connect_id) {
+                self.group_read_paused.set(connect_id, true)
+              } else {
+                let _ = self.arm_group_sse_read(stream_id)
+              }
             }
           }
         }
@@ -2227,7 +2246,7 @@ fn ConnectsOsRuntime::pump_group_sse(
             match self.group_sse_streams.get(connect_id) {
               Some(sid) => self.on_group_sse_closed(connect_id, sid, "event_rejected")
               None => {
-                let _ = self.bump_group_stream_gen(connect_id)
+                let _ = self.reset_group_stream_state(connect_id)
                 self.running_connects.remove(connect_id)
                 g.machine.on_close(now_ms, Some("event_rejected"))
                 self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting("event_rejected"))
@@ -2249,7 +2268,7 @@ fn ConnectsOsRuntime::pump_group_sse(
         match self.group_sse_streams.get(connect_id) {
           Some(sid) => self.on_group_sse_closed(connect_id, sid, reason)
           None => {
-            let _ = self.bump_group_stream_gen(connect_id)
+            let _ = self.reset_group_stream_state(connect_id)
             self.running_connects.remove(connect_id)
             g.machine.on_close(now_ms, Some(reason))
             self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
@@ -2261,6 +2280,17 @@ fn ConnectsOsRuntime::pump_group_sse(
         break
       }
       _ => ()
+    }
+  }
+  if self.is_connect_running(connect_id)
+  && !self.has_group_backpressure(connect_id)
+  && self.group_read_paused.contains(connect_id) {
+    self.group_read_paused.remove(connect_id)
+    match self.group_sse_streams.get(connect_id) {
+      Some(sid) => {
+        let _ = self.arm_group_sse_read(sid)
+      }
+      None => ()
     }
   }
   delivered

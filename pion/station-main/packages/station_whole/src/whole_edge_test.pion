@@ -1057,10 +1057,25 @@ test "connects_os_r9_group_sse_ordered_async_queue_and_stale_gen_drop" {
   edge_assert(seen.length() == 2 && seen[1] == "second")
   edge_assert(pending_cbs.length() == 2)
   edge_assert(disconnects.length() == 0)
-  // Simulate stream close BEFORE Event 2 confirms -> stale callback MUST be ignored!
-  let _ = rt.stop_connect("grp-async")
+  // Simulate stop -> restart BEFORE Event 2 confirms -> late callback from old stream
+  // MUST be discarded by generation check and MUST NOT commit the new stream's cursor!
+  rt.stop_connect("grp-async")
+  let gen_after_stop = match rt.group_stream_gen.get("grp-async") {
+    Some(g) => g
+    None => 0L
+  }
+  edge_assert(gen_after_stop >= 1L)
+  rt.running_connects.set("grp-async", true)
+  // Feed Event 2 on the new stream generation -> pending_cbs[2] is now in-flight.
+  let _ = rt.feed_group_sse("grp-async", "id: 2\nevent: event\ndata: " + frame2 + "\n\n", 1006L)
+  edge_assert(pending_cbs.length() == 3)
+  edge_assert(rt.has_group_backpressure("grp-async"))
+  // Firing the OLD stream's late callback MUST be ignored (new stream stays in-flight)!
   (pending_cbs[1])(true)
-  edge_assert(seen.length() == 2)
+  edge_assert(rt.has_group_backpressure("grp-async"))
+  // Confirming the NEW stream's callback clears backpressure cleanly.
+  (pending_cbs[2])(true)
+  edge_assert(!rt.has_group_backpressure("grp-async"))
   rt.stop()
 }
 

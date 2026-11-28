@@ -127,6 +127,7 @@ int64_t sts_proc_start_time_ms(int32_t pid);
 int64_t sts_proc_start_ticks(int32_t pid);
 int32_t sts_proc_ppid(void);
 void *sts_proc_cmdline(int32_t pid, int64_t *out_len);
+int32_t sts_is_child_pgroup_leader(int32_t child_pid, int32_t expected_ppid, int32_t expected_pgid);
 void *sts_boot_id(int64_t *out_len);
 
 // 3. Launcher control channel (Unix control fd > 4 e.g. fd 5, Windows named pipe).

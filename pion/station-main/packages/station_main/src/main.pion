@@ -107,6 +107,107 @@ fn run_smoke_sys() -> Int {
       return 1
     }
   }
+  // R10 P0/P1 real OS FS + real SQLite verifier smoke:
+  // (a) `verify_legacy_session_workspace` with real `ELOOP`, `EACCES`, and `ENOENT`
+  // (b) Peer Slack `surface_for_described` (`slack:<team>`) + `query_thread_moved_to` (`handed:<ws>`)
+  if os != "win32" {
+    let vroot = tmp + "/sf-smoke-r10-" + pid.to_string() + "-" + host_shim::wall_ms().to_string()
+    let vsess = vroot + "/sessions"
+    let vws_a = vsess + "/ws_a"
+    let vlocked = vsess + "/locked"
+    let vlocked_child = vlocked + "/ws_b"
+    let vloop_a = vsess + "/loop_a"
+    let vloop_b = vsess + "/loop_b"
+    let vdb = vroot + "/stillfail.db"
+    let mut r10_ok = station_sys::mkdir_p(vws_a)
+    && station_sys::mkdir_p(vlocked_child)
+    && station_sys::symlink(vloop_b, vloop_a, false)
+    && station_sys::symlink(vloop_a, vloop_b, false)
+    if r10_ok {
+      match station_store::Store::open(vdb) {
+        Ok(vst) => {
+          let real_lstat_ops = station_ops::OpsFs::{
+            ..station_ops::MemFs::new().ops(),
+            lstat: fn(p : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+              match station_sys::lstat_raw_err(p) {
+                Ok(raw) => {
+                  let is_dir = raw.starts_with("dir|")
+                  let is_link = raw.starts_with("link|")
+                  Ok(station_ops::FileMeta::{ is_file: raw.starts_with("file|"), is_dir: is_dir, is_link: is_link, size: 0L, mtime_ms: 0L, mtime_exact: "", ino: 0L, mode: 493 })
+                }
+                Err(-2) => Err(station_ops::FsErr::NotFound)
+                Err(-3) => Err(station_ops::FsErr::PermissionDenied("EACCES"))
+                Err(_) => Err(station_ops::FsErr::Other("lstat_err"))
+              }
+            },
+          }
+          let mut r10_step = "ok"
+          match vst.db.run(
+            "INSERT INTO sessions(key, connect, scope, runtime, profile, workspace, token, created_at, last_active_at, ws) VALUES('s-other', 'c1', 'sc1', 'claude', 'default', ?1, 'tok-other', 1000, 1000, 'ws-b')",
+            [base_codec::json_str(vloop_a)],
+          ) {
+            Err(e) => { r10_ok = false; r10_step = "insert s-other: " + e.message }
+            Ok(_) => ()
+          }
+          if r10_ok && !(verify_legacy_session_workspace(Some(vst), real_lstat_ops, vws_a, vroot, "ws-a", "ws-a", "/") is None) {
+            r10_ok = false
+            r10_step = "eloop not rejected"
+          }
+          if r10_ok && station_sys::geteuid() > 0 {
+            let _ = station_sys::chmod(vlocked, 0)
+            let _ = vst.db.run("UPDATE sessions SET workspace = ?1 WHERE key = 's-other'", [base_codec::json_str(vlocked_child)])
+            if !(verify_legacy_session_workspace(Some(vst), real_lstat_ops, vws_a, vroot, "ws-a", "ws-a", "/") is None) {
+              r10_ok = false
+              r10_step = "eacces not rejected"
+            }
+            let _ = station_sys::chmod(vlocked, 448)
+          }
+          if r10_ok {
+            let _ = vst.db.run("UPDATE sessions SET workspace = ?1 WHERE key = 's-other'", [base_codec::json_str(vsess + "/missing-ws-b/workspace")])
+            if !(verify_legacy_session_workspace(Some(vst), real_lstat_ops, vws_a, vroot, "ws-a", "ws-a", "/") is Some(_)) {
+              r10_ok = false
+              r10_step = "enoent sibling rejected"
+            }
+          }
+          if r10_ok {
+            let desc = base_codec::json_obj([
+              ("kind", base_codec::json_str("slack")),
+              ("team", base_codec::json_str("T_TEAM_R10")),
+            ])
+            let surf = surface_for_described("slack", desc, "c-slack-r10")
+            let _ = vst.db.run("INSERT INTO threads(id, surface, channel, thread_ts, title, created_at) VALUES(101, 'slack:T_TEAM_R10', 'C_R10', '1700.001', '', 1000)", [])
+            let _ = vst.db.run("INSERT INTO sessions(key, connect, scope, runtime, profile, workspace, token, created_at, last_active_at, ws) VALUES('s-moved', 'c-slack-r10', 'sc2', 'claude', 'default', '/tmp/m', 'tok-moved', 1000, 1000, 'handed:ws-target')", [])
+            let _ = vst.db.run("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(101, 's-moved', 'c-slack-r10', 1000)", [])
+            let _ = vst.db.run("INSERT INTO handed_over(session, station, ws, at) VALUES('s-moved', 'st-dest-r10', 'ws-target', 1000)", [])
+            match query_thread_moved_to(vst, surf, "c-slack-r10", "C_R10", "1700.001", "ws-target", "ws-home") {
+              Some(dest) => if dest != "st-dest-r10" { r10_ok = false; r10_step = "moved_to wrong dest: " + dest }
+              None => { r10_ok = false; r10_step = "moved_to returned None" }
+            }
+          }
+          if !r10_ok {
+            let _ = host_shim::write_stderr_line("smoke-sys: R10 detail: " + r10_step)
+          }
+          vst.close()
+        }
+        Err(_) => r10_ok = false
+      }
+    }
+    let _ = station_sys::chmod(vlocked, 448)
+    let _ = station_sys::unlink(vloop_a)
+    let _ = station_sys::unlink(vloop_b)
+    let _ = station_sys::rmdir(vlocked_child)
+    let _ = station_sys::rmdir(vlocked)
+    let _ = station_sys::rmdir(vws_a)
+    let _ = station_sys::rmdir(vsess)
+    let _ = station_sys::unlink(vdb)
+    let _ = station_sys::unlink(vdb + "-wal")
+    let _ = station_sys::unlink(vdb + "-shm")
+    let _ = station_sys::rmdir(vroot)
+    if !r10_ok {
+      let _ = host_shim::write_stderr_line("smoke-sys: R10 real OS FS + SQLite verifier check failed")
+      return 1
+    }
+  }
   let _ = host_shim::write_stdout_line(
     "{\"ok\":true,\"os\":\"" + os + "\",\"arch\":\"" + arch + "\",\"pid\":" + pid.to_string() + "}",
   )

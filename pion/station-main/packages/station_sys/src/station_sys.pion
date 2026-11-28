@@ -32,6 +32,7 @@ extern "C" fn sts_proc_start_time_ms(pid : Int) -> Int64
 extern "C" fn sts_proc_start_ticks(pid : Int) -> Int64
 extern "C" fn sts_proc_ppid() -> Int
 extern "C" fn sts_proc_cmdline(pid : Int, out_len : Ptr) -> Ptr
+extern "C" fn sts_is_child_pgroup_leader(child_pid : Int, expected_ppid : Int, expected_pgid : Int) -> Int
 extern "C" fn sts_boot_id(out_len : Ptr) -> Ptr
 
 extern "C" fn sts_ctrl_open_fd(event_id : Int64, fd : Int) -> Int64
@@ -637,6 +638,12 @@ pub fn proc_cmdline(pid : Int) -> Option[String] {
   let n = ptr_read_i64(out_len, 0.to_int64())
   sts_free(out_len)
   take_owned_string(p, n)
+}
+
+/// Kernel-level verification that `child_pid` is currently a direct child of `expected_ppid`
+/// AND is the process group leader of `expected_pgid` (`child_pid == expected_pgid`).
+pub fn is_child_pgroup_leader(child_pid : Int, expected_ppid : Int, expected_pgid : Int) -> Bool {
+  sts_is_child_pgroup_leader(child_pid, expected_ppid, expected_pgid) != 0
 }
 
 pub fn boot_id() -> Option[String] {
