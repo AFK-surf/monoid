@@ -19,6 +19,7 @@ import "station_api"
 import "station_drivers"
 import "station_jobs"
 import "station_ops"
+import "station_replica"
 import "station_rules_bridge"
 import "station_screens"
 import "station_sessions"
@@ -38,6 +39,9 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_session_changed : Option[(String) -> Unit]
   pub mut on_overview_dirty : Option[(String) -> Unit]
   pub mut on_drive_roots_changed : Option[(String, Array[String]) -> Unit]
+  pub mut on_mcp_reload : Option[(Option[String]) -> Unit]
+  pub mut on_s3_test : Option[(station_replica::NormalizedS3Target) -> Result[Unit, String]]
+  pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
   pub mut read_only_handover_cell : Array[Bool]
 }
 
@@ -52,6 +56,9 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_session_changed: None,
     on_overview_dirty: None,
     on_drive_roots_changed: None,
+    on_mcp_reload: None,
+    on_s3_test: None,
+    on_screens_browser_open: None,
     read_only_handover_cell: [true],
   }
 }
@@ -107,6 +114,7 @@ pub struct WholeApiRuntimePort {
   pub get_widget_state : (String, String) -> Result[base_codec::Json, station_api::ApiError]
   pub put_widget_state : (String, String, base_codec::Json, Int64) -> Result[Unit, station_api::ApiError]
   pub put_archive_policy : (Option[String], String, String, String, Int64) -> Result[Unit, station_api::ApiError]
+  pub vault_plain : VaultPlainStorePort
 }
 
 pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
@@ -207,6 +215,7 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
       policy_mem.set(k, policy)
       Ok(())
     },
+    vault_plain: VaultPlainStorePort::in_memory(),
   }
 }
 
@@ -640,6 +649,7 @@ pub fn WholeApiRuntimePort::production(
         Err(e) => Err(station_api::ApiError::new(500, e.message))
       }
     },
+    vault_plain: VaultPlainStorePort::production(whole_store),
   }
 }
 
@@ -1546,6 +1556,26 @@ pub fn dispatch_extra_call_op(
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   let _ = drive
   let _ = screens
+  // 0. Wave 17C-3B Admin/Accounts/MCP/Connects/Settings/Copies/Updates/Vault-Plain/Screens/Logins/Signins
+  match dispatch_admin_ops(
+    op,
+    req,
+    params,
+    body,
+    whole_store,
+    agents,
+    auth_policy,
+    events,
+    updates,
+    cfg_opt,
+    cfg_open_err,
+    hooks,
+    port,
+    now_ms,
+  ) {
+    Some(r) => return Some(r)
+    None => ()
+  }
   // 1. Vault routes
   match dispatch_vault_op(op, req, body, whole_store, agents, auth_policy, events, hooks, now_ms) {
     Some(r) => return Some(r)

@@ -265,6 +265,161 @@ pub fn revoke_seen_member_session(
   }
 }
 
+/// Retention window for `seen-devices.json` (31 days, 1:1 with `station/src/mesh/seen-devices.ts`).
+pub let SEEN_DEVICES_RETENTION_SECS : Int64 = 2678400L
+
+/// Maximum persisted rows in `seen-devices.json` (1:1 with `SEEN_MOST = 4096`).
+pub let SEEN_DEVICES_MAX_ROWS : Int = 4096
+
+/// Periodically evict expired `SeenMember` entries (`exp_unix > 0 && now_secs >= exp_unix`)
+/// and prune empty sub/ws maps so long-running stations never accumulate stale sessions.
+pub fn prune_expired_seen_members(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  now_secs : Double,
+) -> Int {
+  let mut removed = 0
+  let ws_keys = seen_members.keys()
+  for wi in 0..<ws_keys.length() {
+    let ws = ws_keys[wi]
+    match seen_members.get(ws) {
+      Some(by_sub) => {
+        let subs = by_sub.keys()
+        for si in 0..<subs.length() {
+          let sub = subs[si]
+          match by_sub.get(sub) {
+            Some(by_sess) => {
+              let skeys = by_sess.keys()
+              for ki in 0..<skeys.length() {
+                let sk = skeys[ki]
+                match by_sess.get(sk) {
+                  Some(sm) => {
+                    if sm.exp_unix > 0L && now_secs >= sm.exp_unix.to_double() {
+                      by_sess.remove(sk)
+                      removed = removed + 1
+                    }
+                  }
+                  None => ()
+                }
+              }
+              if by_sess.keys().length() == 0 {
+                by_sub.remove(sub)
+              }
+            }
+            None => ()
+          }
+        }
+        if by_sub.keys().length() == 0 {
+          seen_members.remove(ws)
+        }
+      }
+      None => ()
+    }
+  }
+  removed
+}
+
+/// Persist active `seen_members` to `<data>/mesh/seen-devices.json` (mode `0600`, capped at
+/// `SEEN_DEVICES_MAX_ROWS`), pruning expired entries first.
+pub fn persist_seen_devices(
+  ops_fs : station_ops::OpsFs,
+  data_dir : String,
+  sep : String,
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  now_secs : Double,
+) -> Result[Int, String] {
+  let _ = prune_expired_seen_members(seen_members, now_secs)
+  let rows : Array[base_codec::Json] = []
+  let ws_keys = seen_members.keys()
+  for wi in 0..<ws_keys.length() {
+    let ws = ws_keys[wi]
+    match seen_members.get(ws) {
+      Some(by_sub) => {
+        let subs = by_sub.keys()
+        for si in 0..<subs.length() {
+          let sub = subs[si]
+          match by_sub.get(sub) {
+            Some(by_sess) => {
+              let skeys = by_sess.keys()
+              for ki in 0..<skeys.length() {
+                if rows.length() >= SEEN_DEVICES_MAX_ROWS {
+                  break
+                }
+                let sk = skeys[ki]
+                match by_sess.get(sk) {
+                  Some(sm) => {
+                    rows.push(base_codec::json_obj([
+                      ("workspace", base_codec::json_str(ws)),
+                      ("sub", base_codec::json_str(sub)),
+                      ("device", base_codec::json_str(sk)),
+                      ("email", base_codec::json_str(sm.email)),
+                      ("role", base_codec::json_str(sm.role)),
+                      ("iat", base_codec::json_int64(sm.iat)),
+                      ("sid", base_codec::json_str(sm.sid_claim)),
+                      ("exp", base_codec::json_int64(sm.exp_unix)),
+                      ("last_seen", base_codec::json_int64(now_secs.to_int64())),
+                    ]))
+                  }
+                  None => ()
+                }
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let mesh_dir = nodepath::join(sep, [data_dir, "mesh"])
+  let _ = (ops_fs.mkdir_p)(mesh_dir)
+  let path = nodepath::join(sep, [mesh_dir, "seen-devices.json"])
+  let payload = base_codec::json_stringify(base_codec::json_arr(rows))
+  match (ops_fs.write_bytes)(path, payload.to_bytes(), 384) {
+    Ok(_) => Ok(rows.length())
+    Err(_) => Err("failed to write seen-devices.json")
+  }
+}
+
+/// Load non-expired seen members from `<data>/mesh/seen-devices.json`.
+pub fn load_seen_devices(
+  ops_fs : station_ops::OpsFs,
+  data_dir : String,
+  sep : String,
+  now_secs : Double,
+) -> Map[String, Map[String, Map[String, SeenMember]]] {
+  let out : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
+  let path = nodepath::join(sep, [data_dir, "mesh", "seen-devices.json"])
+  let raw = match ops_fs.read_text(path) {
+    Ok(s) => s
+    Err(_) => return out
+  }
+  let arr = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => xs
+    _ => return out
+  }
+  let cutoff = now_secs.to_int64() - SEEN_DEVICES_RETENTION_SECS
+  for i in 0..<arr.length() {
+    let r = arr[i]
+    let ws = match base_codec::json_get(r, "workspace") { Some(base_codec::Json::Str(s)) => s, _ => continue }
+    let sub = match base_codec::json_get(r, "sub") { Some(base_codec::Json::Str(s)) => s, _ => continue }
+    let dev = match base_codec::json_get(r, "device") { Some(base_codec::Json::Str(s)) => s, _ => continue }
+    let email = match base_codec::json_get(r, "email") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let role = match base_codec::json_get(r, "role") { Some(base_codec::Json::Str(s)) => s, _ => "member" }
+    let iat = match base_codec::json_get(r, "iat") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+    let sid = match base_codec::json_get(r, "sid") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let exp = match base_codec::json_get(r, "exp") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+    let last_seen = match base_codec::json_get(r, "last_seen") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => now_secs.to_int64() }
+    if last_seen < cutoff {
+      continue
+    }
+    if exp > 0L && now_secs >= exp.to_double() {
+      continue
+    }
+    record_seen_member(out, ws, sub, dev, email, role, iat, sid, exp)
+  }
+  out
+}
+
 /// Filter `seen_members` for `ws` against live `full_memberships(now_secs)`, exact Mesh credential
 /// expiry (`now_secs >= exp_unix`), and cloud revocations (`sub`/`sid` with `iat <= r.at`),
 /// aggregating all remaining valid sessions per `(ws, sub)`.
@@ -552,6 +707,47 @@ pub fn resolve_vault_chains_for_ws(
   }
 }
 
+/// Trigger a real `SIGUSR2` hot handover restart via launcher discovery (`station_ops::plan_page_restart`).
+/// Never fakes a restart by stopping the daemon directly.
+pub fn trigger_hot_handover_restart(
+  ops_fs : station_ops::OpsFs,
+  data_dir : String,
+  sep : String,
+  is_launcher : (Int) -> Bool,
+  send_usr2 : (Int) -> Int,
+) -> Result[Unit, String] {
+  match station_ops::plan_page_restart(ops_fs, data_dir, false, is_launcher, sep=sep) {
+    station_ops::RestartAction::Handover(pid) => {
+      if send_usr2(pid) == 0 {
+        Ok(())
+      } else {
+        Err("failed to signal launcher PID " + pid.to_string() + " with SIGUSR2")
+      }
+    }
+    station_ops::RestartAction::RestartFrontAfter(_) => Ok(())
+    station_ops::RestartAction::NoneAvailable => Err("no launcher available for hot handover restart")
+  }
+}
+
+fn login_view_to_json(item : station_devices::LoginView) -> base_codec::Json {
+  let cmd_arr : Array[base_codec::Json] = []
+  for ci in 0..<item.command.length() {
+    cmd_arr.push(base_codec::json_str(item.command[ci]))
+  }
+  base_codec::json_obj([
+    ("id", base_codec::json_str(item.id)),
+    ("name", base_codec::json_str(item.name)),
+    ("command", base_codec::json_arr(cmd_arr)),
+    ("state", base_codec::json_str(item.state.as_str())),
+    ("waiting", base_codec::json_bool(item.waiting)),
+    ("paste", base_codec::json_bool(item.paste)),
+    ("startedAt", base_codec::json_int64(item.started_at)),
+    ("expiresAt", base_codec::json_int64(item.expires_at)),
+    ("timedOut", base_codec::json_bool(item.timed_out)),
+    ("browser", base_codec::json_bool(item.browser)),
+  ])
+}
+
 pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
@@ -559,9 +755,9 @@ pub fn wire_whole_core_runtime_hooks(
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
 ) -> Unit {
-  let _ = browser
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     let now_s = host_shim::wall_ms().to_double() / 1000.0
+    let _ = prune_expired_seen_members(seen_members, now_s)
     let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
       active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
     }
@@ -574,26 +770,66 @@ pub fn wire_whole_core_runtime_hooks(
     }
     resolve_vault_chains_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
-  // Honest 501 until real hot handover restart is wired (never fake restart by stopping the daemon).
-  core.api.hooks.on_restart = None
-  core.api.hooks.on_logins_op = Some(fn(
+  core.api.hooks.on_restart = Some(fn() -> Result[Unit, String] {
+    trigger_hot_handover_restart(
+      ctx.ops_fs,
+      ctx.data,
+      ctx.sep,
+      fn(pid : Int) -> Bool { pid > 0 && station_sys::proc_kill(pid, 0, false) == 0 },
+      fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
+    )
+  })
+  core.api.hooks.on_screens_browser_open = Some(fn(
+    url : String,
+    tab_id_opt : Option[String],
+  ) -> Result[String, station_api::ApiError] {
+    let tid = match tab_id_opt {
+      Some(id) => id
+      None => "u_" + match station_sys::random_hex(6) { Ok(h) => h, Err(_) => "000000000000" }
+    }
+    match browser.open_user_tab_checked("station", url, tid, host_shim::wall_ms(), allow_private=false) {
+      Ok(screen_id) => Ok(screen_id)
+      Err(msg) => Err(station_api::ApiError::new(400, msg))
+    }
+  })
+  core.api.hooks.on_signins_op = Some(fn(
     op : String,
     params : Array[String],
     _body : base_codec::Json,
   ) -> Result[base_codec::Json, station_api::ApiError] {
     let id = if params.length() > 0 { params[0] } else { "" }
+    if op == "signins.fill" || op == "signins.self" || op == "signins.deny" {
+      if browser.running_count() == 0 {
+        return Err(station_api::ApiError::json(
+          409,
+          base_codec::json_obj([
+            ("error", base_codec::json_str("no active sign-in " + id)),
+            ("code", base_codec::json_str("signin_refused")),
+          ]),
+          no_cache=true,
+        ))
+      }
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+  core.api.hooks.on_logins_op = Some(fn(
+    op : String,
+    params : Array[String],
+    body : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let id = if params.length() > 0 { params[0] } else { "" }
+    if op == "logins.machine.list" {
+      let items = logins.manager.list()
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        arr.push(login_view_to_json(items[i]))
+      }
+      return Ok(base_codec::json_obj([("logins", base_codec::json_arr(arr))]))
+    }
     if op == "logins.machine.get" {
       match logins.manager.get(id) {
-        Some(item) => {
-          let cmd_arr : Array[base_codec::Json] = []
-          for ci in 0..<item.command.length() {
-            cmd_arr.push(base_codec::json_str(item.command[ci]))
-          }
-          return Ok(base_codec::json_obj([
-            ("id", base_codec::json_str(item.id)),
-            ("command", base_codec::json_arr(cmd_arr)),
-          ]))
-        }
+        Some(item) => return Ok(login_view_to_json(item))
         None => return Err(station_api::ApiError::new(404, "unknown login " + id))
       }
     }
@@ -601,6 +837,16 @@ pub fn wire_whole_core_runtime_hooks(
       match logins.cancel_login(id, None, host_shim::now_ms()) {
         Ok(_) => return Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))]))
         Err(msg) => return Err(station_api::ApiError::new(404, msg))
+      }
+    }
+    if op == "logins.machine.answer" {
+      let text = match base_codec::json_get(body, "text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      match logins.manager.answer(id, text, None) {
+        Ok(view) => {
+          let _ = logins.flush_writes(id)
+          return Ok(login_view_to_json(view))
+        }
+        Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
       }
     }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
