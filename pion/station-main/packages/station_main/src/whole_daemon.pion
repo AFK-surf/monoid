@@ -7319,51 +7319,55 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                               _ => ()
                             }
                           }
-                          if managed_mcp.lookup_exposed_tool(tname).is_some() {
-                            let call_ctx = station_tools::CallContext::{
-                              session: session_key,
-                              unbound_reason: if core.agents.bound_to_workspace { None } else { Some(station_tools::UNBOUND_REFUSAL) },
-                            }
-                            match station_tools::check_call_guard(call_ctx, tname, true, targs) {
-                              Some(refusal) => {
-                                let err_rpc = base_codec::json_obj([
-                                  ("jsonrpc", base_codec::json_str("2.0")),
-                                  ("id", rpc_id_v),
-                                  ("result", base_codec::json_obj([
-                                    ("isError", base_codec::json_bool(true)),
-                                    ("content", base_codec::json_arr([
-                                      base_codec::json_obj([("type", base_codec::json_str("text")), ("text", base_codec::json_str(refusal))]),
+                          match managed_mcp.lookup_exposed_decl(tname) {
+                            Some(decl) => {
+                              let coerced_args = station_tools::typed_args(targs, decl.input_schema)
+                              let call_ctx = station_tools::CallContext::{
+                                session: session_key,
+                                unbound_reason: if core.agents.bound_to_workspace { None } else { Some(station_tools::UNBOUND_REFUSAL) },
+                              }
+                              match station_tools::check_call_guard(call_ctx, tname, true, coerced_args) {
+                                Some(refusal) => {
+                                  let err_rpc = base_codec::json_obj([
+                                    ("jsonrpc", base_codec::json_str("2.0")),
+                                    ("id", rpc_id_v),
+                                    ("result", base_codec::json_obj([
+                                      ("isError", base_codec::json_bool(true)),
+                                      ("content", base_codec::json_arr([
+                                        base_codec::json_obj([("type", base_codec::json_str("text")), ("text", base_codec::json_str(refusal))]),
+                                      ])),
                                     ])),
-                                  ])),
-                                ])
-                                return station_http::HandlerAction::Respond(
-                                  station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
-                                )
-                              }
-                              None => ()
-                            }
-                            let prev_h = core.agents.mcp.heard(session_key)
-                            core.agents.mcp.heard_by.set(session_key, prev_h + 1)
-                            match managed_mcp.start_tool_call(tname, targs, req.conn_id, rpc_id_v, None, host_shim::now_ms(), None) {
-                              Ok(_) => return station_http::HandlerAction::Defer
-                              Err(err_reply) => {
-                                let c_arr : Array[base_codec::Json] = []
-                                for ci in 0..<err_reply.content.length() {
-                                  c_arr.push(station_tools::content_item_to_json(err_reply.content[ci]))
+                                  ])
+                                  return station_http::HandlerAction::Respond(
+                                    station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
+                                  )
                                 }
-                                let err_rpc = base_codec::json_obj([
-                                  ("jsonrpc", base_codec::json_str("2.0")),
-                                  ("id", rpc_id_v),
-                                  ("result", base_codec::json_obj([
-                                    ("isError", base_codec::json_bool(true)),
-                                    ("content", base_codec::json_arr(c_arr)),
-                                  ])),
-                                ])
-                                return station_http::HandlerAction::Respond(
-                                  station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
-                                )
+                                None => ()
+                              }
+                              let prev_h = core.agents.mcp.heard(session_key)
+                              core.agents.mcp.heard_by.set(session_key, prev_h + 1)
+                              match managed_mcp.start_tool_call(tname, coerced_args, req.conn_id, rpc_id_v, None, host_shim::now_ms(), None) {
+                                Ok(_) => return station_http::HandlerAction::Defer
+                                Err(err_reply) => {
+                                  let c_arr : Array[base_codec::Json] = []
+                                  for ci in 0..<err_reply.content.length() {
+                                    c_arr.push(station_tools::content_item_to_json(err_reply.content[ci]))
+                                  }
+                                  let err_rpc = base_codec::json_obj([
+                                    ("jsonrpc", base_codec::json_str("2.0")),
+                                    ("id", rpc_id_v),
+                                    ("result", base_codec::json_obj([
+                                      ("isError", base_codec::json_bool(true)),
+                                      ("content", base_codec::json_arr(c_arr)),
+                                    ])),
+                                  ])
+                                  return station_http::HandlerAction::Respond(
+                                    station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
+                                  )
+                                }
                               }
                             }
+                            None => ()
                           }
                         }
                         _ => ()
@@ -9226,6 +9230,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
           }
           let _ = st.mcp_srv.tick(st.mcp_cb)
+          let _ = st.managed_mcp.cancel_disconnected_calls(fn(cid : Int) -> Bool {
+            st.mcp_srv.is_deferred_open(cid)
+          })
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), _now, _wall)
         }
         None => ()

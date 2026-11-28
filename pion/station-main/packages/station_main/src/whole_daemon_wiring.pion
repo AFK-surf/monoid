@@ -894,6 +894,15 @@ pub fn wire_whole_core_runtime_hooks(
       mmcp.io.on_status_changed = fn() -> Unit {
         core.api.events.overview_changed("mcpServers")
       }
+      // Subscribe to `ConfigFile::listen` so external `config.json` edits live-reconcile Managed MCP servers.
+      match core.config_file {
+        Some(cfg_file) => {
+          let _ = cfg_file.listen(fn(next_raw : base_codec::Json) -> Unit {
+            mmcp.sync_config(next_raw, host_shim::now_ms())
+          })
+        }
+        None => ()
+      }
     }
     None => {
       core.api.hooks.on_mcp_reload = None

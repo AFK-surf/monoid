@@ -3205,11 +3205,13 @@ rl.on("line", (line) => {
 `,
   );
 
-  // 2. Mock Streamable HTTP MCP server
+  // 2. Mock Streamable HTTP MCP server (strictly requires `notifications/initialized` BEFORE `tools/list`, like Python MCP SDK!)
   let httpDeleteCalled = false;
+  let httpInitialized = false;
   const httpMcp = createHttpServer((req, res) => {
     if (req.method === "DELETE") {
       httpDeleteCalled = true;
+      httpInitialized = false;
       res.writeHead(204);
       res.end();
       return;
@@ -3226,16 +3228,23 @@ rl.on("line", (line) => {
       let msg: any = {};
       try { msg = JSON.parse(raw); } catch {}
       if (msg.method === "notifications/initialized") {
+        httpInitialized = true;
         res.writeHead(202, { "mcp-session-id": "mock-http-sess-1" });
         res.end();
         return;
       }
       if (msg.method === "initialize") {
+        httpInitialized = false;
         res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "mock-http", version: "1.0.0" } } }));
         return;
       }
       if (msg.method === "tools/list") {
+        if (!httpInitialized) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: "Received request before initialization was complete" } }));
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
         res.end(JSON.stringify({
           jsonrpc: "2.0",

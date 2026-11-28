@@ -851,6 +851,17 @@ fn HttpServer::apply_handler_action(
   }
 }
 
+/// Whether `conn_id` is still open and awaiting a deferred reply (`ConnMode::Deferred`).
+pub fn HttpServer::is_deferred_open(self : HttpServer, conn_id : Int) -> Bool {
+  match self.conns.get(conn_id) {
+    Some(c) if !c.closed => match c.mode {
+      ConnMode::Deferred(_, _, _) => true
+      _ => false
+    }
+    _ => false
+  }
+}
+
 /// Complete a previously deferred request (`HandlerAction::Defer`) with `Respond`, `StartChunked`, or `UpgradeSse`,
 /// immediately resuming any buffered pipelined HTTP requests in `rx_buf`.
 /// Must be called after `on_request` has returned `HandlerAction::Defer` (not re-entrantly inside `on_request`).
