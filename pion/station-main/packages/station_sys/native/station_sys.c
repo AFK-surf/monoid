@@ -10293,6 +10293,7 @@ int32_t sts_exec_replace(
 typedef struct win_verified_send_ctx {
     volatile LONG refs;
     volatile LONG state;
+    volatile LONG any_submitted;
     volatile LONG result;
     wchar_t *wpath;
     uint8_t *buf;
@@ -10357,12 +10358,13 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
     int64_t off = 0;
     while (off < ctx->len) {
         if (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_INIT) != WIN_VS_INIT) {
-            rc = -1;
+            rc = (off > 0) ? -3 : -1;
             goto done;
         }
+        (void)InterlockedExchange(&ctx->any_submitted, 1L);
         ULONGLONG now_ms = GetTickCount64();
         if (now_ms >= ctx->deadline_ms) {
-            rc = -1;
+            rc = (off > 0) ? -3 : -1;
             goto done;
         }
         ULONGLONG rem64 = ctx->deadline_ms - now_ms;
@@ -10375,7 +10377,7 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
         BOOL ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
         if (!ok) {
             if (GetLastError() != ERROR_IO_PENDING) {
-                rc = -1;
+                rc = (off > 0) ? -3 : -1;
                 goto done;
             }
             HANDLE waits[2] = { ctx->io_ev, ctx->cancel_ev };
@@ -10385,26 +10387,30 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
                 (void)CancelIoEx(h, &ctx->ov);
                 DWORD dummy = 0;
                 (void)GetOverlappedResult(h, &ctx->ov, &dummy, TRUE);
-                rc = -1;
+                rc = -3;
                 goto done;
             }
             if (!GetOverlappedResult(h, &ctx->ov, &written, FALSE) || written == 0) {
-                rc = -1;
+                rc = -3;
                 goto done;
             }
         } else if (written == 0) {
-            rc = -1;
+            rc = (off > 0) ? -3 : -1;
+            goto done;
+        } else if (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) {
+            /* Caller already timed out while sync WriteFile was in flight: never report 0. */
+            rc = -3;
             goto done;
         }
         off += (int64_t)written;
         if (off < ctx->len) {
             if (InterlockedCompareExchange(&ctx->state, WIN_VS_INIT, WIN_VS_SUBMITTING) != WIN_VS_SUBMITTING) {
-                rc = -1;
+                rc = -3;
                 goto done;
             }
         }
     }
-    rc = 0;
+    rc = (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) ? -3 : 0;
 
 done:
     (void)InterlockedExchange(&ctx->result, rc);
@@ -10480,15 +10486,16 @@ int32_t sts_runner_sock_send_verified(
         win_verified_send_ctx_release(ctx);
         return rc;
     }
-    /* Wait-free timeout cancellation: never blocks on worker state or handle close. */
-    (void)InterlockedExchange(&ctx->state, WIN_VS_CANCELLED);
+    /* Wait-free timeout cancellation: distinguish definite not-submitted (-1) vs in-flight/unknown (-3). */
+    LONG prev_state = InterlockedExchange(&ctx->state, WIN_VS_CANCELLED);
+    LONG submitted = InterlockedCompareExchange(&ctx->any_submitted, 0L, 0L);
     (void)SetEvent(ctx->cancel_ev);
     HANDLE ch = (HANDLE)InterlockedCompareExchangePointer(&ctx->h, NULL, NULL);
     if (ch != NULL && ch != INVALID_HANDLE_VALUE) {
         (void)CancelIoEx(ch, NULL);
     }
     win_verified_send_ctx_release(ctx);
-    return -1;
+    return (prev_state == WIN_VS_SUBMITTING || submitted != 0L) ? -3 : -1;
 #else
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -10602,7 +10609,7 @@ int32_t sts_runner_sock_send_verified(
             int64_t rem = deadline_ms - now_ms;
             if (rem <= 0) {
                 close(fd);
-                return -1;
+                return (off > 0) ? -3 : -1;
             }
             struct pollfd pfd;
             pfd.fd = fd;
@@ -10612,12 +10619,12 @@ int32_t sts_runner_sock_send_verified(
             if (prc <= 0) {
                 if (prc < 0 && errno == EINTR) continue;
                 close(fd);
-                return -1;
+                return (off > 0) ? -3 : -1;
             }
             continue;
         }
         close(fd);
-        return -1;
+        return (off > 0) ? -3 : -1;
     }
     close(fd);
     return 0;

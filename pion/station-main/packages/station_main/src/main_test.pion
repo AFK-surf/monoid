@@ -3189,6 +3189,178 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   assert_true(h_seen_sock == "/data/run/runners/r-sp-nodisk.sock", "R31 1H: uses deterministic POSIX socket path")
   assert_true(mgr_h.draining_stopping_ids.length() == 0, "R31 1H: stop marker cleared after OS exit")
 
+  // ---- Test 1I (R33): 4-state verified-send protocol (`0` / `-1` / `-2` / `-3`) + Win32 state-machine interleavings ----
+  // Pure state-machine verification of `WIN_VS_INIT (0) -> WIN_VS_SUBMITTING (1) -> WIN_VS_CANCELLED (2)` interleavings:
+  // (i) Cancel in INIT -> caller gets -1 (not submitted), worker CAS fails with 0 writes.
+  let mut sm_state_1 = 0
+  let mut sm_writes_1 = 0
+  let sm_prev_1 = sm_state_1
+  sm_state_1 = 2
+  let sm_caller_rc_1 = if sm_prev_1 == 1 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_NOT_SUBMITTED }
+  let sm_worker_rc_1 = if sm_state_1 == 0 {
+    sm_state_1 = 1
+    sm_writes_1 = sm_writes_1 + 1
+    station_sys::RUNNER_SEND_OK
+  } else {
+    station_sys::RUNNER_SEND_NOT_SUBMITTED
+  }
+  assert_true(
+    sm_caller_rc_1 == station_sys::RUNNER_SEND_NOT_SUBMITTED && sm_worker_rc_1 == station_sys::RUNNER_SEND_NOT_SUBMITTED && sm_writes_1 == 0,
+    "R33 SM-1: cancel in INIT returns -1 and worker CAS fails with 0 writes",
+  )
+  // (ii) Cancel after CAS(INIT -> SUBMITTING), before sync-ok WriteFile completes -> caller gets -3, worker also returns -3 (never 0).
+  let mut sm_state_2 = 0
+  assert_true(sm_state_2 == 0, "R33 SM-2: starts in INIT")
+  sm_state_2 = 1 // worker CAS succeeds
+  let sm_prev_2 = sm_state_2
+  sm_state_2 = 2 // caller timeout cancels while SUBMITTING
+  let sm_caller_rc_2 = if sm_prev_2 == 1 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_NOT_SUBMITTED }
+  // Even if WriteFile completed synchronously with written > 0, worker re-checks state == CANCELLED -> -3 (NEVER 0).
+  let sm_worker_sync_rc_2 = if sm_state_2 == 2 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_OK }
+  // Pending branch wakes on cancel_ev -> CancelIoEx + GetOverlappedResult(..., TRUE) -> -3.
+  let sm_worker_pend_rc_2 = if sm_state_2 == 2 { station_sys::RUNNER_SEND_OUTCOME_UNKNOWN } else { station_sys::RUNNER_SEND_OK }
+  assert_true(
+    sm_caller_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
+    && sm_worker_sync_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
+    && sm_worker_pend_rc_2 == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN,
+    "R33 SM-2: cancel during SUBMITTING returns -3 on caller and -3 (never 0) on both sync and pending worker branches",
+  )
+
+  // 1I-a: `runner_sock_send_verified_fn` returns `-3` (outcome unknown) with ample remaining budget,
+  // runner stays alive -> MUST be called strictly ONCE (never retried in parallel), preserves marker, returns false.
+  let mem_i1 = station_ops::MemFs::new()
+  let ops_i1 = mem_i1.ops()
+  let mut now_i1 = 1000L
+  let mut i1_calls = 0
+  let tr_i1 = builders_core::MuxTransport::{
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      now_i1 = now_i1 + ms
+      None
+    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_i1 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_i1 = station_whole::EdgeMuxHub::from_transport(tr_i1)
+  let mgr_i1 = LiveRunnerManager::new()
+  mgr_i1.set_handover_state_path("/data/run/whole-live-runners.json")
+  mgr_i1.sessions.set("s-i1", make_sess(471, "s-i1", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true))
+  let ok_i1 = mgr_i1.stop_all_on_shutdown_with(
+    hub_i1,
+    ops_i1,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_i1 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int {
+      i1_calls = i1_calls + 1
+      station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
+    },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+  )
+  assert_true(!ok_i1 && i1_calls == 1, "R33 1I-a: -3 outcome unknown MUST NOT retry (strictly 1 call) and returns false while alive")
+  assert_true(mgr_i1.draining_stopping_ids.length() == 1, "R33 1I-a: stop marker preserved when alive after -3")
+  assert_true(ops_i1.read_text("/data/run/whole-live-runners.json").is_ok(), "R33 1I-a: marker persisted to disk")
+
+  // 1I-b: `runner_sock_send_verified_fn` returns `-3` and next tick OS reports `ConfirmedDeadOrReused`
+  // (in-flight write took effect) -> strictly 1 send call, clears marker, returns true.
+  let mem_i2 = station_ops::MemFs::new()
+  let ops_i2 = mem_i2.ops()
+  let mut now_i2 = 1000L
+  let mut i2_calls = 0
+  let mut i2_polls = 0
+  let tr_i2 = builders_core::MuxTransport::{
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      now_i2 = now_i2 + ms
+      None
+    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_i2 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_i2 = station_whole::EdgeMuxHub::from_transport(tr_i2)
+  let mgr_i2 = LiveRunnerManager::new()
+  mgr_i2.set_handover_state_path("/data/run/whole-live-runners.json")
+  mgr_i2.sessions.set("s-i2", make_sess(472, "s-i2", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true))
+  let ok_i2 = mgr_i2.stop_all_on_shutdown_with(
+    hub_i2,
+    ops_i2,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_i2 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      i2_polls = i2_polls + 1
+      if i2_polls >= 2 { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int {
+      i2_calls = i2_calls + 1
+      station_sys::RUNNER_SEND_OUTCOME_UNKNOWN
+    },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+  )
+  assert_true(ok_i2 && i2_calls == 1, "R33 1I-b: -3 with subsequent OS exit clears marker and returns true with strictly 1 send call")
+  assert_true(mgr_i2.draining_stopping_ids.length() == 0, "R33 1I-b: stop marker cleared on OS exit")
+
+  // 1I-c: `-1` (definitely not submitted) retries on next tick -> 2nd call returns `0`, OS exits -> returns true.
+  let mem_i3 = station_ops::MemFs::new()
+  let ops_i3 = mem_i3.ops()
+  let mut now_i3 = 1000L
+  let mut i3_calls = 0
+  let mut i3_dead = false
+  let tr_i3 = builders_core::MuxTransport::{
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      now_i3 = now_i3 + ms
+      None
+    },
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_i3 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_i3 = station_whole::EdgeMuxHub::from_transport(tr_i3)
+  let mgr_i3 = LiveRunnerManager::new()
+  mgr_i3.set_handover_state_path("/data/run/whole-live-runners.json")
+  mgr_i3.sessions.set("s-i3", make_sess(473, "s-i3", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true))
+  let ok_i3 = mgr_i3.stop_all_on_shutdown_with(
+    hub_i3,
+    ops_i3,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_i3 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if i3_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    },
+    runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int {
+      i3_calls = i3_calls + 1
+      if i3_calls == 1 {
+        station_sys::RUNNER_SEND_NOT_SUBMITTED
+      } else {
+        i3_dead = true
+        station_sys::RUNNER_SEND_OK
+      }
+    },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+  )
+  assert_true(ok_i3 && i3_calls == 2, "R33 1I-c: -1 definitely-not-submitted retries, succeeds on 2nd call, and returns true")
+  assert_true(mgr_i3.draining_stopping_ids.length() == 0, "R33 1I-c: stop marker cleared after retry + OS exit")
+
   // ---- Test 2: REAL `register_adopted_runner_with` + REAL `ShellMux` single stop-owner guard ----
   let mut adopt_opens = 0
   let tr_c = builders_core::MuxTransport::{

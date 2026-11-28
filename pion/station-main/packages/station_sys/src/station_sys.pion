@@ -1746,10 +1746,24 @@ pub fn clone_tree(src_dir : String, dst_dir : String) -> Result[Unit, Int] {
   }
 }
 
-/// R28: Connect to a `stillfail-runner` Unix socket / Windows named pipe, verify the connected
+/// R33 4-state return codes for `runner_sock_send_verified`:
+/// - `RUNNER_SEND_OK` (0): kernel peer PID matched and full payload written.
+/// - `RUNNER_SEND_NOT_SUBMITTED` (-1): definitely 0 bytes submitted (safe to retry).
+/// - `RUNNER_SEND_PEER_MISMATCH` (-2): kernel peer PID mismatch (0 bytes written).
+/// - `RUNNER_SEND_OUTCOME_UNKNOWN` (-3): submission in flight / partial write (MUST NOT retry in parallel).
+pub let RUNNER_SEND_OK : Int = 0
+
+pub let RUNNER_SEND_NOT_SUBMITTED : Int = -1
+
+pub let RUNNER_SEND_PEER_MISMATCH : Int = -2
+
+pub let RUNNER_SEND_OUTCOME_UNKNOWN : Int = -3
+
+/// R28/R33: Connect to a `stillfail-runner` Unix socket / Windows named pipe, verify the connected
 /// peer's OS kernel PID (`SO_PEERCRED` / `LOCAL_PEERPID` / `GetNamedPipeServerProcessId`) equals
 /// `expected_pid`, and ONLY if equal write `payload` within `timeout_ms`.
-/// Returns `0` (verified + written), `-2` (peer mismatch, 0 bytes written), or `-1` (connect/write error).
+/// Returns `0` (verified + written), `-1` (definitely not submitted), `-2` (peer mismatch, 0 bytes),
+/// or `-3` (in-flight/partial outcome unknown, do not retry in parallel).
 pub fn runner_sock_send_verified(sock_path : String, expected_pid : Int, payload : Bytes, timeout_ms : Int) -> Int {
   let rc = sts_runner_sock_send_verified(sock_path.as_cstr(), expected_pid, bytes_data_ptr(payload), payload.length().to_int64(), timeout_ms)
   let _ = sock_path.length()

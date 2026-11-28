@@ -6898,6 +6898,7 @@ struct ShutdownRunnerRecord {
   attach_payload : String
   mut turn_committed : Bool
   mut term_sent : Bool
+  mut send_uncertain : Bool
   mut confirmed_dead : Bool
 }
 
@@ -7074,6 +7075,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
+          send_uncertain: false,
           confirmed_dead: false,
         })
       }
@@ -7094,6 +7096,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
+          send_uncertain: false,
           confirmed_dead: false,
         })
       }
@@ -7119,6 +7122,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
+          send_uncertain: false,
           confirmed_dead: false,
         })
       }
@@ -7152,7 +7156,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           }
           SpawnIdentityVerdict::Unknown => ()
           SpawnIdentityVerdict::ConfirmedSame => {
-            if !rec.term_sent {
+            if !rec.term_sent && !rec.send_uncertain {
               let rem_send = shutdown_deadline - now_ms_fn()
               if rem_send <= 0L {
                 budget_exhausted = true
@@ -7170,9 +7174,20 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
                 Some(sock_path) => {
                   let step_ms = if rem_send < 200L { rem_send.to_int() } else { 200 }
                   let rc = runner_sock_send_verified_fn(sock_path, rec.expected_pid, rec.attach_payload.to_bytes(), step_ms)
-                  if rc == 0 {
+                  if rc == station_sys::RUNNER_SEND_OK {
                     rec.term_sent = true
-                  } else if rc == -2 {
+                  } else if rc == station_sys::RUNNER_SEND_OUTCOME_UNKNOWN {
+                    // R33: Submission was in flight or partially written — NEVER retry in parallel;
+                    // keep stop marker persisted and continue observing OS exit in remaining budget.
+                    rec.send_uncertain = true
+                    log_fn(
+                      "[live-runner] shutdown verified send outcome unknown (-3) on "
+                      + sock_path
+                      + " (pid="
+                      + rec.expected_pid.to_string()
+                      + "); skipping retry and awaiting OS exit",
+                    )
+                  } else if rc == station_sys::RUNNER_SEND_PEER_MISMATCH {
                     log_fn(
                       "[live-runner] shutdown peer PID mismatch on "
                       + sock_path
