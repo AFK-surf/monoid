@@ -2032,3 +2032,212 @@ test "Slice 2B-1 R5: restore_prev rollback, active account ordering/grouping, sa
   let drained3 = rcore.drain_frame()
   debug_assert(drained3.length() == 1, "fresh post-rejoin frame delivered cleanly")
 }
+
+// ── Test 13 (R7): Lock-busy 401 immediate gate + background CAS reconcile (remove vs peer adopt) and 200 background CAS commit ──
+
+test "Slice 2B-1 R7: refresh 401/200 lock-busy immediate gate and background CAS reconcile" {
+  let rt = effect::Runtime::new()
+
+  // 1. 401 encountering `accounts lock busy`:
+  //    (a) Immediately fires `on_pending_401_gate` (closing active read gate while lock is still held),
+  //        and once lock releases + virtual clock advances, removes `u-a` from disk while preserving sibling `u-b`.
+  let (_, db_a) = make_sim_db(rt)
+  let core_a = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, db_a, core_offline_transport(), fn() -> Unit {})
+  let _ = core_a.set_db_account_sub("u-a")
+  let _ = core_a.commit_cloud_me(mt_make_me("u-a", "a@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=1L)
+  let _ = core_a.membership.bind_station_checked(ULID_WS1, "st-1")
+  debug_assert(core_a.can_read_workspace(ULID_WS1), "WS1 initially readable")
+
+  let acct_a = views::StoredAccount::{
+    sub: "u-a", email: "a@still.fail", name: "Alice", picture: "",
+    access: "acc-old", refresh: "ref-old", access_expires: 100L,
+  }
+  let acct_b = views::StoredAccount::{
+    sub: "u-b", email: "b@still.fail", name: "Bob", picture: "",
+    access: "acc-b", refresh: "ref-b", access_expires: 999999L,
+  }
+  let sids_a : Map[String, String] = Map::new()
+  sids_a.set("u-a", "sid-old")
+  sids_a.set("u-b", "sid-b")
+  let disk_a : Array[base_codec::Json] = [serialize_stored_accounts([acct_a, acct_b], sessions=Some(sids_a))]
+  let lock_busy_a : Array[Bool] = [false]
+  let lock_calls_a : Array[Int] = [0]
+  let gate_fired_a : Array[Bool] = [false]
+  let inval_fired_a : Array[Bool] = [false]
+  let inval_rem_len_a : Array[Int] = [-1]
+
+  let coord_a = AccountRefreshCoordinator::new()
+  coord_a.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      lock_calls_a[0] += 1
+      if lock_busy_a[0] {
+        ak(Err("accounts lock busy"))
+      } else {
+        ak(Ok(1L))
+      }
+    },
+    fn(_h : Int64) -> Unit {},
+  )
+  coord_a.set_on_pending_401_gate(fn(gsub : String, _gsid : String, _gref : String) -> Unit {
+    if gsub == "u-a" {
+      gate_fired_a[0] = true
+      core_a.membership.mark_session_invalidated()
+    }
+  })
+  let host_a = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_a[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_a[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      // Simulate peer grabbing `.accounts.lock` while HTTP 401 was in flight!
+      lock_busy_a[0] = true
+      hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-old", "ref-old")) },
+    on_adopt_or_update: fn(_u, _s, _all, _ss) -> Unit {},
+    on_invalidated: fn(_sub, _sid, _ref, rem, _ss) -> Unit {
+      inval_fired_a[0] = true
+      inval_rem_len_a[0] = rem.length()
+    },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let outcome_a : Array[String] = [""]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_a.refresh_k(host_a, "u-a", "sid-old", "ref-old", fn(out : AccountRefreshOutcome) -> Unit {
+      match out {
+        AccountRefreshOutcome::Transient(m) => { outcome_a[0] = m }
+        _ => { outcome_a[0] = "other" }
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(outcome_a[0] == "accounts lock busy", "401 lock busy returns Transient immediately")
+  debug_assert(gate_fired_a[0], "on_pending_401_gate MUST fire immediately before lock releases")
+  debug_assert(!core_a.can_read_workspace(ULID_WS1), "read gate MUST be closed immediately while lock is still held")
+  debug_assert(coord_a.has_pending_reconcile("u-a"), "background Remove401 reconcile MUST be scheduled")
+  debug_assert(!inval_fired_a[0], "disk CAS removal has not run yet while lock is busy")
+
+  // Release lock and advance virtual clock: background CAS removes u-a and preserves u-b!
+  lock_busy_a[0] = false
+  let _ = rt.advance(150)
+  debug_assert(inval_fired_a[0] && inval_rem_len_a[0] == 1, "background CAS removed u-a and preserved sibling u-b")
+  debug_assert(!coord_a.has_pending_reconcile("u-a"), "pending reconcile cleared after completion")
+  let disk_after_a = match parse_stored_accounts_strict(disk_a[0]) {
+    Some(xs) => xs
+    None => panic("valid disk after 401 reconcile")
+  }
+  debug_assert(disk_after_a.length() == 1 && disk_after_a[0].sub == "u-b", "disk contains only sibling u-b after 401 reconcile")
+
+  // 2. 401 encountering `accounts lock busy` where competing process wrote a NEWER valid session `(sid-new, ref-new)`:
+  //    Immediate gate fires, then after lock releases background CAS preserves disk AND triggers `on_adopt` (recovering gate)!
+  let acct_a_new = views::StoredAccount::{
+    sub: "u-a", email: "a@still.fail", name: "Alice", picture: "",
+    access: "acc-peer-new", refresh: "ref-peer-new", access_expires: 999999L,
+  }
+  let sids_b : Map[String, String] = Map::new()
+  sids_b.set("u-a", "sid-old")
+  let disk_b : Array[base_codec::Json] = [serialize_stored_accounts([acct_a], sessions=Some(sids_b))]
+  let lock_busy_b : Array[Bool] = [false]
+  let gated_b : Array[Bool] = [false]
+  let adopted_b : Array[String] = [""]
+  let inval_b : Array[Bool] = [false]
+
+  let coord_b = AccountRefreshCoordinator::new()
+  coord_b.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_b[0] { ak(Err("accounts lock busy")) } else { ak(Ok(2L)) }
+    },
+    fn(_h : Int64) -> Unit {},
+  )
+  coord_b.set_on_pending_401_gate(fn(_s, _sid, _ref) -> Unit { gated_b[0] = true })
+  let host_b = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_b[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_b[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      lock_busy_b[0] = true
+      hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-old", "ref-old")) },
+    on_adopt_or_update: fn(u, sid, _all, _ss) -> Unit {
+      adopted_b[0] = u.access + ":" + sid
+      gated_b[0] = false
+    },
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { inval_b[0] = true },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_b.refresh_k(host_b, "u-a", "sid-old", "ref-old", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(gated_b[0] && coord_b.has_pending_reconcile("u-a"), "gated while peer holds lock")
+
+  // Competing process finishes writing newer session `(sid-new, ref-peer-new)` and releases lock:
+  let sids_b_new : Map[String, String] = Map::new()
+  sids_b_new.set("u-a", "sid-new")
+  disk_b[0] = serialize_stored_accounts([acct_a_new], sessions=Some(sids_b_new))
+  lock_busy_b[0] = false
+  let _ = rt.advance(150)
+  debug_assert(!inval_b[0], "MUST NOT invalidate when competing process wrote newer session")
+  debug_assert(adopted_b[0] == "acc-peer-new:sid-new" && !gated_b[0], "background CAS adopted newer peer session and recovered gate")
+
+  // 3. 200 rotated tokens encountering `accounts lock busy`:
+  //    Once lock releases + virtual clock advances, background CAS commits rotated tokens to disk & invokes `on_adopt`!
+  let sids_c : Map[String, String] = Map::new()
+  sids_c.set("u-a", "sid-old")
+  let disk_c : Array[base_codec::Json] = [serialize_stored_accounts([acct_a], sessions=Some(sids_c))]
+  let lock_busy_c : Array[Bool] = [false]
+  let adopted_c : Array[String] = [""]
+
+  let coord_c = AccountRefreshCoordinator::new()
+  coord_c.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_c[0] { ak(Err("accounts lock busy")) } else { ak(Ok(3L)) }
+    },
+    fn(_h : Int64) -> Unit {},
+  )
+  let host_c = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_c[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_c[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      lock_busy_c[0] = true
+      hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+        access: "acc-rot-200",
+        refresh: "ref-rot-200",
+        access_expires: 999999L,
+        name: None,
+      })))
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-old", "ref-old")) },
+    on_adopt_or_update: fn(u, _sid, _all, _ss) -> Unit { adopted_c[0] = u.access + ":" + u.refresh },
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit {},
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_c.refresh_k(host_c, "u-a", "sid-old", "ref-old", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(coord_c.has_pending_reconcile("u-a") && adopted_c[0] == "", "Commit200 scheduled when lock busy")
+
+  lock_busy_c[0] = false
+  let _ = rt.advance(150)
+  debug_assert(adopted_c[0] == "acc-rot-200:ref-rot-200", "background CAS committed rotated 200 tokens and invoked on_adopt")
+  debug_assert(!coord_c.has_pending_reconcile("u-a"), "Commit200 cleared after commit")
+  let disk_after_c = match parse_stored_accounts_strict(disk_c[0]) {
+    Some(xs) => xs
+    None => panic("valid disk after 200 reconcile")
+  }
+  debug_assert(disk_after_c.length() == 1 && disk_after_c[0].refresh == "ref-rot-200", "rotated refresh persisted to disk")
+}

@@ -650,6 +650,7 @@ static void bridge_on_start(const char *data_dir, const char *cloud_origin, int 
         bsh_on_wake(bridge_on_shell_wake, NULL);
         bsh_on_say(bridge_on_shell_say, NULL);
         bsh_on_media(bridge_on_shell_media, NULL);
+        mb_core_wake();
     }
 }
 

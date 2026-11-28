@@ -167,6 +167,24 @@ int main(int argc, char **argv) {
         }
         return 3; // I/O error
     }
+    // Self-exec child mode holding `<dir>/.accounts.lock` for `hold_ms`, writing 'R' to stdout once locked.
+    if (argc >= 4 && strcmp(argv[1], "--lock-hold") == 0) {
+        const char *hold_dir = argv[2];
+        int hold_ms = atoi(argv[3]);
+        int64_t tx = pion_core_accounts_tx_try_begin(hold_dir, (int64_t)strlen(hold_dir));
+        if (tx < 1) {
+            return 4;
+        }
+        char ready = 'R';
+        ssize_t wr = write(STDOUT_FILENO, &ready, 1);
+        (void)wr;
+        struct timespec req;
+        req.tv_sec = hold_ms / 1000;
+        req.tv_nsec = (long)(hold_ms % 1000) * 1000000L;
+        (void)nanosleep(&req, NULL);
+        pion_core_accounts_tx_end(tx);
+        return 0;
+    }
     memset(&g_ctx, 0, sizeof(g_ctx));
     pthread_mutex_init(&g_ctx.mu, NULL);
     pthread_cond_init(&g_ctx.cv, NULL);
@@ -727,6 +745,62 @@ int main(int argc, char **argv) {
         // After ending `tx2`, independent exec'd child MUST immediately acquire & release (`exit 0`)!
         assert(run_exec_lock_probe(argv[0], data_dir) == 0);
         printf("[core_runtime_e2e] accounts_tx exec cross-process flock + stale tx_id immunity OK\n");
+    }
+
+    // 7c. Startup `accounts lock busy` (> 500ms) MUST stay fail-closed during contention and then
+    //     automatically recover async once the competing process releases `.accounts.lock`!
+    {
+        int pfd[2];
+        assert(pipe(pfd) == 0);
+        pid_t holder = fork();
+        assert(holder >= 0);
+        if (holder == 0) {
+            close(pfd[0]);
+            dup2(pfd[1], STDOUT_FILENO);
+            close(pfd[1]);
+            execl(argv[0], argv[0], "--lock-hold", data_dir, "700", (char *)NULL);
+            _exit(127);
+        }
+        close(pfd[1]);
+        char ready = 0;
+        assert(read(pfd[0], &ready, 1) == 1 && ready == 'R');
+        close(pfd[0]);
+
+        // Start core WHILE separate process holds `.accounts.lock` for 700ms (> 500ms startup wait)!
+        atomic_store(&g_ctx.stopped, 0);
+        mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+
+        // Subscribe `accounts` immediately: during contention it is empty, then async recovery MUST push `alice@still.fail`!
+        send_json("{\"id\":62,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        int hst = 0;
+        assert(waitpid(holder, &hst, 0) == holder && WIFEXITED(hst) && WEXITSTATUS(hst) == 0);
+
+        // Wait until an emitted message for sub 62 contains `alice@still.fail` (recovered from disk)!
+        int found_recovered_acct = 0;
+        for (int tries = 0; tries < 20; tries++) {
+            m = wait_for_msg_index(&g_ctx, next_idx++);
+            if (strstr(m->json, "\"id\":62") != NULL && strstr(m->json, "alice@still.fail") != NULL) {
+                found_recovered_acct = 1;
+                break;
+            }
+        }
+        assert(found_recovered_acct == 1);
+
+        // Verify `account-u-e2e.db` was opened and installed automatically: persisted `theme=light` (set before restart) is readable!
+        send_json("{\"id\":63,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+        int found_theme = 0;
+        for (int tries = 0; tries < 20; tries++) {
+            m = wait_for_msg_index(&g_ctx, next_idx++);
+            if (strstr(m->json, "\"id\":63") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL) {
+                found_theme = 1;
+                break;
+            }
+        }
+        assert(found_theme == 1);
+        mb_core_stop();
+        printf("[core_runtime_e2e] startup lock-busy async recovery + account DB auto-install OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),

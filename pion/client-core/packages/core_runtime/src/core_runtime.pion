@@ -65,6 +65,8 @@ struct RuntimeSession {
   mut session_gen : Int64
   mut login_gen : Int64
   mut bearer_gen : Int64
+  mut accounts_init_pending : Bool
+  mut stopped : Bool
   mut reconcile_requeue_pending : Bool
   mut device_conn_seq : Int64
   mut live_sync_enabled : Bool
@@ -353,24 +355,198 @@ fn accounts_tx_commit_json(tx_id : Int64, doc : base_codec::Json) -> Result[Unit
   }
 }
 
+enum StartupAccountsRead {
+  Found(Array[AccountInfo])
+  Absent
+  BusyOrError(String)
+}
+
+fn startup_init_backoff_ms(attempt : Int) -> Int {
+  if attempt <= 0 {
+    100
+  } else if attempt == 1 {
+    200
+  } else if attempt == 2 {
+    400
+  } else if attempt == 3 {
+    800
+  } else if attempt == 4 {
+    1600
+  } else {
+    2000
+  }
+}
+
 /// Bounded synchronous startup read of `<dir>/accounts` (<= 500ms total backoff; NEVER blocks forever).
-fn read_accounts_atomic_sync(dir : String) -> Result[Array[AccountInfo], String] {
+/// Explicitly distinguishes `Found(non-empty)` vs `Absent` vs `BusyOrError` so lock contention on boot
+/// triggers background async reconciliation instead of permanently booting unauthenticated!
+fn read_accounts_atomic_sync(dir : String) -> StartupAccountsRead {
   let bs = dir.to_bytes()
   let tx_id = pion_core_accounts_tx_begin_bounded(bytes_data_ptr(bs), bs.length().to_int64(), 500)
   let _ = bs.length()
   if tx_id == 0L {
-    return Err("accounts lock busy")
+    return StartupAccountsRead::BusyOrError("accounts lock busy")
   }
   if tx_id < 0L {
-    return Err("accounts lock/tx I/O error")
+    return StartupAccountsRead::BusyOrError("accounts lock/tx I/O error")
   }
   let res = match accounts_tx_read_state(tx_id) {
-    sync::HostStorageRead::Found(j) => Ok(parse_stored_accounts(j))
-    sync::HostStorageRead::Absent => Ok([])
-    sync::HostStorageRead::ReadError(e) => Err(e)
+    sync::HostStorageRead::Found(j) => {
+      let xs = parse_stored_accounts(j)
+      if xs.length() > 0 { StartupAccountsRead::Found(xs) } else { StartupAccountsRead::Absent }
+    }
+    sync::HostStorageRead::Absent => StartupAccountsRead::Absent
+    sync::HostStorageRead::ReadError(e) => StartupAccountsRead::BusyOrError(e)
   }
   pion_core_accounts_tx_end(tx_id)
   res
+}
+
+/// Background async startup reconciliation when initial `<dir>/accounts` read hit `BusyOrError`:
+/// Retries with bounded exponential backoff (`100ms..2000ms`), exits cleanly on `pion_core_runtime_stop()`
+/// or if a manual login superseded `init_login_gen`, and on discovering persisted accounts installs
+/// `account-<sanitized_sub>.db`, `auth_store`, `CloudSync` + `/v1/events` WS, and emits `auth.bump_all()`.
+fn retry_startup_accounts_init_k(
+  sess : RuntimeSession,
+  init_login_gen : Int64,
+  attempt : Int,
+  done_k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen || attempt >= 60 {
+    done_k(effect::Exit::Succeeded(()))
+    return
+  }
+  let delay = startup_init_backoff_ms(attempt)
+  // timer: retry after a failure, with a backoff
+  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+    match sex {
+      effect::Exit::Succeeded(_) => ()
+      _ => {
+        done_k(effect::Exit::Succeeded(()))
+        return
+      }
+    }
+    if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen {
+      done_k(effect::Exit::Succeeded(()))
+      return
+    }
+    let bs = sess.dir.to_bytes()
+    let tx_id = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs), bs.length().to_int64())
+    let _ = bs.length()
+    if tx_id <= 0L {
+      retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
+      return
+    }
+    let rd = accounts_tx_read_state(tx_id)
+    pion_core_accounts_tx_end(tx_id)
+    match rd {
+      sync::HostStorageRead::ReadError(_) => {
+        retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
+      }
+      sync::HostStorageRead::Absent => {
+        sess.accounts_init_pending = false
+        done_k(effect::Exit::Succeeded(()))
+      }
+      sync::HostStorageRead::Found(j) => {
+        let accts = parse_stored_accounts(j)
+        if accts.length() == 0 {
+          sess.accounts_init_pending = false
+          done_k(effect::Exit::Succeeded(()))
+          return
+        }
+        let a0 = accts[0]
+        let stored_list : Array[views::StoredAccount] = []
+        let sessions_map : Map[String, String] = Map::new()
+        for i in 0..<accts.length() {
+          let ai = accts[i]
+          if ai.session.length() > 0 {
+            sessions_map.set(ai.sub, ai.session)
+          }
+          stored_list.push(views::StoredAccount::{
+            sub: ai.sub,
+            email: ai.email,
+            name: ai.name,
+            picture: ai.picture,
+            access: ai.access,
+            refresh: ai.refresh,
+            access_expires: ai.access_expires,
+          })
+        }
+        runtime_stage_account_db_k(sess, a0.sub, fn(stage_res : Result[Option[StagedAccountDb], String]) -> Unit {
+          match stage_res {
+            Err(_) => {
+              if !sess.stopped && sess.accounts_init_pending && sess.login_gen == init_login_gen {
+                retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
+              } else {
+                done_k(effect::Exit::Succeeded(()))
+              }
+            }
+            Ok(staged_opt) => {
+              if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen {
+                close_staged_db(staged_opt)
+                done_k(effect::Exit::Succeeded(()))
+                return
+              }
+              sess.accounts_init_pending = false
+              sess.login_gen += 1L
+              let _ = bump_runtime_session_gen(sess)
+              sess.bearer_gen += 1L
+              match runtime_install_staged_db_now(sess, a0.sub, staged_opt) {
+                Err(_) => {
+                  done_k(effect::Exit::Succeeded(()))
+                  return
+                }
+                Ok(_) => ()
+              }
+              sess.core.membership.clear_session_invalidated()
+              sess.core.membership.set_unauthenticated(false)
+              sync_mem_accounts_from_list(sess, stored_list, sessions_map)
+              sess.core.set_viewer(a0.email, sub=a0.sub, role="owner")
+              let _ = store::put_account_doc(
+                sess.db,
+                "accounts",
+                base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+              )
+              if a0.access.length() > 0 && sess.origin.length() > 0 {
+                let cs = match sess.cloud {
+                  Some(existing) => {
+                    existing.switch_db(sess.db)
+                    let _ = existing.bind_account_context(a0.sub, session=a0.session)
+                    existing.set_origin_and_token("", a0.access)
+                    existing
+                  }
+                  None => {
+                    let created = sync::CloudSync::new(
+                      sess.sh,
+                      sess.db,
+                      sess.origin,
+                      token=a0.access,
+                      bound_sub=a0.sub,
+                      bound_session=a0.session,
+                    )
+                    wire_live_cloud_sync(sess, created, a0.sub, a0.session)
+                    sess.cloud = Some(created)
+                    created
+                  }
+                }
+                if cs.origin().length() > 0 {
+                  cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+                }
+              }
+              let _ = sess.core.auth.bump_all()
+              emit_topic_refresh(sess, "accounts")
+              emit_topic_refresh(sess, "workspaces")
+              emit_topic_refresh(sess, "workspace")
+              emit_topic_refresh(sess, "stations")
+              emit_topic_refresh(sess, "chats")
+              emit_topic_refresh(sess, "notify")
+              done_k(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      }
+    }
+  })
 }
 
 /// Non-blocking lock acquisition + single synchronous non-yielding `<dir>/accounts` atomic commit
@@ -1446,7 +1622,7 @@ fn runtime_refresh_account_token(
     },
     on_adopt_or_update: fn(
       updated : views::StoredAccount,
-      _sid : String,
+      new_sid : String,
       all_accts : Array[views::StoredAccount],
       all_sessions : Map[String, String],
     ) -> Unit {
@@ -1458,10 +1634,33 @@ fn runtime_refresh_account_token(
       )
       // ONLY install rotated token into live `sess.cloud` when `sub` is the active DB account!
       if updated.sub == sess.core.membership.effective_sub() && updated.access.length() > 0 {
+        let was_gated = sess.core.membership.is_session_invalidated()
         sess.bearer_gen += 1L
+        if was_gated {
+          // Recover from pending-401 lockout when background CAS reconcile discovered a newer
+          // peer-rotated/re-logged-in session for the SAME active subject on disk!
+          sess.core.membership.clear_session_invalidated()
+          sess.core.membership.set_unauthenticated(false)
+        }
         match sess.cloud {
-          Some(cs) => cs.set_origin_and_token("", updated.access)
+          Some(cs) => {
+            if was_gated && new_sid.length() > 0 {
+              let _ = cs.bind_account_context(updated.sub, session=new_sid)
+            }
+            cs.set_origin_and_token("", updated.access)
+            if was_gated && cs.origin().length() > 0 {
+              cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+            }
+          }
           None => ()
+        }
+        if was_gated {
+          let _ = sess.core.auth.bump_all()
+          emit_topic_refresh(sess, "workspaces")
+          emit_topic_refresh(sess, "workspace")
+          emit_topic_refresh(sess, "stations")
+          emit_topic_refresh(sess, "chats")
+          emit_topic_refresh(sess, "notify")
         }
       }
       emit_topic_refresh(sess, "accounts")
@@ -1810,11 +2009,15 @@ pub extern "C" fn pion_core_runtime_start(
       return 0
     }
   }
-  // Load signed-in accounts via bounded atomic C tx (`<= 500ms`, never blocks forever).
+  // Load signed-in accounts via bounded atomic C tx (`<= 500ms`, never blocks forever):
+  // explicitly preserves `accounts_init_pending` on `BusyOrError` for background async recovery!
+  let mut accounts_init_pending = false
   let accounts : Array[AccountInfo] = match read_accounts_atomic_sync(dir) {
-    Ok(xs) => xs
-    Err(reason) => {
-      log_runtime_warn("startup accounts read failed (" + reason + "); booting unauthenticated")
+    StartupAccountsRead::Found(xs) => xs
+    StartupAccountsRead::Absent => []
+    StartupAccountsRead::BusyOrError(reason) => {
+      log_runtime_warn("startup accounts read busy/error (" + reason + "); keeping unauth gate and scheduling async retry")
+      accounts_init_pending = true
       []
     }
   }
@@ -2191,6 +2394,8 @@ pub extern "C" fn pion_core_runtime_start(
     session_gen: 1L,
     login_gen: 1L,
     bearer_gen: 1L,
+    accounts_init_pending: accounts_init_pending,
+    stopped: false,
     reconcile_requeue_pending: false,
     device_conn_seq: device_conn_seq,
     live_sync_enabled: false,
@@ -2351,9 +2556,39 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
+  refresh_coord.set_on_pending_401_gate(fn(inv_sub : String, _sid : String, _ref : String) -> Unit {
+    if inv_sub == sess.core.membership.effective_sub() {
+      // Immediately close the active session's read gate on confirmed 401 even while waiting
+      // for `<dir>/.accounts.lock` so 0 cached reads can leak during lock contention!
+      sess.core.membership.mark_session_invalidated()
+      sess.core.clear_account_scoped_runtime_state()
+      clear_runtime_ephemeral_caches(sess)
+      sess.live_sync_enabled = false
+      match sess.cloud {
+        Some(cs) => {
+          cs.clear_all_credentials()
+          cs.clear_token()
+          cs.stop()
+        }
+        None => ()
+      }
+      let _ = sess.core.auth.bump_all()
+      emit_topic_refresh(sess, "workspaces")
+      emit_topic_refresh(sess, "workspace")
+      emit_topic_refresh(sess, "stations")
+      emit_topic_refresh(sess, "chats")
+      emit_topic_refresh(sess, "notify")
+    }
+  })
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
+  if sess.accounts_init_pending {
+    let init_login_gen = sess.login_gen
+    let _ = sess.core.rt.fork_quiet_named("startup-accounts-init", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      retry_startup_accounts_init_k(sess, init_login_gen, 0, fk)
+    })
+  }
   1
 }
 
@@ -3662,6 +3897,9 @@ pub extern "C" fn pion_core_runtime_send(
 pub extern "C" fn pion_core_runtime_stop() -> Unit {
   match g_session[0] {
     Some(sess) => {
+      sess.stopped = true
+      sess.accounts_init_pending = false
+      sess.refresh_coord.stop()
       let _ = bump_runtime_session_gen(sess)
       sess.live_sync_enabled = false
       let mkeys = sess.mesh_transports.keys()
