@@ -792,14 +792,16 @@ pub fn WholeAgents::archive_session(
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  // Atomically archive the session (and owned conversation members) + persist token revocation
-  // inside ONE single SQLite transaction.
-  let archived_keys = match st.tx(fn(t : sql_db::Db) -> Result[Array[String], sql_db::SqlError] {
+  // Atomically archive the session (and owned conversation members), persist token revocation,
+  // and revoke persistent Vault state (`vault_grants`, `vault_cross_listings`, pending `vault_requests`)
+  // inside ONE single SQLite transaction (1:1 Node `secrets.ts:393,402-418`).
+  let archived_entries = match st.tx(fn(t : sql_db::Db) -> Result[Array[(String, Array[String])], sql_db::SqlError] {
     let outcome = match station_store::archive_session(t, key, now_ms, by) {
       Ok(o) => o
       Err(e) => return Err(e)
     }
     let keys : Array[String] = if outcome.sessions.length() > 0 { outcome.sessions } else { [key] }
+    let entries : Array[(String, Array[String])] = []
     for i in 0..<keys.length() {
       let sk = keys[i]
       let marker = self.generate_revoked_marker(sk)
@@ -810,28 +812,21 @@ pub fn WholeAgents::archive_session(
         Ok(_) => ()
         Err(e) => return Err(e)
       }
+      let dropped_ids = match revoke_vault_db_for_archived_session_tx(t, sk) {
+        Ok(ids) => ids
+        Err(e) => return Err(e)
+      }
+      entries.push((sk, dropped_ids))
     }
-    Ok(keys)
+    Ok(entries)
   }) {
-    Ok(ks) => ks
+    Ok(es) => es
     Err(e) => return Err("archive_session failed: " + e.message)
   }
-  for i in 0..<archived_keys.length() {
-    let sk = archived_keys[i]
+  for i in 0..<archived_entries.length() {
+    let (sk, dropped_ids) = archived_entries[i]
     let _ = self.revoke_session_token(sk)
-    // P1-5 / R4 P1-4: Runtime vault cleanup on session archive (1:1 Node `secrets.ts:402-418`):
-    // revoke in-memory grants, clear cross-workspace listings, expire pending requests,
-    // and drop ephemeral boxes / unsaved fields for the archived session.
-    // Because the SQLite archive transaction has already committed, a subsequent vault cleanup
-    // error is logged but MUST NOT flip `archive_session` to `Err` (preventing callers from
-    // treating an already-archived session as failed).
-    let _ = whole_store.vault_grants.revoke_session(sk)
-    match expire_vault_state_for_archived_session(whole_store, sk, now_ms / 1000L) {
-      Ok(_) => ()
-      Err(e) => {
-        whole_store.vault_backfill_last_error = Some("[vault] archive cleanup warning for " + sk + ": " + e)
-      }
-    }
+    purge_vault_mem_for_archived_session(whole_store, sk, dropped_ids)
     match self.hub.actors.get(sk) {
       Some(a) => {
         let _ = a.evict()

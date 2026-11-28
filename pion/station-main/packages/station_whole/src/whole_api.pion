@@ -887,6 +887,8 @@ fn resolve_skills_context(
 }
 
 /// Build a real `station_api::SeenStore` backed directly by `WholeStore`'s SQLite database.
+let SEEN_DB_ERR_SENTINEL : String = "\x00seen-db-error"
+
 pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore {
   station_api::SeenStore::{
     session_exists: fn(key : String) -> Bool {
@@ -899,12 +901,17 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
       }
     },
     session_ws: fn(key : String) -> Option[Option[String]] {
+      if key == SEEN_DB_ERR_SENTINEL {
+        return Some(Some(SEEN_DB_ERR_SENTINEL))
+      }
       match whole_store.require_open() {
         Ok(st) => match st.get_session(key) {
           Ok(Some(row)) => Some(row.ws)
-          _ => None
+          Ok(None) => None
+          // R5 P1-2: DB error MUST fail closed (never return `None` -> home workspace fallback).
+          Err(_) => Some(Some(SEEN_DB_ERR_SENTINEL))
         }
-        Err(_) => None
+        Err(_) => Some(Some(SEEN_DB_ERR_SENTINEL))
       }
     },
     thread_exists: fn(id : Int) -> Bool {
@@ -919,7 +926,9 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
     thread_sessions: fn(id : Int) -> Array[String] {
       match whole_store.require_open() {
         Ok(st) => match st.db.all(
-          "SELECT session FROM thread_sessions WHERE thread = ?1 AND left_at IS NULL",
+          // R5 P1-2: Include historical memberships (1:1 Node `store.ts:3179-3181`, no `left_at IS NULL` filter)
+          // so threads whose only non-home members left never fall back to home workspace visibility.
+          "SELECT session FROM thread_sessions WHERE thread = ?1",
           [sql_db::int64_to_json(id.to_int64())],
         ) {
           Ok(rows) => {
@@ -932,9 +941,10 @@ pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore
             }
             out
           }
-          Err(_) => []
+          // R5 P1-2: DB error MUST fail closed with an unmatchable sentinel (never `[]`).
+          Err(_) => [SEEN_DB_ERR_SENTINEL]
         }
-        Err(_) => []
+        Err(_) => [SEEN_DB_ERR_SENTINEL]
       }
     },
     job_session: fn(id : String) -> Option[String] {
