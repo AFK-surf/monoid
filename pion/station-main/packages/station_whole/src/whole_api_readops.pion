@@ -2660,6 +2660,12 @@ pub fn dispatch_wave17c3a_call_op(
   if op == "hub.session.retry" && params.length() >= 1 {
     match hooks.on_session_retry {
       Some(f) => {
+        if hooks.read_only_handover_cell[0] {
+          return Some(Err(station_api::ApiError::new(503, "station is in read-only handover mode")))
+        }
+        if req.viewer.is_read_only() {
+          return Some(Err(station_api::ApiError::new(403, "read-only members cannot retry sessions")))
+        }
         let key = params[0]
         if !station_api::session_seen(seen_store, req.viewer, key) {
           return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
@@ -2684,6 +2690,12 @@ pub fn dispatch_wave17c3a_call_op(
   if op == "hub.session.compact" && params.length() >= 1 {
     match hooks.on_session_compact {
       Some(f) => {
+        if hooks.read_only_handover_cell[0] {
+          return Some(Err(station_api::ApiError::new(503, "station is in read-only handover mode")))
+        }
+        if req.viewer.is_read_only() {
+          return Some(Err(station_api::ApiError::new(403, "read-only members cannot compact sessions")))
+        }
         let key = params[0]
         if !station_api::session_seen(seen_store, req.viewer, key) {
           return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))

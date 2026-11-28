@@ -745,6 +745,7 @@ pub fn wire_whole_core_runtime_hooks(
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  live_runners~ : Option[LiveRunnerManager] = None,
 ) -> station_whole::DeviceScreenBrowserRuntime {
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     let now_s = host_shim::wall_ms().to_double() / 1000.0
@@ -772,6 +773,20 @@ pub fn wire_whole_core_runtime_hooks(
       fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
     )
   })
+  match live_runners {
+    Some(lr) => {
+      core.api.hooks.on_session_retry = Some(fn(key : String, tid : Int64, seq : Int64) -> Result[Unit, station_api::ApiError] {
+        lr.retry_session(ctx, core, live_config_raw(core, ctx.cfg_raw), key, tid, seq, host_shim::now_ms(), host_shim::wall_ms())
+      })
+      core.api.hooks.on_session_compact = Some(fn(key : String) -> Result[Unit, station_api::ApiError] {
+        lr.compact_session(ctx, core, live_config_raw(core, ctx.cfg_raw), key, host_shim::now_ms(), host_shim::wall_ms())
+      })
+    }
+    None => {
+      core.api.hooks.on_session_retry = None
+      core.api.hooks.on_session_compact = None
+    }
+  }
   let base_ports = station_whole::DeviceScreenBrowserPorts::default_os()
   let dsb_ports = station_whole::DeviceScreenBrowserPorts::{
     os_name: base_ports.os_name,

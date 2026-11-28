@@ -3155,10 +3155,11 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
   assert.equal(projRen.status, 501, `POST /projects/rename must return honest 501 until Wave 17E, got ${projRen.status}`);
 
+  // Wave 17E-3A: `hub.session.retry` & `hub.session.compact` are now live on `whole_daemon` (unknown session -> 404, not 501)
   const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
-  assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
+  assert.equal(retryMiss.status, 404, `hub.session.retry unknown session must return 404 (live Wave 17E-3A), got ${retryMiss.status}`);
   const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
-  assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
+  assert.equal(compactMiss.status, 404, `hub.session.compact unknown session must return 404 (live Wave 17E-3A), got ${compactMiss.status}`);
 
   // 5. Wave 17E-2B R2 real-SQLite production verification:
   //    (a) `devices(id, ws, body)` insert -> MCP `device_list` sees it -> SQLite delete -> `device_list` removes it
@@ -3284,4 +3285,307 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary notice + cutOffByRestart + cap_paused message/letter + auth 409) & compact gates", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17e3a-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17e3a";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17e3a daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e3a mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  const db = new DatabaseSync(join(data, "stillfail.db"));
+  db.exec("PRAGMA busy_timeout = 5000");
+  const now = Date.now();
+  const sessKey = "chat:w17e3a-retry-1";
+  const threadId = 701;
+
+  // Seed a real session, thread, thread_sessions, 2 consecutive failed turns + ordinary station notice
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-1', ?, ?, ?, 0, ?)`)
+    .run(sessKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Test', ?)`)
+    .run(threadId, `${threadId}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(threadId, sessKey, now);
+  // Entry 1: old failure notice, Entry 2: latest failure notice (atomically bound), Entry 3: ordinary station notice
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 1, 'message', 'station', 'station', 'old failure', ?, '1795857000.000001')`).run(threadId, now - 3000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 2, 'message', 'station', 'station', 'latest failure', ?, '1795857000.000002')`).run(threadId, now - 2000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 3, 'message', 'station', 'station', 'ordinary notice', ?, '1795857000.000003')`).run(threadId, now - 1000);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-fail-1', ?, 'turn', ?, ?, 'failed', 'model: 500', 'default', ?, ?, 1, '1795857000.000001')`)
+    .run(sessKey, now - 3100, now - 3000, threadId, threadId);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-fail-2', ?, 'turn', ?, ?, 'failed', 'model: 502', 'default', ?, ?, 2, '1795857000.000002')`)
+    .run(sessKey, now - 2100, now - 2000, threadId, threadId);
+
+  // 1. Verify GET /chats sees our seeded thread
+  const chatsResp = await adminCall(conn, "GET", "/chats");
+  assert.equal(chatsResp.status, 200, chatsResp.body.toString());
+  const chatsJson = JSON.parse(chatsResp.body.toString("utf8"));
+  const foundChat = (chatsJson.chats ?? []).find((c: any) => c.id === threadId);
+  assert.ok(foundChat, `expected seeded chat ${threadId} in GET /chats: ${chatsResp.body.toString()}`);
+
+  // 2. Stale failure (seq=1) and ordinary notice (seq=3) MUST return 409
+  const staleRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 1 })));
+  assert.equal(staleRetry.status, 409, `stale failure seq=1 must be 409, got ${staleRetry.status}: ${staleRetry.body.toString()}`);
+  const ordRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 3 })));
+  assert.equal(ordRetry.status, 409, `ordinary notice seq=3 must be 409, got ${ordRetry.status}: ${ordRetry.body.toString()}`);
+
+  // 3. Non-retryable `auth:` / `quota:` / `refused:` MUST return 409 even on exact seq=2
+  db.prepare(`UPDATE turns SET detail = 'auth: token expired' WHERE id = 't-fail-2'`).run();
+  const authRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 2 })));
+  assert.equal(authRetry.status, 409, `auth: failure must be 409, got ${authRetry.status}`);
+
+  // 4. Exact bound `cutOffByRestart` (`outcome='aborted', detail='other: cut off by restart'`) MUST succeed (200)
+  //    AND when the resulting resume turn fails before spawn (no claude binary), production `insert_retry_about_notice_in_tx`
+  //    writes a real `author_kind='station', author='station'` entry + `turns.(about_thread, about_n, about_ts)`!
+  db.prepare(`UPDATE turns SET outcome = 'aborted', detail = 'other: cut off by restart' WHERE id = 't-fail-2'`).run();
+  const cutRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: threadId, seq: 2 })));
+  assert.equal(cutRetry.status, 200, `cutOffByRestart seq=2 must be 200, got ${cutRetry.status}: ${cutRetry.body.toString()}`);
+  const newTurn = await until("production insert_retry_about_notice_in_tx wrote new resume turn", () => {
+    const r = db.prepare(`SELECT id, kind, outcome, about_thread, about_n, about_ts FROM turns WHERE session_key = ? AND id != 't-fail-1' AND id != 't-fail-2' ORDER BY started_at DESC LIMIT 1`).get(sessKey) as any;
+    return r && r.about_n != null ? r : null;
+  }, 5_000);
+  assert.equal(newTurn.kind, "resume", `retry must record kind='resume', got ${JSON.stringify(newTurn)}`);
+  assert.equal(newTurn.about_thread, threadId);
+  assert.ok(typeof newTurn.about_ts === "string" && newTurn.about_ts.includes("."), `about_ts must be real station ts, got ${newTurn.about_ts}`);
+  const noticeEntry = db.prepare(`SELECT kind, author, author_kind, ts FROM entries WHERE thread = ? AND n = ?`).get(threadId, newTurn.about_n) as any;
+  assert.equal(noticeEntry.kind, "message");
+  assert.equal(noticeEntry.author, "station");
+  assert.equal(noticeEntry.author_kind, "station");
+  assert.equal(noticeEntry.ts, newTurn.about_ts);
+
+  // 5. R4 Item 1: `other: session_cap` returns honest 501 (never replays unsettled `deliveries`)!
+  const capKey = "chat:w17e3a-cap-1";
+  const capThread = 702;
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-cap', ?, ?, ?, 0, ?)`)
+    .run(capKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Cap', ?)`)
+    .run(capThread, `${capThread}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(capThread, capKey, now);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 1, 'message', 'station', 'station', 'cap paused', ?, '1795857001.000001')`).run(capThread, now - 2000);
+  db.prepare(`INSERT INTO entries (thread, n, kind, author, author_kind, text, at, ts) VALUES (?, 2, 'message', 'owner@example.com', 'person', 'pending human msg', ?, '1795857001.000002')`).run(capThread, now - 1000);
+  db.prepare(`INSERT INTO deliveries (thread, n, session, delivered_at) VALUES (?, 2, ?, NULL)`).run(capThread, capKey);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, profile, thread, about_thread, about_n, about_ts) VALUES ('t-cap-1', ?, 'turn', ?, ?, 'failed', 'other: session_cap', 'default', ?, ?, 1, '1795857001.000001')`)
+    .run(capKey, now - 2100, now - 2000, capThread, capThread);
+
+  const capMsgRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(capKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: capThread, seq: 1 })));
+  assert.equal(capMsgRetry.status, 501, `other: session_cap must return honest 501, got ${capMsgRetry.status}: ${capMsgRetry.body.toString()}`);
+  const delivRow = db.prepare(`SELECT delivered_at FROM deliveries WHERE thread = ? AND n = 2 AND session = ?`).get(capThread, capKey) as any;
+  assert.equal(delivRow.delivered_at, null, "session_cap 501 must never touch SQLite deliveries.delivered_at");
+
+  // 6. Compact gates: Claude empty runtime_session_id -> 409 `station.context.empty` (localized default zh "暂无上下文"); cold Codex -> 409
+  const compactEmpty = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactEmpty.status, 409, `Claude empty runtime_session_id must be 409, got ${compactEmpty.status}: ${compactEmpty.body.toString()}`);
+  assert.ok(
+    compactEmpty.body.toString().includes("暂无上下文") || compactEmpty.body.toString().includes("No context yet"),
+    `expected localized station.context.empty, got ${compactEmpty.body.toString()}`,
+  );
+
+  const codexKey = "chat:w17e3a-codex-cold";
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, runtime_session_id, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'codex', 'default', ?, 'tok-cx', ?, 'th-cold-1', ?, ?, 0, ?)`)
+    .run(codexKey, drive, drive, now, now, ws);
+  const compactCodexCold = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(codexKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactCodexCold.status, 409, `cold Codex compact must be 409, got ${compactCodexCold.status}: ${compactCodexCold.body.toString()}`);
+
+  // 7. R4 Items 3 & 4: Real daemon restart with:
+  //    (a) un-adoptable open `declared='waiting'` turn -> `endCutOff` clears `waiting` & `wait_seconds`, posts bound notice, retryable (200);
+  //    (b) SURVIVING live mock runner on disk with `sessions.running=1` and NO open turn (daemon-only crash mid-compaction) ->
+  //        new daemon isolates/stops the orphan runner in draining, resets `running=0, context_before=NULL`, and never mounts it as `Running`!
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+
+  const orphanKey = "chat:w17e3a-orphan-restart";
+  const orphanThread = 704;
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-orph', ?, ?, ?, 1, ?)`)
+    .run(orphanKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Orphan Restart', ?)`)
+    .run(orphanThread, `${orphanThread}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(orphanThread, orphanKey, now);
+  // Seed an open turn with `declared = 'waiting'` and `wait_seconds = 60` to verify 1:1 `endCutOff`!
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, declared, wait_seconds, profile, thread) VALUES ('t-orphan-1', ?, 'turn', ?, 'waiting', 60, 'default', ?)`)
+    .run(orphanKey, now - 5000, orphanThread);
+
+  // Seed a session with `running=1`, `context_before=12345`, NO open turn, AND a LIVE surviving mock runner socket!
+  const orphanCompactKey = "w17e3a-orphan-compact";
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, context_before, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-oc', ?, ?, ?, 1, 12345, ?)`)
+    .run(orphanCompactKey, drive, drive, now, now, ws);
+  const orphanRunnerProc = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(orphanRunnerProc);
+  assert.ok(orphanRunnerProc.pid && orphanRunnerProc.pid > 1);
+  const runnersDir = join(data, "run", "runners");
+  mkdirSync(runnersDir, { recursive: true });
+  const mockRid = `claude-${orphanCompactKey}`;
+  const mockSock = join(runnersDir, `${mockRid}.sock`);
+  let mockGotSignal = false;
+  const mockRunnerSrv = createNetServer((sock) => {
+    let buf = "";
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const ln of lines) {
+        if (ln.includes("\"attach\"")) {
+          sock.write(JSON.stringify({ type: "hello", id: mockRid, pid: orphanRunnerProc.pid, alive: true, outSize: 0, errSize: 0 }) + "\n");
+        }
+        if (ln.includes("\"signal\"") || ln.includes("TERM") || ln.includes("\"done\"")) {
+          mockGotSignal = true;
+          sock.end();
+        }
+      }
+    });
+  });
+  servers.push(mockRunnerSrv);
+  await new Promise<void>((r) => mockRunnerSrv.listen(mockSock, () => r()));
+  writeFileSync(
+    join(runnersDir, `${mockRid}.json`),
+    JSON.stringify({ id: mockRid, runner: orphanRunnerProc.pid, pid: orphanRunnerProc.pid, pgid: orphanRunnerProc.pid, startedAt: Date.now(), socket: mockSock, cwd: drive }) + "\n",
+  );
+
+  const wd2 = startWholeDaemon(bin, data);
+  await until("w17e3a daemon 2 ready after restart", () => wd2.messages.find((m) => m.ready === true));
+  const meshAddr2 = await until("w17e3a daemon 2 mesh bound", () => wd2.meshAddr());
+  const { conn: conn2, helloReply: hello2 } = await openAdminConn(epOwner, stationId, meshAddr2, jwtOwner);
+  assert.equal(hello2?.ok, true, JSON.stringify(hello2));
+
+  // Verify 1:1 `endCutOff` cleared `declared='waiting'` & `wait_seconds`, set `other: cut off by restart` + bound notice!
+  const recoveredTurn = db.prepare(`SELECT outcome, detail, declared, wait_seconds, about_thread, about_n, about_ts FROM turns WHERE id = 't-orphan-1'`).get() as any;
+  assert.equal(recoveredTurn.outcome, "aborted");
+  assert.equal(recoveredTurn.detail, "other: cut off by restart");
+  assert.equal(recoveredTurn.declared, null, "endCutOff must clear declared='waiting' to NULL");
+  assert.equal(recoveredTurn.wait_seconds, null, "endCutOff must clear wait_seconds to NULL");
+  assert.equal(recoveredTurn.about_thread, orphanThread);
+  assert.ok(recoveredTurn.about_n != null && typeof recoveredTurn.about_ts === "string" && recoveredTurn.about_ts.includes("."), `expected bound about notice: ${JSON.stringify(recoveredTurn)}`);
+  const orphanSess = db.prepare(`SELECT running FROM sessions WHERE key = ?`).get(orphanKey) as any;
+  assert.equal(orphanSess.running, 0, "recovered orphan session must reset running=0");
+  // Verify retrying the real startup-recovered turn succeeds with 200!
+  const retryRecovered = await adminCall(conn2, "POST", `/sessions/${encodeURIComponent(orphanKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: orphanThread, seq: recoveredTurn.about_n })));
+  assert.equal(retryRecovered.status, 200, `retry on startup-recovered cutOffByRestart must be 200, got ${retryRecovered.status}: ${retryRecovered.body.toString()}`);
+
+  // Verify surviving orphan-compaction runner was isolated/stopped AND SQLite reset `running=0, context_before=NULL`!
+  await until("daemon 2 signaled/isolated surviving orphan compaction runner", () => mockGotSignal, 5_000);
+  const orphanCompactSess = db.prepare(`SELECT running, context_before FROM sessions WHERE key = ?`).get(orphanCompactKey) as any;
+  assert.equal(orphanCompactSess.running, 0, "orphaned compacting session with live runner must reset running=0 on startup");
+  assert.equal(orphanCompactSess.context_before, null, "orphaned compacting session must clear context_before on startup");
+
+  db.close();
+  await conn2.close(0, "done");
+  wd2.sendCtrl({ op: "stop" });
+  assert.equal(await wd2.waitExit(), 0, wd2.stderr());
+  // Clean up Step 7's synthetic mock runner process & metadata before starting daemon 3 for Step 8.
+  try { orphanRunnerProc.kill("SIGKILL"); } catch {}
+  try { mockRunnerSrv.close(); } catch {}
+  try { rmSync(join(runnersDir, `${mockRid}.json`), { force: true }); } catch {}
+  try { rmSync(mockSock, { force: true }); } catch {}
+
+  // 8. R5 P1-2: FULL real human-message -> deliveries settled -> runner fails -> POST /sessions/:key/retry returns 200!
+  const runnerBin = resolveRunnerBinary();
+  const mockBinDir = join(base, "mock-bin");
+  mkdirSync(mockBinDir, { recursive: true });
+  const mockClaudeLog = join(base, "mock-claude.log");
+  const mockClaudePath = join(mockBinDir, "claude");
+  writeFileSync(
+    mockClaudePath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${join(base, "mock-claude.count")}"
+while IFS= read -r LINE; do
+  [ -z "$LINE" ] && continue
+  N=0
+  if [ -f "$COUNT_FILE" ]; then N=$(cat "$COUNT_FILE"); fi
+  N=$((N + 1))
+  echo "$N" > "$COUNT_FILE"
+  echo "call=$N line=$LINE" >> "${mockClaudeLog}"
+  if [ "$N" -eq 1 ]; then
+    echo '{"type":"result","is_error":true,"result":"model: synthetic transient 502"}'
+  else
+    echo '{"type":"result","is_error":false,"result":"retried cleanly"}'
+  fi
+done
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(mockClaudePath, 0o755);
+
+  const wd3 = startWholeDaemon(bin, data, {
+    STILLFAIL_RUNNER: runnerBin,
+    PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+  });
+  await until("w17e3a daemon 3 ready for real deliveries->retry flow", () => wd3.messages.find((m) => m.ready === true));
+  const meshAddr3 = await until("w17e3a daemon 3 mesh bound", () => wd3.meshAddr());
+  const { conn: conn3, helloReply: hello3 } = await openAdminConn(epOwner, stationId, meshAddr3, jwtOwner);
+  assert.equal(hello3?.ok, true, JSON.stringify(hello3));
+
+  const db3 = new DatabaseSync(join(data, "stillfail.db"));
+  db3.exec("PRAGMA busy_timeout = 5000");
+  const flowKey = "chat:w17e3a-real-flow";
+  const flowThread = 705;
+  const now3 = Date.now();
+  db3.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-flow', ?, ?, ?, 0, ?)`)
+    .run(flowKey, drive, drive, now3, now3, ws);
+  db3.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Real Flow', ?)`)
+    .run(flowThread, `${flowThread}.000000`, now3);
+  db3.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(flowThread, flowKey, now3);
+
+  // Send a REAL human message via Admin/1 `POST /threads/:id/messages` (writes `deliveries` with `delivered_at = NULL`)!
+  const sendMsg = await adminCall(
+    conn3,
+    "POST",
+    `/threads/${flowThread}/messages`,
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ text: "hello real flow" })),
+  );
+  assert.equal(sendMsg.status, 200, `POST /threads/${flowThread}/messages failed: ${sendMsg.status} ${sendMsg.body.toString()}`);
+
+  // Wait for mock claude call 1 to receive the prompt, fail with `model: synthetic transient 502`, and settle `deliveries`!
+  const failedTurn = await until("real human turn failed with bound about notice", () => {
+    const r = db3.prepare(`SELECT id, outcome, detail, about_thread, about_n, about_ts FROM turns WHERE session_key = ? AND ended_at IS NOT NULL ORDER BY started_at DESC LIMIT 1`).get(flowKey) as any;
+    return r && r.about_n != null ? r : null;
+  }, 10_000);
+  assert.equal(failedTurn.outcome, "failed", JSON.stringify(failedTurn));
+  const pendingAfterFail = db3.prepare(`SELECT COUNT(*) AS c FROM deliveries WHERE session = ? AND delivered_at IS NULL`).get(flowKey) as any;
+  assert.equal(pendingAfterFail.c, 0, "R5 P1-2: deliveries up to turn watermark MUST be marked delivered once prompt is written to runner");
+
+  // Now click retry (`POST /sessions/:key/retry`) -> MUST return 200 (NOT 409!) and launch mock claude call 2!
+  const retryFlow = await adminCall(
+    conn3,
+    "POST",
+    `/sessions/${encodeURIComponent(flowKey)}/retry`,
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ thread: failedTurn.about_thread, seq: failedTurn.about_n })),
+  );
+  assert.equal(retryFlow.status, 200, `retry after real human message failure must be 200, got ${retryFlow.status}: ${retryFlow.body.toString()}`);
+  await until("mock claude received retry call 2", () => {
+    try {
+      return readFileSync(mockClaudeLog, "utf8").includes("call=2");
+    } catch { return false; }
+  }, 10_000);
+
+  db3.close();
+  await conn3.close(0, "done");
+  wd3.sendCtrl({ op: "stop" });
+  assert.equal(await wd3.waitExit(), 0, wd3.stderr());
 });

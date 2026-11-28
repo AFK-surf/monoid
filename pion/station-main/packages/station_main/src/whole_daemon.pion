@@ -880,22 +880,23 @@ fn emit_thread_sse_event(
   author : String,
   text : String,
   now_ms : Int64,
+  ts~ : Option[String] = None,
 ) -> Unit {
+  let entry_fields : Array[(String, base_codec::Json)] = [
+    ("n", base_codec::json_int64(n)),
+    ("kind", base_codec::json_str(kind)),
+    ("authorKind", base_codec::json_str(author_kind)),
+    ("author", base_codec::json_str(author)),
+    ("text", base_codec::json_str(text)),
+    ("at", base_codec::json_int64(now_ms)),
+  ]
+  match ts {
+    Some(ts_val) => if ts_val.length() > 0 { entry_fields.push(("ts", base_codec::json_str(ts_val))) }
+    None => ()
+  }
   let ev_payload = base_codec::json_obj([
     ("id", base_codec::json_int64(tid)),
-    (
-      "entries",
-      base_codec::json_arr([
-        base_codec::json_obj([
-          ("n", base_codec::json_int64(n)),
-          ("kind", base_codec::json_str(kind)),
-          ("authorKind", base_codec::json_str(author_kind)),
-          ("author", base_codec::json_str(author)),
-          ("text", base_codec::json_str(text)),
-          ("at", base_codec::json_int64(now_ms)),
-        ]),
-      ]),
-    ),
+    ("entries", base_codec::json_arr([base_codec::json_obj(entry_fields)])),
   ])
   let ev_target = station_api::EventTarget::{
     lang: None,
@@ -1285,7 +1286,7 @@ fn handle_connect_inbound_event_local(
               }
               for si in 0..<active_sessions.length() {
                 let actor = core.agents.hub.ensure_actor(active_sessions[si], meta.runtime)
-                let _ = actor.submit_input(m.text)
+                let _ = actor.submit_input(m.text, handed=[(tid, n, false)])
               }
               emit_thread_sse_event(core, meta.ws, tid, n, "message", "person", m.user, m.text, now_ms)
             }
@@ -7678,7 +7679,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      let dsb = wire_whole_core_runtime_hooks(ctx, core, devices, logins, browser, seen_members)
+      let dsb = wire_whole_core_runtime_hooks(ctx, core, devices, logins, browser, seen_members, live_runners=Some(live_runners))
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7997,6 +7998,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                 }
               }
+              // P1-5: Settle any open turns whose runner could NOT be adopted (e.g. crash or host restart)
+              // with `aborted` + `other: cut off by restart` + bound station notice (aligned with actor_run.mbt:724-749).
+              let _ = st.live_runners.recover_orphan_open_turns_on_startup(ctx, st.core, adopt_wall_ms)
+              // R4 Item 2: Re-submit any queued inputs carried across `SIGUSR2` handover from interrupted compactions!
+              st.live_runners.restore_carried_pending_prompts(ctx, st.core, adopt_cfg, adopt_now_ms, adopt_wall_ms)
               // R14 Invariant 2: Do NOT single-scan prune `draining_stopping_ids` at startup;
               // `LiveRunnerManager::tick()` safely sweeps dead exact `instance_id`s via OS liveness
               // checks and expires `Spawning` `"rid:<id>@<before_ms>"` markers after 30s while
@@ -9438,7 +9444,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           // R11 P1-1: Freeze `pre_delivery` prompts immediately, best-effort commit all pending
           // end-turns/draining entries, and hand over any uncommitted entries + in-flight
           // `draining_stopping_ids` to the successor via `carry` + private handover file.
-          st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms)
+          match st.live_runners.prepare_handover(ctx, st.core, ho_wall_ms) {
+            Ok(_) => ()
+            Err(e) => {
+              ctx.log("[whole-daemon] prepare_handover failed: " + e)
+              return Err(e)
+            }
+          }
           match st.core.export_handover(ho_wall_ms) {
             Ok(snap) => {
               let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])

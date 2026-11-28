@@ -39,15 +39,124 @@ pub enum TurnEndAction {
   EndUndeclared
 }
 
+/// Exact delivery metadata attached to a queued/started prompt or steer:
+/// `(thread, n, apart)` SQLite `deliveries`/`letter_deliveries` tokens + optional handover carry id.
+pub struct WorkDeliveryMeta {
+  pub handed : Array[(Int64, Int64, Bool)]
+  pub mut carried_id : Option[String]
+}
+
+pub fn WorkDeliveryMeta::empty() -> WorkDeliveryMeta {
+  WorkDeliveryMeta::{ handed: [], carried_id: None }
+}
+
+/// Single atomic queue element binding `ActorWork` with its exact `WorkDeliveryMeta` (zero parallel-array drift!).
+pub struct QueuedWork {
+  pub work : ActorWork
+  pub meta : WorkDeliveryMeta
+}
+
+/// Single atomic started-prompt record binding prompt payload, flags, and exact `WorkDeliveryMeta`.
+pub struct StartedPromptEntry {
+  pub text : String
+  pub is_internal : Bool
+  pub kind : String
+  pub meta : WorkDeliveryMeta
+}
+
 /// An item queued on a session's serial actor queue.
 pub enum ActorWork {
   Prompt(String)
   InternalPrompt(String)
+  Resume(String)
   Steer(String)
   Deliver(String)
   ToolCall(String)
   LifecycleOp(String)
   Barrier(Int)
+}
+
+/// Default compaction timeout (5 minutes, fail-open deadline so a stuck runtime never deadlocks the queue).
+pub let COMPACT_TIMEOUT_MS : Int64 = 300000L
+
+/// First-class in-flight compaction state on `SessionActor` (isolated from ordinary turn lifecycle).
+pub struct PendingCompaction {
+  pub req_id : String
+  pub runtime : String
+  pub started_at_ms : Int64
+  pub deadline_ms : Int64
+  pub mut codex_turn_id : Option[String]
+  pub mut runner_conn_id : Option[Int]
+  pub mut bootstrapping : Bool
+}
+
+/// 1:1 with `station/src/sessions/actor.ts:50-54` (`failedAgain`):
+/// only transient/provider/process failures (`network:`, `model:`, `other:`, `exited:`) with no declared state.
+/// Never retries `auth:`, `quota:`, `refused:`, or other human-action errors.
+pub fn is_failed_again(
+  outcome : Option[String],
+  declared : Option[String],
+  detail : Option[String],
+) -> Bool {
+  if outcome != Some("failed") || declared is Some(_) {
+    return false
+  }
+  match detail {
+    Some(d) => d.starts_with("network:")
+    || d.starts_with("model:")
+    || d.starts_with("other:")
+    || d.starts_with("exited:")
+    None => false
+  }
+}
+
+/// 1:1 with `station/src/sessions/actor.ts:58` (`givenUp`):
+/// a turn that completed with no declared state after the station stopped nudging.
+pub fn is_given_up(outcome : Option[String], declared : Option[String]) -> Bool {
+  outcome == Some("completed") && declared is None
+}
+
+/// 1:1 with `station/src/sessions/actor.ts:61-62` (`cutOffByRestart`):
+/// a turn cut off by a non-update station restart without a declared final state.
+pub fn is_cut_off_by_restart(
+  outcome : Option[String],
+  declared : Option[String],
+  detail : Option[String],
+) -> Bool {
+  outcome == Some("aborted")
+  && declared is None
+  && detail == Some("other: cut off by restart")
+}
+
+/// 1:1 with `station/mb/src/reader/actor_run.mbt:162-164` (`cap_paused`).
+pub fn is_cap_paused(outcome : Option[String], detail : Option[String]) -> Bool {
+  outcome == Some("failed") && detail == Some("other: session_cap")
+}
+
+/// 1:1 with `station/src/sessions/actor.ts:65-66` (`retryable`).
+pub fn is_retryable_turn(
+  outcome : Option[String],
+  declared : Option[String],
+  detail : Option[String],
+) -> Bool {
+  is_failed_again(outcome, declared, detail)
+  || is_given_up(outcome, declared)
+  || is_cut_off_by_restart(outcome, declared, detail)
+}
+
+/// 1:1 with `station/mb/src/reader/actor_run.mbt:190-196` (`words_key`).
+pub fn retry_words_key(
+  outcome : Option[String],
+  declared : Option[String],
+  detail : Option[String],
+) -> String {
+  if is_cut_off_by_restart(outcome, declared, detail) {
+    "RESUME_AFTER_RESTART"
+  } else if is_given_up(outcome, declared) {
+    "GO_ON_AFTER_UNANSWERED"
+  } else {
+    "GO_ON_AFTER_FAILED"
+  }
 }
 
 /// Result of evaluating `--sessions` program exit.
@@ -198,7 +307,7 @@ pub struct SessionActor {
   pub mut posted_in_turn : Bool
   pub mut posted_after_terminal : Bool
   pub mut declared : TurnDeclared
-  pub mut queue : Array[ActorWork]
+  pub mut queue : Array[QueuedWork]
   /// Typed internal notices queued for the next turn (separate from `queue` so they never
   /// head-of-line block human `ActorWork::Steer` during an active `Running` turn).
   pub mut pending_internal_notices : Array[String]
@@ -207,6 +316,8 @@ pub struct SessionActor {
   pub mut running_history : Array[Bool]
   pub mut started_prompts : Array[String]
   pub mut started_prompts_internal : Array[Bool]
+  pub mut started_prompts_kind : Array[String]
+  pub mut started_entries : Array[StartedPromptEntry]
   /// Tool calls begun and not ended since the turn started (or since a mid-wait steer cleared them, `36bef9f96a`).
   pub mut open_tools : Array[String]
   /// Deadline timestamp when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
@@ -218,6 +329,7 @@ pub struct SessionActor {
   /// Last hung turn end result recorded by `check_steer_silent` (`36bef9f96a`).
   pub mut last_hung_end : Option[SteerHungResult]
   pub mut compacting : Bool
+  pub mut pending_compaction : Option[PendingCompaction]
   pub mut archived : Bool
   pub mut active_watch_job : Bool
 }
@@ -245,23 +357,40 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     running_history: [],
     started_prompts: [],
     started_prompts_internal: [],
+    started_prompts_kind: [],
+    started_entries: [],
     open_tools: [],
     steer_silent_due_at: None,
     last_live_event_at: None,
     steered_during_silence: [],
     last_hung_end: None,
     compacting: false,
+    pending_compaction: None,
     archived: false,
     active_watch_job: false,
   }
 }
 
-/// Returns true if the actor is currently busy (starting, running, stopping, or has queued work).
-pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
+/// Returns true if the actor is actively executing work (compacting, starting, running, or stopping),
+/// excluding merely queued work (so `cap_paused` retry can distinguish active execution from queued work).
+pub fn SessionActor::is_active(self : SessionActor) -> Bool {
+  if self.compacting || self.pending_compaction is Some(_) || self.in_flight_start {
+    return true
+  }
   match self.phase {
-    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start
-    ActorPhase::Closed => false
+    ActorPhase::Idle | ActorPhase::Closed => false
     _ => true
+  }
+}
+
+/// Returns true if the actor is currently busy (compacting, starting, running, stopping, or has queued work).
+pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
+  if self.is_active() {
+    return true
+  }
+  match self.phase {
+    ActorPhase::Idle => self.queue.length() > 0
+    _ => false
   }
 }
 
@@ -288,34 +417,94 @@ pub fn SessionActor::next_generation(self : SessionActor) -> Int {
   self.generation
 }
 
+/// Enqueues a work item with exact delivery metadata on the serial actor queue.
+pub fn SessionActor::push_queue_with_meta(
+  self : SessionActor,
+  item : ActorWork,
+  meta : WorkDeliveryMeta,
+) -> Unit {
+  self.queue.push(QueuedWork::{ work: item, meta: meta })
+}
+
 /// Enqueues a work item on the serial actor queue.
 pub fn SessionActor::enqueue(self : SessionActor, item : ActorWork) -> Unit {
-  self.queue.push(item)
+  self.push_queue_with_meta(item, WorkDeliveryMeta::empty())
 }
 
 /// Enqueues a flush barrier and returns its barrier id.
 pub fn SessionActor::enqueue_barrier(self : SessionActor) -> Int {
   let id = self.next_barrier_id
   self.next_barrier_id = self.next_barrier_id + 1
-  self.queue.push(ActorWork::Barrier(id))
+  self.push_queue_with_meta(ActorWork::Barrier(id), WorkDeliveryMeta::empty())
   id
 }
 
-/// Pops the next queued work item in strict FIFO order.
-pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
+/// Pops the next queued work item and its exact delivery metadata in strict FIFO order.
+pub fn SessionActor::pop_next_with_meta(self : SessionActor) -> Option[(ActorWork, WorkDeliveryMeta)] {
   if self.queue.length() == 0 {
     return None
   }
   let first = self.queue[0]
-  let rest : Array[ActorWork] = []
+  let rest : Array[QueuedWork] = []
   for i in 1..<self.queue.length() {
     rest.push(self.queue[i])
   }
   self.queue = rest
+  Some((first.work, first.meta))
+}
+
+/// Pops the next queued work item in strict FIFO order.
+pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
+  match self.pop_next_with_meta() {
+    Some((item, _)) => Some(item)
+    None => None
+  }
+}
+
+/// Pops the head `StartedPromptEntry` in strict FIFO order (keeping compatibility mirrors in sync).
+pub fn SessionActor::pop_started_prompt(self : SessionActor) -> Option[StartedPromptEntry] {
+  if self.started_entries.length() == 0 {
+    return None
+  }
+  let first = self.started_entries[0]
+  let rest : Array[StartedPromptEntry] = []
+  for i in 1..<self.started_entries.length() {
+    rest.push(self.started_entries[i])
+  }
+  self.started_entries = rest
+  if self.started_prompts.length() > 0 {
+    let rp : Array[String] = []
+    for i in 1..<self.started_prompts.length() { rp.push(self.started_prompts[i]) }
+    self.started_prompts = rp
+  }
+  if self.started_prompts_internal.length() > 0 {
+    let ri : Array[Bool] = []
+    for i in 1..<self.started_prompts_internal.length() { ri.push(self.started_prompts_internal[i]) }
+    self.started_prompts_internal = ri
+  }
+  if self.started_prompts_kind.length() > 0 {
+    let rk : Array[String] = []
+    for i in 1..<self.started_prompts_kind.length() { rk.push(self.started_prompts_kind[i]) }
+    self.started_prompts_kind = rk
+  }
   Some(first)
 }
 
-fn SessionActor::start_prompt_now(self : SessionActor, text : String, is_internal~ : Bool = false) -> Unit {
+/// Clears all started prompt entries and compatibility mirrors atomically.
+pub fn SessionActor::clear_started_prompts(self : SessionActor) -> Unit {
+  self.started_entries.clear()
+  self.started_prompts.clear()
+  self.started_prompts_internal.clear()
+  self.started_prompts_kind.clear()
+}
+
+fn SessionActor::start_prompt_now(
+  self : SessionActor,
+  text : String,
+  is_internal~ : Bool = false,
+  kind~ : String = "prompt",
+  meta~ : WorkDeliveryMeta = WorkDeliveryMeta::empty(),
+) -> Unit {
   self.phase = ActorPhase::Running
   self.idle_since_ms = None
   self.reprompt_count = 0
@@ -329,22 +518,133 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String, is_interna
   self.running_history.push(true)
   self.started_prompts.push(text)
   self.started_prompts_internal.push(is_internal)
+  self.started_prompts_kind.push(kind)
+  self.started_entries.push(StartedPromptEntry::{ text: text, is_internal: is_internal, kind: kind, meta: meta })
+}
+
+/// Starts an internal `kind = "resume"` turn (used by `hub.session.retry`; never forges user input).
+pub fn SessionActor::start_resume(self : SessionActor, text : String) -> Bool {
+  if self.compacting || self.pending_compaction is Some(_) || self.in_flight_start {
+    return false
+  }
+  match self.phase {
+    ActorPhase::Idle => {
+      self.start_prompt_now(text, is_internal=true, kind="resume")
+      true
+    }
+    _ => false
+  }
+}
+
+/// Begins a first-class in-flight compaction (isolated from ordinary turn lifecycle).
+pub fn SessionActor::begin_compaction(
+  self : SessionActor,
+  req_id : String,
+  runtime : String,
+  now_ms : Int64,
+  timeout_ms~ : Int64 = COMPACT_TIMEOUT_MS,
+  runner_conn_id~ : Option[Int] = None,
+  bootstrapping~ : Bool = false,
+) -> Result[PendingCompaction, String] {
+  if self.compacting || self.pending_compaction is Some(_) {
+    return Err("compaction already in progress")
+  }
+  if self.in_flight_start {
+    return Err("session is starting")
+  }
+  match self.phase {
+    ActorPhase::Idle => ()
+    _ => return Err("session is busy")
+  }
+  let pc = PendingCompaction::{
+    req_id: req_id,
+    runtime: runtime,
+    started_at_ms: now_ms,
+    deadline_ms: now_ms + timeout_ms,
+    codex_turn_id: None,
+    runner_conn_id: runner_conn_id,
+    bootstrapping: bootstrapping,
+  }
+  self.compacting = true
+  self.pending_compaction = Some(pc)
+  self.idle_since_ms = None
+  self.running_history.push(true)
+  Ok(pc)
+}
+
+/// Dedicated compaction termination path (NEVER invokes `on_turn_ended` / `needs_reprompt`!):
+/// clears `compacting` and `pending_compaction`, returns to Idle, and immediately calls
+/// `pump_next_prompt()` to release any queued human input (fail-open liveness).
+pub fn SessionActor::finish_compaction(
+  self : SessionActor,
+  _ok : Bool,
+  _err_opt : Option[String],
+  now_ms : Int64,
+) -> Option[PendingCompaction] {
+  if !self.compacting && self.pending_compaction is None {
+    return None
+  }
+  let prev = self.pending_compaction
+  self.compacting = false
+  self.pending_compaction = None
+  self.open_tools = []
+  self.steer_silent_due_at = None
+  self.steered_during_silence.clear()
+  match self.phase {
+    ActorPhase::Closed => ()
+    _ => {
+      self.phase = ActorPhase::Idle
+      if self.has_process {
+        self.idle_since_ms = Some(now_ms)
+      }
+    }
+  }
+  self.running_history.push(false)
+  self.pump_next_prompt()
+  prev
+}
+
+/// Checks whether an active `PendingCompaction` has exceeded its monotonic `deadline_ms`,
+/// and if so terminates it via `finish_compaction` (fail-open liveness).
+pub fn SessionActor::check_compaction_timeout(
+  self : SessionActor,
+  now_ms : Int64,
+) -> Option[PendingCompaction] {
+  match self.pending_compaction {
+    Some(pc) => if now_ms >= pc.deadline_ms {
+      self.finish_compaction(false, Some("compaction timed out"), now_ms)
+    } else {
+      None
+    }
+    None => None
+  }
 }
 
 /// Submits user input according to `route_input` while preserving strict FIFO queue order:
+/// - Compacting -> safely queues behind compaction (`Queue`)
 /// - Idle with empty queue -> transitions to Running, starts prompt immediately (`StartPrompt`)
 /// - Idle with queued work -> enqueues behind existing work, pumps FIFO head, returns `Queue`
 /// - Running -> steers active turn (`Steer`)
 /// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
-pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
+pub fn SessionActor::submit_input(
+  self : SessionActor,
+  text : String,
+  handed~ : Array[(Int64, Int64, Bool)] = [],
+  carried_id~ : Option[String] = None,
+) -> InputRoute {
+  let meta = WorkDeliveryMeta::{ handed: handed, carried_id: carried_id }
+  if self.compacting || self.pending_compaction is Some(_) {
+    self.push_queue_with_meta(ActorWork::Prompt(text), meta)
+    return InputRoute::Queue
+  }
   let route = route_input(self.phase)
   match route {
     InputRoute::StartPrompt => {
       if self.queue.length() == 0 {
-        self.start_prompt_now(text)
+        self.start_prompt_now(text, meta=meta)
         InputRoute::StartPrompt
       } else {
-        self.queue.push(ActorWork::Prompt(text))
+        self.push_queue_with_meta(ActorWork::Prompt(text), meta)
         self.pump_next_prompt()
         InputRoute::Queue
       }
@@ -353,22 +653,22 @@ pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRo
       if !(self.steer_silent_due_at is None) {
         self.steered_during_silence.push(text)
       }
-      self.queue.push(ActorWork::Steer(text))
+      self.push_queue_with_meta(ActorWork::Steer(text), meta)
       InputRoute::Steer
     }
     InputRoute::Queue => {
-      self.queue.push(ActorWork::Prompt(text))
+      self.push_queue_with_meta(ActorWork::Prompt(text), meta)
       InputRoute::Queue
     }
   }
 }
 
 /// Enqueue a typed internal notice (e.g. vault approval decision):
-/// - If Idle with an empty queue, starts an internal turn immediately (`is_internal = true`).
+/// - If Idle (and not compacting) with an empty queue, starts an internal turn immediately (`is_internal = true`).
 /// - Otherwise buffers in `pending_internal_notices` (separate from `queue`), so human
 ///   `ActorWork::Steer` items in `queue` are NEVER head-of-line blocked during a `Running` turn.
 pub fn SessionActor::enqueue_internal_notice(self : SessionActor, text : String) -> Unit {
-  if (self.phase is ActorPhase::Idle) && self.queue.length() == 0 {
+  if !self.compacting && self.pending_compaction is None && (self.phase is ActorPhase::Idle) && self.queue.length() == 0 {
     self.start_prompt_now(text, is_internal=true)
   } else {
     self.pending_internal_notices.push(text)
@@ -380,30 +680,38 @@ pub fn SessionActor::enqueue_internal_notice(self : SessionActor, text : String)
 /// pending prompt. A residual `Steer` left at queue head after a turn ends becomes the next
 /// turn's prompt so the actor never deadlocks in Idle.
 pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
+  if self.compacting || self.pending_compaction is Some(_) {
+    return
+  }
   while self.queue.length() > 0 {
-    match self.queue[0] {
+    match self.queue[0].work {
       ActorWork::Barrier(id) => {
-        let _ = self.pop_next()
+        let _ = self.pop_next_with_meta()
         self.completed_barriers.push(id)
       }
       ActorWork::Prompt(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       ActorWork::InternalPrompt(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=true)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=true, meta=meta)
+        return
+      }
+      ActorWork::Resume(text) => {
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=true, kind="resume", meta=meta)
         return
       }
       ActorWork::Deliver(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       ActorWork::Steer(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       _ => return
@@ -510,9 +818,9 @@ pub fn SessionActor::finish_start(self : SessionActor, ok : Bool, now_ms : Int64
   }
 }
 
-/// Evicts an idle process.
+/// Evicts an idle process (never evicts while compacting).
 pub fn SessionActor::evict(self : SessionActor) -> Bool {
-  if !self.has_process {
+  if !self.has_process || self.compacting || self.pending_compaction is Some(_) {
     return false
   }
   match self.phase {
@@ -527,15 +835,16 @@ pub fn SessionActor::evict(self : SessionActor) -> Bool {
 
 /// Drains all currently queued barriers and records their ids as completed.
 pub fn SessionActor::drain_barriers(self : SessionActor) -> Array[Int] {
-  let remaining : Array[ActorWork] = []
+  let remaining : Array[QueuedWork] = []
   let done : Array[Int] = []
   for i in 0..<self.queue.length() {
-    match self.queue[i] {
+    let q = self.queue[i]
+    match q.work {
       ActorWork::Barrier(id) => {
         self.completed_barriers.push(id)
         done.push(id)
       }
-      other => remaining.push(other)
+      _ => remaining.push(q)
     }
   }
   self.queue = remaining
@@ -574,14 +883,15 @@ pub fn SessionActor::stop_with_pending(
           post_stopped_notice: false,
         }
       }
-      let remaining : Array[ActorWork] = []
+      let remaining : Array[QueuedWork] = []
       let mut cleared = 0
       for i in 0..<self.queue.length() {
-        match self.queue[i] {
+        let q = self.queue[i]
+        match q.work {
           ActorWork::Prompt(_) => cleared = cleared + 1
           ActorWork::Deliver(_) => cleared = cleared + 1
           ActorWork::Steer(_) => cleared = cleared + 1
-          other => remaining.push(other)
+          _ => remaining.push(q)
         }
       }
       self.queue = remaining
@@ -692,7 +1002,7 @@ pub fn SessionActor::check_steer_silent(
   }
   let mut qi = self.queue.length() - 1
   while qi >= 0 {
-    match self.queue[qi] {
+    match self.queue[qi].work {
       ActorWork::Steer(s) => {
         match drop_counts.get(s) {
           Some(c) => {
@@ -708,7 +1018,7 @@ pub fn SessionActor::check_steer_silent(
     }
     qi = qi - 1
   }
-  let kept_q : Array[ActorWork] = []
+  let kept_q : Array[QueuedWork] = []
   for i in 0..<self.queue.length() {
     if keep_flags[i] {
       kept_q.push(self.queue[i])

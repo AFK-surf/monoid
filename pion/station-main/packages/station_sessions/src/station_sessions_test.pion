@@ -888,7 +888,7 @@ test "w17b2_actor_stop_before_turn_and_steer_silent_hung" {
   expect(notified[0], "on_turn_ended callback notified")
   expect(!b.has_process, "process cleared on hung end")
   expect(
-    b.queue.length() == 1 && match b.queue[0] { ActorWork::Steer(s) => s == "pre-existing steer", _ => false },
+    b.queue.length() == 1 && match b.queue[0].work { ActorWork::Steer(s) => s == "pre-existing steer", _ => false },
     "pre-existing steer queued before silence deadline preserved",
   )
 }
@@ -997,4 +997,58 @@ test "w17b2_attachment_collision_page_origin_and_remote_create" {
   let argv = shared_clone_git_args("https://example.com/repo.git", ".cloning-1")
   let joined = argv.join(" ")
   expect(joined.contains("maintenance.auto=false") && joined.contains("gc.auto=0") && joined.contains("gc.autoDetach=false"), "shared clone config args")
+}
+
+test "w17e3a: 1:1 Node retryable predicates and words_key" {
+  expect(is_retryable_turn(Some("failed"), None, Some("network: timeout")), "network: retryable")
+  expect(is_retryable_turn(Some("failed"), None, Some("model: 500")), "model: retryable")
+  expect(is_retryable_turn(Some("failed"), None, Some("other: boom")), "other: retryable")
+  expect(is_retryable_turn(Some("failed"), None, Some("exited: code 1")), "exited: retryable")
+  expect(retry_words_key(Some("failed"), None, Some("network: timeout")) == "GO_ON_AFTER_FAILED", "failed words_key")
+
+  expect(!is_retryable_turn(Some("failed"), None, Some("auth: 401")), "auth: rejected")
+  expect(!is_retryable_turn(Some("failed"), None, Some("quota: limit")), "quota: rejected")
+  expect(!is_retryable_turn(Some("failed"), None, Some("refused: policy")), "refused: rejected")
+  expect(!is_retryable_turn(Some("failed"), None, Some("overloaded: busy")), "overloaded: rejected")
+  expect(!is_retryable_turn(Some("failed"), Some("need_human"), Some("network: timeout")), "declared!=None rejected")
+
+  expect(is_retryable_turn(Some("completed"), None, None), "givenUp retryable")
+  expect(retry_words_key(Some("completed"), None, None) == "GO_ON_AFTER_UNANSWERED", "givenUp words_key")
+  expect(!is_retryable_turn(Some("completed"), Some("all_done"), None), "completed+all_done rejected")
+
+  expect(is_cut_off_by_restart(Some("aborted"), None, Some("other: cut off by restart")), "cutOffByRestart exact")
+  expect(is_retryable_turn(Some("aborted"), None, Some("other: cut off by restart")), "cutOffByRestart retryable")
+  expect(retry_words_key(Some("aborted"), None, Some("other: cut off by restart")) == "RESUME_AFTER_RESTART", "cutOffByRestart words_key")
+  expect(!is_retryable_turn(Some("aborted"), None, Some("stopped by user")), "ordinary aborted rejected")
+  expect(!is_retryable_turn(Some("aborted"), None, None), "aborted with None detail rejected")
+  expect(is_cap_paused(Some("failed"), Some("other: session_cap")), "cap_paused exact")
+}
+
+test "w17e3a: PendingCompaction state machine queues human input and releases on finish/timeout" {
+  let actor = SessionActor::new("s-compact-sm", "codex")
+  actor.has_process = true
+
+  match actor.begin_compaction("compact:1", "codex", 1000L, timeout_ms=5000L) {
+    Ok(pc) => expect(pc.req_id == "compact:1" && pc.deadline_ms == 6000L, "PendingCompaction populated")
+    Err(e) => panic("begin_compaction failed: " + e)
+  }
+  expect(actor.is_busy(), "is_busy includes compacting")
+  expect(!actor.evict(), "evict refuses while compacting")
+  expect(actor.begin_compaction("compact:2", "codex", 1100L).is_err(), "duplicate compact rejected")
+
+  let route = actor.submit_input("human follow-up")
+  match route {
+    InputRoute::Queue => ()
+    _ => panic("human input during compaction must return InputRoute::Queue")
+  }
+  expect(actor.started_prompts.length() == 0, "no prompt started while compacting")
+
+  expect(actor.check_compaction_timeout(5999L) is None, "not timed out before deadline")
+  expect(actor.compacting, "still compacting before deadline")
+
+  expect(actor.check_compaction_timeout(6000L) is Some(_), "timed out at deadline")
+  expect(!actor.compacting && actor.pending_compaction is None, "compaction cleared on timeout")
+  expect(actor.started_prompts.length() == 1, "queued human prompt pumped after compaction timeout")
+  expect(actor.started_prompts[0] == "human follow-up", "pumped prompt text matches")
+  expect(!actor.started_prompts_internal[0], "pumped prompt is human (not internal)")
 }
