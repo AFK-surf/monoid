@@ -18,7 +18,7 @@
 // 4. `BecameRig` mode switch: live presence frame marking station rig-only triggers handover stop cleanly.
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
 import { createSocket as createUdpSocket } from "node:dgram";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from "node:http";
@@ -36,6 +36,7 @@ import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
+import { sfb1Seal } from "../src/replica/crypto.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const dirs: string[] = [];
@@ -3018,14 +3019,13 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
 
-  // `POST /updates` (`updates.install`) and `POST /updates/wait` (`updates.wait`) return honest 501 until Wave 17E updater loop lands
-  for (const [p, body] of [
-    ["/updates", JSON.stringify({ id: "station" })],
-    ["/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
-  ] as const) {
-    const uResp = await adminCall(conn, "POST", p, { "content-type": "application/json" }, Buffer.from(body));
-    assert.equal(uResp.status, 501, `POST ${p} expected honest 501, got ${uResp.status}: ${uResp.body.toString()}`);
-  }
+  // `POST /updates` when unenrolled returns 404; `POST /updates/wait` persists live (200)
+  const updUnenrolled = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ id: "station" })));
+  assert.equal(updUnenrolled.status, 404, `POST /updates unenrolled expected 404, got ${updUnenrolled.status}: ${updUnenrolled.body.toString()}`);
+  const waitSet = await adminCall(conn, "POST", "/updates/wait", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ wait: ["pr:9145"] })));
+  assert.equal(waitSet.status, 200, `POST /updates/wait expected 200, got ${waitSet.status}: ${waitSet.body.toString()}`);
+  const waitClear = await adminCall(conn, "POST", "/updates/wait", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ wait: null })));
+  assert.equal(waitClear.status, 200, `POST /updates/wait clear expected 200, got ${waitClear.status}: ${waitClear.body.toString()}`);
 
   // Non-blocking concurrency check: a slow external `POST /copies/s3/test` (default path-style!) MUST actually hit
   // the 1200ms slow S3 server AND MUST NOT block concurrent `GET /status`!
@@ -3082,8 +3082,6 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/profiles/p1/login", undefined],
     ["DELETE", "/profiles/p1/login", undefined],
     ["POST", "/profiles/p1/login-code", JSON.stringify({ code: "123456" })],
-    ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
-    ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
     ["POST", "/workspaces/join", JSON.stringify({ token: "tok-1" })],
   ] as const) {
     const hdrs: Record<string, string> = { "content-type": "application/json" };
@@ -3150,6 +3148,254 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
   const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
+
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies.restore (202 + ready.json + concurrent GET /status), and xshare.hosts.put (0600)", async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "sf-w17e4d-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17e4d";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  // Prepare Ed25519 release signing key + signed feed + mock archive
+  const relKey = generateKeyPairSync("ed25519");
+  const relPubDer = relKey.publicKey.export({ type: "spki", format: "der" }) as Buffer;
+  const relPubRaw = relPubDer.subarray(relPubDer.length - 32);
+  const relPubB64 = relPubRaw.toString("base64");
+  const relKeyId = createHash("sha256").update(relPubRaw).digest("hex").slice(0, 16);
+
+  const archivePayload = Buffer.from("STILLFAIL-W17E4D-STAGED-ARCHIVE-PAYLOAD-1234567890");
+  const archiveSha = createHash("sha256").update(archivePayload).digest("hex");
+  const nodeSha = "0".repeat(64);
+  const plat = `${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
+  const releaseObj = {
+    kind: "stillfail-station-release",
+    version: "0.1.99999",
+    build: 99999,
+    commit: "abcdef1234567",
+    node: "22.0.0",
+    builds: {
+      [plat]: { sha256: archiveSha, size: archivePayload.length, nodeSha256: nodeSha },
+    },
+  };
+  const releaseWords = Buffer.from(JSON.stringify(releaseObj), "utf8");
+  const releaseSig = cryptoSign(null, releaseWords, relKey.privateKey);
+  const signedFeed = JSON.stringify({
+    release: releaseWords.toString("base64"),
+    signature: releaseSig.toString("base64"),
+    key: relKeyId,
+  });
+
+  // Prepare SFB1-encrypted S3 backup fixture for `copies.restore`
+  const encKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const encKey = Buffer.from(encKeyHex, "hex");
+  const lostOrigin = "st-lost-box";
+  const gen = "g1";
+  const wt = createHmac("sha256", encKey).update(`ws:${ws}`).digest("hex").slice(0, 32);
+  const ot = createHmac("sha256", encKey).update(`origin:${lostOrigin}`).digest("hex").slice(0, 32);
+  const batchBytes = Buffer.from("{\"type\":\"thread\",\"id\":1}\n", "utf8");
+  const fileBytes = Buffer.from("restored-attachment-bytes", "utf8");
+  const fileHash = createHash("sha256").update(fileBytes).digest("hex");
+  const ft = createHmac("sha256", encKey).update(`file:${fileHash}`).digest("hex");
+  const headObj = {
+    v: 1,
+    origin: lostOrigin,
+    name: "LostBox",
+    gen,
+    made: 1700000000000,
+    to: 1,
+    batches: ["000001.jsonl"],
+    files: { [fileHash]: fileBytes.length },
+  };
+  const headEnc = sfb1Seal(encKey, { ws, origin: ot, logicalPath: `head/${gen}` }, Buffer.from(JSON.stringify(headObj), "utf8"));
+  const batchEnc = sfb1Seal(encKey, { ws, origin: lostOrigin, logicalPath: `log/${gen}/000001.jsonl` }, batchBytes);
+  const fileEnc = sfb1Seal(encKey, { ws, origin: lostOrigin, logicalPath: `files/${fileHash}` }, fileBytes);
+
+  const s3Objects = new Map<string, Buffer>([
+    [`/bkt/${wt}/${ot}/head/${gen}.enc`, Buffer.from(headEnc)],
+    [`/bkt/${wt}/${ot}/log/${gen}/000001.jsonl.enc`, Buffer.from(batchEnc)],
+    [`/bkt/${wt}/${ot}/files/${ft}.enc`, Buffer.from(fileEnc)],
+  ]);
+
+  let feedHits = 0;
+  let archiveHits = 0;
+  let s3HeadHits = 0;
+  const mockSrv = createHttpServer((req, res) => {
+    const u = req.url ?? "/";
+    if (u === "/releases/station-beta.json" || u === "/releases/station.json") {
+      feedHits++;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(signedFeed);
+      return;
+    }
+    if (u.startsWith("/releases/") && (u.endsWith(".tar.gz") || u.endsWith(".zip"))) {
+      archiveHits++;
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(archivePayload.length) });
+      res.end(archivePayload);
+      return;
+    }
+    const obj = s3Objects.get(u);
+    if (obj !== undefined) {
+      if (u.includes("/head/")) {
+        s3HeadHits++;
+        // Deliberate 600ms delay to verify `POST /copies/restore` returns 202 immediately & never blocks `GET /status`
+        setTimeout(() => {
+          res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(obj.length) });
+          res.end(obj);
+        }, 600);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(obj.length) });
+      res.end(obj);
+      return;
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise<void>((resolve) => mockSrv.listen(0, "127.0.0.1", () => resolve()));
+  servers.push(mockSrv);
+  const mockPort = (mockSrv.address() as { port: number }).port;
+  const mockOrigin = `http://127.0.0.1:${mockPort}`;
+
+  // Seed config.json with beta channel + S3 target `r2` pointing at mockSrv
+  const cfgPath = join(data, "config.json");
+  const cfgRaw = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : {};
+  cfgRaw.updateChannel = "beta";
+  cfgRaw.backup = {
+    s3: [
+      {
+        id: "r2",
+        name: "Mock R2",
+        endpoint: mockOrigin,
+        region: "auto",
+        bucket: "bkt",
+        prefix: "",
+        forcePathStyle: true,
+        accessKeyId: "AKIA_W17E4D",
+        secretAccessKey: "SECRET_W17E4D",
+        encryptionKey: encKeyHex,
+      },
+    ],
+  };
+  writeFileSync(cfgPath, JSON.stringify(cfgRaw, null, 2));
+
+  const wd = startWholeDaemon(bin, data, {
+    STILLFAIL_RELEASE_URL: mockOrigin,
+    STILLFAIL_RELEASE_KEYS: relPubB64,
+  });
+  await until("w17e4d daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e4d mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // 1. `updates.wait` roundtrip
+  const waitSet = await adminCall(
+    conn,
+    "POST",
+    "/updates/wait",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ wait: ["#9200", "FB-42"] })),
+  );
+  assert.equal(waitSet.status, 200, `POST /updates/wait failed: ${waitSet.body.toString()}`);
+  assert.ok(waitSet.body.toString().includes("#9200"), `updates.wait view missing #9200: ${waitSet.body.toString()}`);
+  const cfgAfterWait = JSON.parse(readFileSync(cfgPath, "utf8"));
+  assert.equal(cfgAfterWait.autoUpdate, false);
+  assert.equal(cfgAfterWait.autoUpdateWhen?.wait?.length, 2);
+
+  // 2. `updates.install` (Ed25519 signed feed + streaming SHA-256 archive staging)
+  const instResp = await adminCall(
+    conn,
+    "POST",
+    "/updates",
+    { "content-type": "application/json", "idempotency-key": "w17e4d-upd-1" },
+    Buffer.from(JSON.stringify({ id: "station" })),
+  );
+  assert.equal(instResp.status, 200, `POST /updates failed: ${instResp.body.toString()}`);
+  const stagedPtr = join(data, "run", "update-staged.json");
+  await until("update-staged.json written", () => existsSync(stagedPtr));
+  const stagedMeta = JSON.parse(readFileSync(stagedPtr, "utf8"));
+  assert.equal(stagedMeta.version, "0.1.99999");
+  assert.equal(stagedMeta.sha256, archiveSha);
+  assert.equal(existsSync(stagedMeta.archive), true);
+  assert.ok(feedHits >= 1 && archiveHits >= 1, `expected feed & archive hits, got feed=${feedHits} archive=${archiveHits}`);
+
+  // 3. `copies.restore` (immediate 202 + non-blocking concurrent GET /status 200 + atomic ready.json)
+  const t0 = Date.now();
+  const restResp = await adminCall(
+    conn,
+    "POST",
+    "/copies/restore",
+    { "content-type": "application/json", "idempotency-key": "w17e4d-rest-1" },
+    Buffer.from(JSON.stringify({ station: lostOrigin, gen, from: { s3: "r2" } })),
+  );
+  const restElapsed = Date.now() - t0;
+  assert.equal(restResp.status, 202, `POST /copies/restore expected 202, got ${restResp.status}: ${restResp.body.toString()}`);
+  assert.equal(JSON.parse(restResp.body.toString("utf8")).restoring, true);
+  assert.ok(restElapsed < 400, `POST /copies/restore blocked on 600ms S3 head! elapsed=${restElapsed}ms`);
+
+  // Concurrent GET /status while S3 restore is streaming MUST return 200 without stalling
+  const tStatus = Date.now();
+  const stResp = await adminCall(conn, "GET", "/status");
+  assert.equal(stResp.status, 200, `concurrent GET /status failed: ${stResp.body.toString()}`);
+  assert.ok(Date.now() - tStatus < 400, "concurrent GET /status was blocked by copies.restore!");
+
+  const readyPath = join(data, "restore", "ready.json");
+  await until("restore/ready.json written", () => existsSync(readyPath));
+  const readyJson = JSON.parse(readFileSync(readyPath, "utf8"));
+  assert.equal(readyJson.origin, lostOrigin);
+  assert.equal(readyJson.workspace, ws);
+  assert.equal(readyJson.gen, gen);
+  assert.equal(readyJson.from, "s3:r2");
+  assert.equal(statSync(readyPath).mode & 0o777, 0o600);
+  assert.equal(readFileSync(join(data, "restore", "copy", gen, "log", "000001.jsonl"), "utf8"), batchBytes.toString("utf8"));
+  assert.equal(readFileSync(join(data, "restore", "copy", "files", fileHash), "utf8"), fileBytes.toString("utf8"));
+  assert.ok(s3HeadHits >= 1, "S3 head was not fetched");
+
+  // 4. `xshare.hosts.put` validation + atomic 0600 state.json roundtrip
+  const xBad = await adminCall(
+    conn,
+    "PUT",
+    "/xshare/hosts",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ workspace: ws, name: "Self", station: "st-x" })),
+  );
+  assert.equal(xBad.status, 400, `self-workspace PUT /xshare/hosts expected 400, got ${xBad.status}`);
+
+  const xOk = await adminCall(
+    conn,
+    "PUT",
+    "/xshare/hosts",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ workspace: "ws-partner", name: "Partner WS", station: "st-partner", stationName: "Partner Box" })),
+  );
+  assert.equal(xOk.status, 200, `PUT /xshare/hosts failed: ${xOk.body.toString()}`);
+  assert.equal(JSON.parse(xOk.body.toString("utf8")).ok, true);
+  const xStatePath = join(data, "xshare", "state.json");
+  assert.equal(existsSync(xStatePath), true);
+  assert.equal(statSync(xStatePath).mode & 0o777, 0o600);
+  const xState = JSON.parse(readFileSync(xStatePath, "utf8"));
+  assert.equal(xState.hosts?.[`${ws}/st-partner`]?.workspace, "ws-partner");
+  assert.equal(xState.hosts?.[`${ws}/st-partner`]?.name, "Partner WS");
+  assert.equal(xState.hosts?.[`${ws}/st-partner`]?.stationName, "Partner Box");
 
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });

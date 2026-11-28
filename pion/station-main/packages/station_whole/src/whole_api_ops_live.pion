@@ -517,12 +517,19 @@ pub fn dispatch_live_updates_op(
   now_ms : Int64,
   override_present : Bool = false,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
-  if op != "updates.check" {
+  if op != "updates.check" && op != "updates.wait" && op != "updates.install" {
     return None
   }
   let ops_lang = api_lang_to_ops(req.lang)
   if !req.viewer.manages_station() {
     return Some(Err(station_api::ApiError::new(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
+  }
+  if hooks.read_only_handover_cell[0] {
+    return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
+  }
+  let resolved_ch : Option[String] = match hooks.resolved_update_channel {
+    Some(f) => Some(f())
+    None => None
   }
 
   if op == "updates.wait" {
@@ -542,7 +549,7 @@ pub fn dispatch_live_updates_op(
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
-            return Some(Ok(updates_view_json(updates, written)))
+            return Some(Ok(updates_view_json(updates, written, resolved_channel=resolved_ch)))
           }
           Err(e) => return Some(Err(e))
         }
@@ -577,7 +584,7 @@ pub fn dispatch_live_updates_op(
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
-            return Some(Ok(updates_view_json(updates, written)))
+            return Some(Ok(updates_view_json(updates, written, resolved_channel=resolved_ch)))
           }
           Err(e) => return Some(Err(e))
         }
@@ -599,7 +606,7 @@ pub fn dispatch_live_updates_op(
     }
   }
 
-  // `updates.install` (`POST /updates`): strict input & path/URL injection guard before calling live executor.
+  // `updates.install` (`POST /updates`): strict input, override, busy & path/URL injection guard before calling live executor.
   let id = match json_field_str(body, "id") {
     Some(s) => s.trim()
     None => ""
@@ -608,9 +615,14 @@ pub fn dispatch_live_updates_op(
   if !valid_id {
     return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
   }
+  let mut has_to = false
   match base_codec::json_get(body, "to") {
     None | Some(base_codec::Json::Null) => ()
     Some(base_codec::Json::Str(to_s)) => {
+      has_to = true
+      if id != "station" {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.backStationOnly"))))
+      }
       if !live_is_valid_version_spec(to_s) {
         return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
       }
@@ -625,6 +637,19 @@ pub fn dispatch_live_updates_op(
       }
     }
     Some(_) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+  }
+  if id == "station" {
+    if updates.station.updating.is_some() {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.alreadyUpdating"))))
+    }
+    for i in 0..<updates.runtimes.length() {
+      if updates.runtimes[i].updating.is_some() {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.runtimeBusy"))))
+      }
+    }
+    if override_present && has_to {
+      return Some(Err(station_api::ApiError::new(400, "station has a local OVERRIDE; remove OVERRIDE before rolling back")))
+    }
   }
   match hooks.on_updates_op {
     Some(f) => match f("updates.install", body, req.lang) {
@@ -1000,5 +1025,314 @@ pub fn dispatch_live_copies_s3_test_op(
       ])))
     }
     None => Some(Err(err_not_implemented(op)))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. `copies.restore` (`POST /copies/restore` -> 202 `{ restoring: true }`)
+// ---------------------------------------------------------------------------
+
+/// Strict ID check for replica workspace / station / generation names (`^[A-Za-z0-9._-]{1,128}$`,
+/// rejecting `.` and `..`, slashes, backslashes, and NUL bytes).
+pub fn is_safe_replica_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 128 || s == "." || s == ".." {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Parse and validate `POST /copies/restore` body 1:1 with `station/src/api/routes/copies.ts:212-231`
+/// and `station/src/replica/copies.ts:1744`.
+/// Returns `(origin_station, gen, from_kind ("s3"|"station"), from_id)`.
+pub fn parse_copies_restore_request(
+  body : base_codec::Json,
+  ws : String,
+) -> Result[(String, String, String, String), station_api::ApiError] {
+  match body {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed"))
+  }
+  let origin = match json_field_str(body, "station") {
+    Some(s) => s
+    None => return Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed"))
+  }
+  let gen = match json_field_str(body, "gen") {
+    Some(s) => s
+    None => return Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed"))
+  }
+  let from_obj = match base_codec::json_get(body, "from") {
+    Some(base_codec::Json::Obj(_)) => match base_codec::json_get(body, "from") { Some(v) => v, None => base_codec::json_obj([]) }
+    _ => return Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed"))
+  }
+  let mut from_kind = ""
+  let mut from_id = ""
+  match json_field_str(from_obj, "station") {
+    Some(st_id) if st_id.length() > 0 => {
+      from_kind = "station"
+      from_id = st_id
+    }
+    _ => match json_field_str(from_obj, "s3") {
+      Some(s3_id) if s3_id.length() > 0 => {
+        from_kind = "s3"
+        from_id = s3_id
+      }
+      _ => return Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed"))
+    }
+  }
+  if !is_safe_replica_id(origin) || !is_safe_replica_id(gen) || !is_safe_replica_id(ws) {
+    return Err(station_api::ApiError::new(409, "not a copy's name"))
+  }
+  if from_kind == "station" && !is_safe_replica_id(from_id) {
+    return Err(station_api::ApiError::new(409, "not a copy's name"))
+  }
+  Ok((origin, gen, from_kind, from_id))
+}
+
+pub fn dispatch_live_copies_restore_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op != "copies.restore" {
+    return None
+  }
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins restore a lost station's chats")))
+  }
+  if hooks.read_only_handover_cell[0] {
+    return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
+  }
+  let (origin, gen, from_kind, from_id) = match parse_copies_restore_request(body, req.viewer.workspace) {
+    Ok(v) => v
+    Err(e) => return Some(Err(e))
+  }
+  if from_kind == "s3" {
+    let saved = station_replica::read_backup_config(read_config_raw(cfg_opt)).s3
+    let mut found = false
+    for i in 0..<saved.length() {
+      if saved[i].id == from_id {
+        found = true
+        break
+      }
+    }
+    if !found {
+      return Some(Err(station_api::ApiError::new(409, "S3 target " + from_id + " is not configured")))
+    }
+  }
+  match hooks.on_copies_restore {
+    Some(f) => match f(req.viewer.workspace, origin, gen, from_kind, from_id) {
+      Ok(res) => {
+        hooks_notify_overview(hooks, "copies")
+        Some(Ok(res))
+      }
+      Err(e) => Some(Err(e))
+    }
+    None => Some(Err(err_not_implemented(op)))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. `xshare.hosts.put` (`PUT /xshare/hosts` -> atomic 0600 state.json + reconcile + SSE)
+// ---------------------------------------------------------------------------
+
+pub struct XshareHostPutEntry {
+  pub workspace : String
+  pub name : String
+  pub station : String
+  pub station_name : String
+}
+
+/// Strict ID check 1:1 with Node `station/src/xshare/index.ts:102` (`^[0-9A-Za-z_-]{1,128}$`).
+pub fn is_valid_xshare_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 128 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn xshare_trim_max(s : String, max_len : Int) -> String {
+  let t = s.trim()
+  if t.length() <= max_len { t } else { t.slice(0, max_len) }
+}
+
+/// Parse and validate `PUT /xshare/hosts` payload:
+/// - Supports single-host Node contract `{ workspace, name, station, stationName }`
+/// - Also supports batch `{ hosts: [{ workspace, name, station, stationName }, ...] }` (1..64 entries).
+pub fn parse_xshare_hosts_put_entries(
+  body : base_codec::Json,
+  own_ws : String,
+) -> Result[Array[XshareHostPutEntry], station_api::ApiError] {
+  match body {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(station_api::ApiError::new(400, "invalid JSON"))
+  }
+  let parse_one = fn(obj : base_codec::Json) -> Result[XshareHostPutEntry, station_api::ApiError] {
+    let ws = match json_field_str(obj, "workspace") { Some(s) => s, None => "" }
+    let st = match json_field_str(obj, "station") { Some(s) => s, None => "" }
+    if !is_valid_xshare_id(ws) || ws == own_ws || !is_valid_xshare_id(st) {
+      return Err(station_api::ApiError::new(400, "workspace and station are another workspace's"))
+    }
+    let raw_name = match json_field_str(obj, "name") { Some(s) => xshare_trim_max(s, 80), None => "" }
+    let name = if raw_name.length() > 0 { raw_name } else { ws }
+    let st_name = match json_field_str(obj, "stationName") { Some(s) => xshare_trim_max(s, 80), None => "" }
+    Ok(XshareHostPutEntry::{ workspace: ws, name: name, station: st, station_name: st_name })
+  }
+  match base_codec::json_get(body, "hosts") {
+    Some(base_codec::Json::Arr(xs)) => {
+      if xs.length() == 0 || xs.length() > 64 {
+        return Err(station_api::ApiError::new(400, "hosts: 1 to 64 entries"))
+      }
+      let out : Array[XshareHostPutEntry] = []
+      for i in 0..<xs.length() {
+        match parse_one(xs[i]) {
+          Ok(e) => out.push(e)
+          Err(err) => return Err(err)
+        }
+      }
+      Ok(out)
+    }
+    Some(_) => Err(station_api::ApiError::new(400, "hosts must be an array"))
+    None => match parse_one(body) {
+      Ok(e) => Ok([e])
+      Err(err) => Err(err)
+    }
+  }
+}
+
+fn xshare_ensure_obj_field(raw : base_codec::Json, key : String) -> base_codec::Json {
+  match base_codec::json_get(raw, key) {
+    Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+    _ => base_codec::json_obj([])
+  }
+}
+
+/// Atomically merge trusted host entries into `<data>/xshare/state.json` with `0600` permissions
+/// (`PrivateFile` semantics via `OpsFs`, symlink-checked, preserving all other xshare state sections).
+pub fn apply_xshare_hosts_put_with_fs(
+  fs : station_ops::OpsFs,
+  data_dir : String,
+  sep : String,
+  own_ws : String,
+  entries : Array[XshareHostPutEntry],
+) -> Result[Unit, String] {
+  if !is_valid_xshare_id(own_ws) {
+    return Err("this station is in no workspace")
+  }
+  let xdir = nodepath::join(sep, [data_dir, "xshare"])
+  match (fs.lstat)(xdir) {
+    Ok(meta) if meta.is_link => return Err("symlink xshare directory rejected")
+    _ => ()
+  }
+  match (fs.mkdir_p)(xdir) {
+    Ok(_) => ()
+    Err(_) => return Err("failed to create xshare directory")
+  }
+  let state_path = nodepath::join(sep, [xdir, "state.json"])
+  match (fs.lstat)(state_path) {
+    Ok(meta) if meta.is_link => return Err("symlink xshare/state.json rejected")
+    _ => ()
+  }
+  let existing = match fs.read_text(state_path) {
+    Ok(s) => match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => base_codec::json_obj([])
+    }
+    Err(_) => base_codec::json_obj([])
+  }
+  let mut hosts_obj = xshare_ensure_obj_field(existing, "hosts")
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    // Remove legacy unprefixed `<station>` entry if it belonged to `own_ws` (1:1 with Node `hostOf` + `delete`).
+    match base_codec::json_get(hosts_obj, e.station) {
+      Some(old_h) => {
+        let old_as = match json_field_str(old_h, "as") { Some(a) => a, None => own_ws }
+        if old_as == own_ws {
+          hosts_obj = json_obj_set(hosts_obj, e.station, None)
+        }
+      }
+      None => ()
+    }
+    let key = own_ws + "/" + e.station
+    let host_val = base_codec::json_obj([
+      ("workspace", base_codec::json_str(e.workspace)),
+      ("name", base_codec::json_str(e.name)),
+      ("stationName", base_codec::json_str(e.station_name)),
+      ("as", base_codec::json_str(own_ws)),
+    ])
+    hosts_obj = json_obj_set(hosts_obj, key, Some(host_val))
+  }
+  let next_state = base_codec::json_obj([
+    ("guests", xshare_ensure_obj_field(existing, "guests")),
+    ("hosted", xshare_ensure_obj_field(existing, "hosted")),
+    ("borrowed", xshare_ensure_obj_field(existing, "borrowed")),
+    ("hosts", hosts_obj),
+    ("replies", xshare_ensure_obj_field(existing, "replies")),
+    ("answered", xshare_ensure_obj_field(existing, "answered")),
+    ("roster", xshare_ensure_obj_field(existing, "roster")),
+  ])
+  let payload = (base_codec::json_stringify(next_state) + "\n").to_bytes()
+  match (fs.write_bytes)(state_path, payload, 384) {
+    Ok(_) => Ok(())
+    Err(_) => Err("failed to atomically write xshare/state.json")
+  }
+}
+
+pub fn dispatch_live_xshare_hosts_put_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  agents : WholeAgents,
+  cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op != "xshare.hosts.put" {
+    return None
+  }
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage trusted xshare hosts")))
+  }
+  if hooks.read_only_handover_cell[0] {
+    return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
+  }
+  let own_ws = req.viewer.workspace
+  if own_ws.length() == 0 {
+    return Some(Err(station_api::ApiError::new(400, "this station is in no workspace")))
+  }
+  let entries = match parse_xshare_hosts_put_entries(body, own_ws) {
+    Ok(es) => es
+    Err(e) => return Some(Err(e))
+  }
+  let fs = match cfg_opt {
+    Some(cf) => cf.fs
+    None => return Some(Err(station_api::ApiError::new(500, "station config fs unavailable")))
+  }
+  match apply_xshare_hosts_put_with_fs(fs, agents.config.data_dir, agents.jobs.fs.sep, own_ws, entries) {
+    Ok(_) => {
+      match hooks.on_xshare_reconcile {
+        Some(f) => f()
+        None => ()
+      }
+      hooks_notify_overview(hooks, "xshare")
+      Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+    }
+    Err(msg) => Some(Err(station_api::ApiError::new(500, msg)))
   }
 }

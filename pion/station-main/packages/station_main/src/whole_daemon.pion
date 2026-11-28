@@ -1863,6 +1863,7 @@ struct WholeRuntimeState {
   adopted_runners : Map[Int, AdoptedRunnerConn]
   adopted_runner_by_sock : Map[Int64, Int]
   live_runners : LiveRunnerManager
+  w17e4d : W17e4dRuntime
   mut next_runner_conn_id : Int
   mut carried_handover_failed : Option[String]
   mut mcp_announced : Bool
@@ -4509,6 +4510,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         }
         let is_live_async_route = head.method == "POST"
         && (norm_path == "/updates/check"
+          || norm_path == "/updates"
           || norm_path == "/copies/s3/test"
           || norm_path == "/profiles")
         if is_live_async_route {
@@ -5924,7 +5926,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
         // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
         // - If `stream.open` arrives with no active op, decodes and immediately `stream.close`s.
-        if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
+        if kind == LIVE_OP_TOK_HTTP_OPEN
+        || kind == LIVE_OP_TOK_HTTP_READ
+        || kind == W17E4D_TOK_UPDATE_FEED_OPEN
+        || kind == W17E4D_TOK_UPDATE_FEED_READ {
           let mut handled = false
           match st.admin_streams.get(sid) {
             None => ()
@@ -5942,9 +5947,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               _ => ()
             }
           }
-          if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
+          if !handled && (kind == LIVE_OP_TOK_HTTP_OPEN || kind == W17E4D_TOK_UPDATE_FEED_OPEN) {
             close_orphaned_async_stream_open(ctx, d)
           }
+          return
+        }
+        if w17e4d_handle_role_done(ctx, st, kind, sid, d) {
           return
         }
         // Async `GET /link-preview` stream.open completion (Wave 17D-3).
@@ -7679,7 +7687,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
-      state_opt = Some(WholeRuntimeState::{
+      let st_made = WholeRuntimeState::{
         core: core,
         replica: replica,
         devices: devices,
@@ -7708,6 +7716,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         adopted_runners: Map::new(),
         adopted_runner_by_sock: Map::new(),
         live_runners: live_runners,
+        w17e4d: W17e4dRuntime::new(),
         next_runner_conn_id: 1,
         carried_handover_failed: None,
         mcp_announced: false,
@@ -7715,7 +7724,24 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         becoming_rig: false,
         // timer: periodic jobs and remote upkeep (10m)
         next_upkeep_ms: now0 + WHOLE_UPKEEP_EVERY_MS,
+      }
+      core.api.hooks.resolved_update_channel = Some(fn() -> String {
+        resolve_station_update_channel(ctx.config_file.raw(), ctx.ops_fs, ctx.args.app, ctx.sep)
       })
+      core.api.hooks.on_copies_restore = Some(fn(
+        ws : String,
+        origin : String,
+        gen : String,
+        from_kind : String,
+        from_id : String,
+      ) -> Result[base_codec::Json, station_api::ApiError] {
+        start_copies_restore_job(ctx, st_made, ws, origin, gen, from_kind, from_id)
+      })
+      core.api.hooks.on_xshare_reconcile = Some(fn() -> Unit {
+        st_made.w17e4d.xshare_reconcile_count = st_made.w17e4d.xshare_reconcile_count + 1L
+        st_made.core.api.events.overview_changed("xshare")
+      })
+      state_opt = Some(st_made)
       Ok(())
     },
     on_predecessor_gone: fn(ctx : DaemonCtx) -> Bool {
@@ -8946,6 +8972,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if route_whole_config_fs_event(st.core, ev_id, sev) {
             return
           }
+          if w17e4d_handle_sys_event(ctx, st, ev_id, sev) {
+            return
+          }
           match sev {
             station_sys::SysEvent::DnsResolved(rc, ip) => {
               match st.dns_streams.get(ev_id) {
@@ -9165,6 +9194,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
+          w17e4d_tick(ctx, st, now)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -9564,6 +9594,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             let _ = st.replica.persist_kept_log()
           }
 
+          w17e4d_shutdown(ctx, st)
           // On `SIGUSR2` hot handover: detach job & live runner handles WITHOUT killing running
           // processes so the new daemon adopts them seamlessly. On full shutdown: stop them cleanly.
           if ctx.is_handover_shutdown() {

@@ -1,0 +1,180 @@
+// Wave 17E-4D pure-Pion unit tests for `whole_daemon_w17e4d.pion` (zero C FFI link dependency):
+// - Disjoint `UPDATES_RESTORE_EVENT_BASE..END` ([15<<32, 16<<32)) and `MuxToken::Tagged` (5330..5339)
+// - `<app>/OVERRIDE` protection (`w17e4d_check_update_allowed`)
+// - Atomic archive staging + checksum/size failure cleanup (`w17e4d_finalize_staged_archive_with`)
+// - Restore staging commit + atomic `0600` `ready.json` + symlink rejection (`w17e4d_commit_restore_staging_with`)
+
+import "crypto"
+import "station_cli"
+
+test "wave17e4d: disjoint event_id range and MuxToken::Tagged range" {
+  if UPDATES_RESTORE_EVENT_BASE != 64424509440L || UPDATES_RESTORE_EVENT_END != 68719476736L {
+    panic("UPDATES_RESTORE_EVENT range mismatch")
+  }
+  if W17E4D_TOK_UPDATE_FEED_OPEN < 5330 || W17E4D_TOK_XSHARE_PEER > 5339 {
+    panic("W17E4D MuxToken::Tagged kinds must stay within 5330..5339")
+  }
+}
+
+test "wave17e4d: OVERRIDE protection refuses rollback and non-newer builds" {
+  let builds : Map[String, station_cli::ReleaseBuild] = Map::new()
+  builds.set("linux-x64", station_cli::ReleaseBuild::{
+    sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    size: 128L,
+    node_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    raw_sha256: None,
+    raw_size: None,
+  })
+  let rel_same = station_cli::SignedRelease::{
+    version: "0.1.500",
+    build: 500L,
+    commit: "1234567",
+    node: "22.0.0",
+    builds: builds,
+    included: None,
+  }
+  let rel_newer = station_cli::SignedRelease::{ ..rel_same, version: "0.1.501", build: 501L }
+  let ov = station_cli::OverrideMeta::{
+    base_version: Some("0.1.500"),
+    base_build: Some(500L),
+    base_commit: None,
+    kind: "overlay",
+    replaced_at: 1000L,
+    note: None,
+  }
+  // 1. Rollback under OVERRIDE -> refused
+  match w17e4d_check_update_allowed(rel_same, Some(505L), "beta", Some("beta"), Some(ov), true) {
+    Err(msg) => if !msg.contains("OVERRIDE") { panic("expected OVERRIDE refusal, got: " + msg) }
+    Ok(_) => panic("rollback under OVERRIDE must be refused")
+  }
+  // 2. Same/older build under OVERRIDE -> refused
+  match w17e4d_check_update_allowed(rel_same, Some(499L), "beta", Some("beta"), Some(ov), false) {
+    Err(msg) => if !msg.contains("OVERRIDE") { panic("expected OVERRIDE refusal, got: " + msg) }
+    Ok(_) => panic("build <= override.baseBuild must be refused")
+  }
+  // 3. Strictly newer build than override.baseBuild -> allowed
+  match w17e4d_check_update_allowed(rel_newer, Some(500L), "beta", Some("beta"), Some(ov), false) {
+    Ok(_) => ()
+    Err(e) => panic("newer build than override.baseBuild should be allowed: " + e)
+  }
+}
+
+test "wave17e4d: archive staging checksum/size mismatch cleans up temp dir; valid archive commits atomically" {
+  let payload = "fake-tar-gz-bytes".to_bytes()
+  let digest = crypto::sha256_hex(payload)
+  let removed : Array[String] = []
+  let synced : Array[String] = []
+  let renamed : Array[(String, String)] = []
+  let written : Array[(String, String, Int)] = []
+
+  // 1. Mismatched sha256 -> MUST fail AND delete `stage_dir`
+  match w17e4d_finalize_staged_archive_with(
+    "/tmp/stage-bad",
+    "/tmp/stage-bad/stillfail.tar.gz.part",
+    "/tmp/stage-bad/stillfail.tar.gz",
+    payload.length().to_int64(),
+    payload.length().to_int64(),
+    digest,
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "0.1.999",
+    999L,
+    "beta",
+    fn(p : String) -> Result[Unit, Int] { synced.push(p); Ok(()) },
+    fn(a : String, b : String) -> Bool { renamed.push((a, b)); true },
+    fn(p : String, d : Bytes, m : Int) -> Bool { written.push((p, d.to_string(), m)); true },
+    fn(d : String) -> Unit { removed.push(d) },
+  ) {
+    Err(msg) => {
+      if !msg.contains("sha256 mismatch") {
+        panic("expected sha256 mismatch error, got: " + msg)
+      }
+      if removed.length() != 1 || removed[0] != "/tmp/stage-bad" {
+        panic("failed checksum staging dir was NOT cleaned up!")
+      }
+    }
+    Ok(_) => panic("checksum mismatch must fail")
+  }
+
+  // 2. Valid sha256 + size -> sync + atomic rename + 0600 staged.json
+  match w17e4d_finalize_staged_archive_with(
+    "/tmp/stage-ok",
+    "/tmp/stage-ok/stillfail.tar.gz.part",
+    "/tmp/stage-ok/stillfail.tar.gz",
+    payload.length().to_int64(),
+    payload.length().to_int64(),
+    digest,
+    digest,
+    "0.1.999",
+    999L,
+    "beta",
+    fn(p : String) -> Result[Unit, Int] { synced.push(p); Ok(()) },
+    fn(a : String, b : String) -> Bool { renamed.push((a, b)); true },
+    fn(p : String, d : Bytes, m : Int) -> Bool { written.push((p, d.to_string(), m)); true },
+    fn(d : String) -> Unit { removed.push(d) },
+  ) {
+    Ok(p) => {
+      if p != "/tmp/stage-ok/stillfail.tar.gz" || synced.length() != 1 || renamed.length() != 1 || written.length() != 1 {
+        panic("valid archive staging did not perform sync + atomic rename + staged.json write")
+      }
+      if written[0].2 != 384 || !written[0].1.contains("\"version\":\"0.1.999\"") {
+        panic("staged.json mode/body invalid: " + written[0].1)
+      }
+    }
+    Err(e) => panic("valid archive staging failed: " + e)
+  }
+}
+
+test "wave17e4d: copies.restore staging commit writes atomic 0600 ready.json and rejects symlinks" {
+  let removed : Array[String] = []
+  let renamed : Array[(String, String)] = []
+  let written : Array[(String, String, Int)] = []
+
+  // 1. Symlink rejection cleans up staging dir
+  match w17e4d_commit_restore_staging_with(
+    "/data",
+    "/",
+    "/data/restore/.staging-1",
+    "st-lost",
+    "ws-1",
+    "g1",
+    "LostBox",
+    "s3:r2",
+    fn(_r : String, _rel : String) -> Result[Unit, String] { Err("symlink path component rejected") },
+    fn(a : String, b : String) -> Bool { renamed.push((a, b)); true },
+    fn(p : String, d : Bytes, m : Int) -> Bool { written.push((p, d.to_string(), m)); true },
+    fn(d : String) -> Unit { removed.push(d) },
+  ) {
+    Err(msg) => {
+      if !msg.contains("symlink") || removed.length() != 1 || removed[0] != "/data/restore/.staging-1" {
+        panic("symlink rejection did not clean up staging dir")
+      }
+    }
+    Ok(_) => panic("symlink must be rejected")
+  }
+
+  // 2. Valid commit moves staging -> restore/copy and writes atomic 0600 ready.json
+  match w17e4d_commit_restore_staging_with(
+    "/data",
+    "/",
+    "/data/restore/.staging-2",
+    "st-lost",
+    "ws-1",
+    "g1",
+    "LostBox",
+    "s3:r2",
+    fn(_r : String, _rel : String) -> Result[Unit, String] { Ok(()) },
+    fn(a : String, b : String) -> Bool { renamed.push((a, b)); true },
+    fn(p : String, d : Bytes, m : Int) -> Bool { written.push((p, d.to_string(), m)); true },
+    fn(d : String) -> Unit { removed.push(d) },
+  ) {
+    Ok(ready_path) => {
+      if ready_path != "/data/restore/ready.json" || renamed.length() != 1 || written.length() != 1 {
+        panic("restore staging commit did not rename and write ready.json")
+      }
+      if written[0].2 != 384 || !written[0].1.contains("\"origin\":\"st-lost\"") || !written[0].1.contains("\"from\":\"s3:r2\"") {
+        panic("ready.json mode/body invalid: " + written[0].1)
+      }
+    }
+    Err(e) => panic("valid restore staging commit failed: " + e)
+  }
+}

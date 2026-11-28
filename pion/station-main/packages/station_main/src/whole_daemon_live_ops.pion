@@ -45,6 +45,7 @@ pub fn live_current_platform(os_name : String, arch_name : String) -> String {
 
 pub enum AsyncAdminOpKind {
   UpdatesCheck(String)
+  UpdatesInstall(String, Option[String], String)
   CopiesS3Test(station_replica::NormalizedS3Target)
   ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String, Bool)
 }
@@ -416,8 +417,12 @@ fn start_async_http_stream(
   timeout_ms : Int64,
   idem_claim : Option[(String, String)],
 ) -> AsyncAdminHttpState {
+  let open_tok = match op {
+    AsyncAdminOpKind::UpdatesInstall(_, _, _) => W17E4D_TOK_UPDATE_FEED_OPEN
+    _ => LIVE_OP_TOK_HTTP_OPEN
+  }
   let _ = ctx.mux_role.call_async_raw(
-    builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, sid),
+    builders_core::MuxToken::Tagged(0, open_tok, sid),
     "stream.open",
     live_build_stream_open_args(http_method, url, headers, timeout_ms),
     body_opt,
@@ -449,6 +454,12 @@ pub fn cancel_async_admin_op(ctx : DaemonCtx, st : WholeRuntimeState, state : As
       state.stream_id = None
     }
     None => ()
+  }
+  match state.op {
+    AsyncAdminOpKind::UpdatesInstall(_, _, _) => {
+      st.core.updates.station.updating = None
+    }
+    _ => ()
   }
   match state.idem_claim {
     Some((slot_key, _)) => {
@@ -574,6 +585,86 @@ pub fn try_intercept_async_admin_op(
       "GET",
       feed_url,
       [],
+      None,
+      262144,
+      15000L,
+      idem_claim,
+    )
+    return Some(Ok(state))
+  }
+
+  // 1b. `POST /updates` (`updates.install`: non-blocking signed release feed fetch + archive staging)
+  if method_name == "POST" && norm_path == "/updates" {
+    if !viewer.manages_station() {
+      return Some(Err(station_api::json_error(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
+    }
+    let body = match parse_body() { Ok(j) => j, Err(r) => return Some(Err(r)) }
+    let id = match live_json_str_f(body, "id") {
+      Some(s) => s.trim()
+      None => ""
+    }
+    if id != "station" {
+      // Non-station runtime IDs fall through to synchronous validation / honest 501.
+      return None
+    }
+    let mut to_opt : Option[String] = None
+    match base_codec::json_get(body, "to") {
+      None | Some(base_codec::Json::Null) => ()
+      Some(base_codec::Json::Str(to_s)) => {
+        if !station_whole::live_is_valid_version_spec(to_s) {
+          return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+        }
+        to_opt = Some(to_s)
+      }
+      Some(_) => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+    }
+    match base_codec::json_get(body, "repair") {
+      None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => ()
+      _ => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+    }
+    if st.core.updates.station.updating.is_some() || st.w17e4d.update_job.is_some() {
+      return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.alreadyUpdating"))))
+    }
+    for i in 0..<st.core.updates.runtimes.length() {
+      if st.core.updates.runtimes[i].updating.is_some() {
+        return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.runtimeBusy"))))
+      }
+    }
+    let ov_meta : Option[station_cli::OverrideMeta] = match ctx.args.app {
+      Some(app_dir) => station_cli::read_override(ctx.ops_fs, app_dir, sep=ctx.sep)
+      None => None
+    }
+    if ov_meta.is_some() && to_opt.is_some() {
+      return Some(Err(station_api::json_error(400, "station has a local OVERRIDE; remove OVERRIDE before rolling back")))
+    }
+    if st.core.updates.station.version is None {
+      match ctx.args.app {
+        Some(app_dir) => {
+          st.core.updates.station.version = station_ops::station_version(ctx.ops_fs, app_dir, sep=ctx.sep)
+        }
+        None => ()
+      }
+    }
+    let ch = resolve_station_update_channel(ctx.config_file.raw(), ctx.ops_fs, ctx.args.app, ctx.sep)
+    let base_url = match w17e4d_release_base_url(station_sys::env_get("STILLFAIL_RELEASE_URL"), ctx.cloud.state) {
+      Some(b) => b
+      None => return Some(Err(station_api::json_error(404, "station is not enrolled in a release feed")))
+    }
+    let feed_url = station_cli::feed_url(ch, base_url)
+    st.core.updates.station.updating = Some(host_shim::wall_ms())
+    st.core.updates.station.failed_text = None
+    let state = start_async_http_stream(
+      ctx,
+      sid,
+      conn_id,
+      method_name,
+      norm_path,
+      AsyncAdminOpKind::UpdatesInstall(ch, to_opt, base_url),
+      viewer,
+      lang,
+      "GET",
+      feed_url,
+      [("user-agent", "stillfail-station")],
       None,
       262144,
       15000L,
@@ -835,6 +926,100 @@ fn complete_async_admin_op(
       station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
     }
 
+    AsyncAdminOpKind::UpdatesInstall(req_ch, to_opt, base_url) => {
+      if !live_viewer_still_manager(st, state) {
+        st.core.updates.station.updating = None
+        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+      }
+      let body_b = match fetch_res {
+        Err(e) => {
+          st.core.updates.station.updating = None
+          return finish_idem_claim(st, state, station_api::json_error(400, "failed to fetch release feed: " + e))
+        }
+        Ok((status, b)) => {
+          if status < 200 || status >= 300 {
+            st.core.updates.station.updating = None
+            return finish_idem_claim(st, state, station_api::json_error(400, "release feed HTTP " + status.to_string()))
+          }
+          b
+        }
+      }
+      let feed_j = match base_codec::json_parse(body_b.to_string()) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(pe) => {
+          st.core.updates.station.updating = None
+          return finish_idem_claim(st, state, station_api::json_error(400, "invalid release feed JSON: " + pe))
+        }
+      }
+      let trusted = live_trusted_release_keys()
+      let verify_fn = st.core.api.auth_policy.verify_fn
+      let is_rollback = to_opt.is_some()
+      let rel : station_cli::SignedRelease = match to_opt {
+        Some(to_ver) => {
+          let (earlier, _) = station_cli::earlier_in(feed_j, trusted, verify_fn=verify_fn)
+          let mut found_rel : Option[station_cli::SignedRelease] = None
+          for i in 0..<earlier.length() {
+            if earlier[i].version == to_ver {
+              found_rel = Some(earlier[i])
+              break
+            }
+          }
+          match found_rel {
+            Some(r) => r
+            None => {
+              st.core.updates.station.updating = None
+              return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.backUnknown")))
+            }
+          }
+        }
+        None => match station_cli::verify_feed(feed_j, trusted, verify_fn=verify_fn) {
+          Ok(r) => r
+          Err(ve) => {
+            st.core.updates.station.updating = None
+            return finish_idem_claim(st, state, station_api::json_error(400, "release signature verification failed: " + ve))
+          }
+        }
+      }
+      let cur_build = station_cli::version_build(st.core.updates.station.version)
+      let installed_ch = match ctx.args.app {
+        Some(app_dir) => station_ops::station_channel(ctx.ops_fs, app_dir, sep=ctx.sep)
+        None => None
+      }
+      let ov_meta = match ctx.args.app {
+        Some(app_dir) => station_cli::read_override(ctx.ops_fs, app_dir, sep=ctx.sep)
+        None => None
+      }
+      match w17e4d_check_update_allowed(rel, cur_build, req_ch, installed_ch, ov_meta, is_rollback) {
+        Ok(_) => ()
+        Err(msg) => {
+          st.core.updates.station.updating = None
+          return finish_idem_claim(st, state, station_api::json_error(400, msg))
+        }
+      }
+      let plat = live_current_platform(station_sys::os_name(), station_sys::arch_name())
+      let build = match station_cli::expected_build(rel, Some(plat)) {
+        Ok(b) => b
+        Err(msg) => {
+          st.core.updates.station.updating = None
+          return finish_idem_claim(st, state, station_api::json_error(400, msg))
+        }
+      }
+      let archive_url = w17e4d_archive_url(base_url, req_ch, rel, build, plat, is_rollback)
+      let lang_code = match state.lang { station_api::Lang::Zh => "zh", station_api::Lang::En => "en" }
+      match start_update_archive_job(ctx, st, rel, build, req_ch, base_url, archive_url, lang_code) {
+        Err(msg) => {
+          st.core.updates.station.updating = None
+          return finish_idem_claim(st, state, station_api::json_error(500, msg))
+        }
+        Ok(_) => {
+          st.core.api.events.overview_changed("updates")
+          let raw_cfg = ctx.config_file.raw()
+          let cur_ch = resolve_station_update_channel(raw_cfg, ctx.ops_fs, ctx.args.app, ctx.sep)
+          station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
+        }
+      }
+    }
+
     AsyncAdminOpKind::CopiesS3Test(target) => {
       match fetch_res {
         Err(_) => station_api::json_ok(base_codec::json_obj([
@@ -956,7 +1141,11 @@ pub fn step_async_admin_http_done(
   state : AsyncAdminHttpState,
   d : host_shim::ShellDone,
 ) -> Option[station_http::HttpResponse] {
-  if kind == LIVE_OP_TOK_HTTP_OPEN {
+  let read_tok = match state.op {
+    AsyncAdminOpKind::UpdatesInstall(_, _, _) => W17E4D_TOK_UPDATE_FEED_READ
+    _ => LIVE_OP_TOK_HTTP_READ
+  }
+  if kind == LIVE_OP_TOK_HTTP_OPEN || kind == W17E4D_TOK_UPDATE_FEED_OPEN {
     match station_http::decode_stream_open_done(d) {
       Err(e) => return Some(complete_async_admin_op(ctx, st, state, Err(e.message)))
       Ok(head) => {
@@ -979,7 +1168,7 @@ pub fn step_async_admin_http_done(
           ("stallMs", base_codec::json_int(stall)),
         ]))
         let _ = ctx.mux_role.call_async_raw(
-          builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_READ, state.sid),
+          builders_core::MuxToken::Tagged(0, read_tok, state.sid),
           "stream.read",
           read_args,
           None,
@@ -988,7 +1177,7 @@ pub fn step_async_admin_http_done(
       }
     }
   }
-  if kind == LIVE_OP_TOK_HTTP_READ {
+  if kind == LIVE_OP_TOK_HTTP_READ || kind == W17E4D_TOK_UPDATE_FEED_READ {
     match station_http::decode_stream_read_done(d) {
       Err(e) => {
         match state.stream_id {
@@ -1048,7 +1237,7 @@ pub fn step_async_admin_http_done(
           ("stallMs", base_codec::json_int(stall)),
         ]))
         let _ = ctx.mux_role.call_async_raw(
-          builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_READ, state.sid),
+          builders_core::MuxToken::Tagged(0, read_tok, state.sid),
           "stream.read",
           read_args,
           None,

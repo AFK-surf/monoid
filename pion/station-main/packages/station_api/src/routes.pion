@@ -134,12 +134,22 @@ fn call_with_json(
   r : ApiRequest,
   params : Array[String],
 ) -> RouteResult {
+  call_with_json_status(host, op, r, params, 200)
+}
+
+fn call_with_json_status(
+  host : ApiHost,
+  op : String,
+  r : ApiRequest,
+  params : Array[String],
+  status_code : Int,
+) -> RouteResult {
   let body = match r.json_input() {
     Ok(v) => v
     Err(e) => return RouteResult::err(e)
   }
   match (host.call)(op, r, params, body) {
-    Ok(v) => RouteResult::ok(v)
+    Ok(v) => if status_code == 200 { RouteResult::ok(v) } else { RouteResult::status(status_code, v) }
     Err(e) => RouteResult::err(e)
   }
 }

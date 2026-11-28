@@ -1,0 +1,1573 @@
+// Wave 17E-4D: Non-blocking operational write runtimes for `whole_daemon`:
+// 1. `updates.install` (`POST /updates`) & `updates.wait` (`POST /updates/wait`):
+//    - Disjoint `station_sys` `event_id` range `[15 << 32, 16 << 32)` (`UPDATES_RESTORE_EVENT_BASE..END`).
+//    - Disjoint `MuxToken::Tagged` kinds `5330..5339`.
+//    - Zero main-loop blocking: feed fetch uses `AdminStreamMode::WaitingAsyncOp` (`5330`/`5331`),
+//      archive download streams chunk-by-chunk with incremental SHA-256 (`5332`/`5333`) into a
+//      unique `0700` staging directory, verifies exact size + SHA-256, atomically renames + writes
+//      `staged.json`, and spawns `<app>/bin/install.<lang>.sh` non-blockingly when present.
+//    - Enforces `<app>/OVERRIDE` protection, `manages_station`, `read_only_handover`, `AdminApi`
+//      idempotency, timeout/disconnect/shutdown handle closure and staging cleanup, and SSE push.
+// 2. `copies.restore` (`POST /copies/restore` -> immediate `202 { "restoring": true }`):
+//    - Non-blocking S3 SFB1 streaming restore (`5334`/`5335`) & local-kept restore into a unique
+//      staging directory `<data>/restore/.staging-<rand>`, strict batch/hash/symlink validation,
+//      SFB1 AEAD decryption + SHA-256 content verification, empty-station re-check, atomic cutover
+//      to `<data>/restore/copy` + atomic `0600` `<data>/restore/ready.json`, and SSE push.
+//    - Never touches live `stillfail.db` in place; cleans up staging dir & closes stream handles
+//      on any error, timeout, or shutdown.
+// 3. `xshare.hosts.put` (`PUT /xshare/hosts`):
+//    - Atomic `0600` `<data>/xshare/state.json` write + non-blocking reconciler trigger + SSE push.
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "nodepath"
+import "station_api"
+import "station_cli"
+import "station_drivers"
+import "station_http"
+import "station_ops"
+import "station_replica"
+import "station_sys"
+import "station_whole"
+
+/// Pre-allocated disjoint `station_sys` event_id range `[15 << 32, 16 << 32)`.
+pub let UPDATES_RESTORE_EVENT_BASE : Int64 = 64424509440L
+pub let UPDATES_RESTORE_EVENT_END : Int64 = 68719476736L
+
+/// Pre-allocated disjoint `MuxToken::Tagged` kinds `5330..5339`.
+pub let W17E4D_TOK_UPDATE_FEED_OPEN : Int = 5330
+pub let W17E4D_TOK_UPDATE_FEED_READ : Int = 5331
+pub let W17E4D_TOK_UPDATE_ARCHIVE_OPEN : Int = 5332
+pub let W17E4D_TOK_UPDATE_ARCHIVE_READ : Int = 5333
+pub let W17E4D_TOK_RESTORE_S3_OPEN : Int = 5334
+pub let W17E4D_TOK_RESTORE_S3_READ : Int = 5335
+pub let W17E4D_TOK_XSHARE_PEER : Int = 5336
+
+pub let W17E4D_ARCHIVE_TIMEOUT_MS : Int64 = 300000L
+pub let W17E4D_INSTALLER_TIMEOUT_MS : Int64 = 300000L
+pub let W17E4D_RESTORE_TIMEOUT_MS : Int64 = 300000L
+pub let W17E4D_RESTORE_MAX_OBJ_BYTES : Int = 67108864
+
+// ---------------------------------------------------------------------------
+// Pure helpers (shared by live daemon & unit tests)
+// ---------------------------------------------------------------------------
+
+/// Build the canonical release archive URL for forward updates (`cloud/src/install.ts`)
+/// or rollbacks (`station_cli/src/update.pion:472`).
+pub fn w17e4d_archive_url(
+  base : String,
+  channel : String,
+  release : station_cli::SignedRelease,
+  build : station_cli::ReleaseBuild,
+  plat : String,
+  is_rollback : Bool,
+) -> String {
+  let mut clean = base.trim()
+  while clean.length() > 0 && clean.ends_with("/") {
+    clean = clean.slice(0, clean.length() - 1)
+  }
+  let ext = if plat.starts_with("win32-") { ".zip" } else { ".tar.gz" }
+  if is_rollback {
+    clean + "/releases/station/archive/" + channel + "/" + release.build.to_string() + "-" + build.sha256 + "-" + plat + ext
+  } else if channel == "beta" {
+    clean + "/releases/beta/stillfail-station-" + plat + ext
+  } else {
+    clean + "/releases/stillfail-station-" + plat + ext
+  }
+}
+
+/// Resolve the base release origin URL (without `/releases/station*.json`).
+pub fn w17e4d_release_base_url(
+  override_url : Option[String],
+  cloud_state : Option[station_cloud::CloudState],
+) -> Option[String] {
+  match override_url {
+    Some(u) if u.trim().length() > 0 => {
+      let mut clean = u.trim()
+      while clean.length() > 0 && clean.ends_with("/") {
+        clean = clean.slice(0, clean.length() - 1)
+      }
+      Some(clean)
+    }
+    _ => match cloud_state {
+      Some(cs) if cs.origin.trim().length() > 0 => {
+        let mut origin = cs.origin.trim()
+        while origin.length() > 0 && origin.ends_with("/") {
+          origin = origin.slice(0, origin.length() - 1)
+        }
+        let prov = match cs.provider { Some(p) => p, None => station_cloud::Provider::Stillfail }
+        let spec = station_cloud::spec_of(prov)
+        Some(station_cloud::release_base_for(spec, origin))
+      }
+      _ => None
+    }
+  }
+}
+
+/// Evaluate `<app>/OVERRIDE` + `release_allowed` policy for `updates.install`.
+/// Returns `Ok(())` when the update is permitted, or `Err(reason)` when refused.
+pub fn w17e4d_check_update_allowed(
+  release : station_cli::SignedRelease,
+  cur_build : Option[Int64],
+  channel : String,
+  installed_ch : Option[String],
+  override_meta : Option[station_cli::OverrideMeta],
+  is_rollback : Bool,
+) -> Result[Unit, String] {
+  match override_meta {
+    Some(ov) => {
+      if is_rollback {
+        return Err("station has a local OVERRIDE; remove OVERRIDE before rolling back")
+      }
+      match ov.base_build {
+        Some(base_b) => {
+          if release.build <= base_b {
+            return Err("station has a local OVERRIDE (base build " + base_b.to_string() + "); refusing release build " + release.build.to_string())
+          }
+        }
+        None => {
+          return Err("station has a local OVERRIDE without baseBuild; remove OVERRIDE before updating")
+        }
+      }
+    }
+    None => ()
+  }
+  if is_rollback {
+    match cur_build {
+      Some(cb) if release.build < cb => Ok(())
+      _ => Err("target version " + release.version + " is not older than the running build")
+    }
+  } else {
+    let ov_base = match override_meta { Some(ov) => ov.base_build, None => None }
+    if station_cli::release_allowed(release, cur_build, channel, installed_ch, override_base_build=ov_base) {
+      Ok(())
+    } else {
+      Err("release " + release.version + " is older than the running build")
+    }
+  }
+}
+
+/// Decode a 64-char hex string into 32 raw bytes.
+pub fn w17e4d_hex_to_bytes32(hex : String) -> Option[Bytes] {
+  if hex.length() != 64 {
+    return None
+  }
+  let out = Bytes::new(32)
+  for i in 0..<32 {
+    let hi = w17e4d_hex_nibble(hex.code_unit_at(i * 2))
+    let lo = w17e4d_hex_nibble(hex.code_unit_at(i * 2 + 1))
+    if hi < 0 || lo < 0 {
+      return None
+    }
+    out[i] = ((hi << 4) | lo).to_byte()
+  }
+  Some(out)
+}
+
+fn w17e4d_hex_nibble(c : Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 97 + 10
+  } else if c >= 65 && c <= 70 {
+    c - 65 + 10
+  } else {
+    -1
+  }
+}
+
+fn w17e4d_is_hex64_lower(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Remove a directory tree safely without following symlinks (uses `lstat_raw_err`).
+pub fn w17e4d_remove_tree(path : String) -> Unit {
+  match station_sys::lstat_raw_err(path) {
+    Err(_) => return
+    Ok(st) => {
+      if st.starts_with("dir|") {
+        match station_sys::read_dir(path) {
+          Some(entries) => {
+            for i in 0..<entries.length() {
+              w17e4d_remove_tree(nodepath::join("/", [path, entries[i]]))
+            }
+          }
+          None => ()
+        }
+        let _ = station_sys::rmdir(path)
+      } else {
+        let _ = station_sys::unlink(path)
+      }
+    }
+  }
+}
+
+fn w17e4d_check_no_symlink(root : String, rel : String) -> Result[Unit, String] {
+  match station_sys::lstat_raw_err(root) {
+    Ok(st) => if st.starts_with("link|") { return Err("symlink root rejected: " + root) }
+    Err(_) => ()
+  }
+  if !station_whole::rep_is_safe_rel_path(rel) {
+    return Err("unsafe relative path rejected: " + rel)
+  }
+  let parts = rel.split("/")
+  let mut cur = root
+  for i in 0..<parts.length() {
+    cur = nodepath::join("/", [cur, parts[i]])
+    match station_sys::lstat_raw_err(cur) {
+      Ok(st) => {
+        if st.starts_with("link|") {
+          return Err("symlink path component rejected: " + cur)
+        }
+      }
+      Err(-2) => ()
+      Err(code) => return Err("lstat failed on " + cur + " (code=" + code.to_string() + ")")
+    }
+  }
+  Ok(())
+}
+
+/// Pure testable helper: finalize a staged update archive by checking exact byte count and SHA-256,
+/// atomically syncing + renaming `part_path` -> `final_path` and writing `staged.json` (`0600`).
+/// On ANY mismatch or error, removes `stage_dir` completely so zero partial binaries survive.
+pub fn w17e4d_finalize_staged_archive_with(
+  stage_dir : String,
+  part_path : String,
+  final_path : String,
+  got_bytes : Int64,
+  expected_size : Int64,
+  actual_sha256 : String,
+  expected_sha256 : String,
+  version : String,
+  build_num : Int64,
+  channel : String,
+  sync_fn : (String) -> Result[Unit, Int],
+  rename_fn : (String, String) -> Bool,
+  write_atomic_fn : (String, Bytes, Int) -> Bool,
+  remove_tree_fn : (String) -> Unit,
+) -> Result[String, String] {
+  if got_bytes != expected_size {
+    remove_tree_fn(stage_dir)
+    return Err("release archive size mismatch: got " + got_bytes.to_string() + ", expected " + expected_size.to_string())
+  }
+  if actual_sha256 != expected_sha256 {
+    remove_tree_fn(stage_dir)
+    return Err("release archive sha256 mismatch: got " + actual_sha256 + ", expected " + expected_sha256)
+  }
+  match sync_fn(part_path) {
+    Ok(_) => ()
+    Err(code) => {
+      remove_tree_fn(stage_dir)
+      return Err("sync_file failed on staged archive (code=" + code.to_string() + ")")
+    }
+  }
+  if !rename_fn(part_path, final_path) {
+    remove_tree_fn(stage_dir)
+    return Err("atomic rename failed for staged archive")
+  }
+  let meta_path = nodepath::join("/", [stage_dir, "staged.json"])
+  let meta_j = base_codec::json_obj([
+    ("version", base_codec::json_str(version)),
+    ("build", base_codec::json_int64(build_num)),
+    ("channel", base_codec::json_str(channel)),
+    ("sha256", base_codec::json_str(expected_sha256)),
+    ("size", base_codec::json_int64(expected_size)),
+    ("archive", base_codec::json_str(final_path)),
+  ])
+  if !write_atomic_fn(meta_path, (base_codec::json_stringify(meta_j) + "\n").to_bytes(), 384) {
+    remove_tree_fn(stage_dir)
+    return Err("failed to write staged.json")
+  }
+  Ok(final_path)
+}
+
+pub fn w17e4d_finalize_staged_archive(
+  stage_dir : String,
+  part_path : String,
+  final_path : String,
+  got_bytes : Int64,
+  expected_size : Int64,
+  actual_sha256 : String,
+  expected_sha256 : String,
+  version : String,
+  build_num : Int64,
+  channel : String,
+) -> Result[String, String] {
+  w17e4d_finalize_staged_archive_with(
+    stage_dir,
+    part_path,
+    final_path,
+    got_bytes,
+    expected_size,
+    actual_sha256,
+    expected_sha256,
+    version,
+    build_num,
+    channel,
+    fn(p : String) -> Result[Unit, Int] { station_sys::sync_file(p) },
+    fn(a : String, b : String) -> Bool { station_sys::rename(a, b) },
+    fn(p : String, d : Bytes, m : Int) -> Bool { station_sys::write_file_atomic(p, d, mode=m) },
+    fn(d : String) -> Unit { w17e4d_remove_tree(d) },
+  )
+}
+
+/// Pure testable helper: atomically commit a verified restore staging directory into `<data>/restore/copy`
+/// and atomically write `<data>/restore/ready.json` (`0600`).
+pub fn w17e4d_commit_restore_staging_with(
+  data_dir : String,
+  sep : String,
+  stage_dir : String,
+  origin : String,
+  ws : String,
+  gen : String,
+  name : String,
+  from_label : String,
+  check_no_symlink_fn : (String, String) -> Result[Unit, String],
+  rename_fn : (String, String) -> Bool,
+  write_atomic_fn : (String, Bytes, Int) -> Bool,
+  remove_tree_fn : (String) -> Unit,
+) -> Result[String, String] {
+  match check_no_symlink_fn(data_dir, "restore/copy") {
+    Ok(_) => ()
+    Err(e) => {
+      remove_tree_fn(stage_dir)
+      return Err(e)
+    }
+  }
+  match check_no_symlink_fn(data_dir, "restore/ready.json") {
+    Ok(_) => ()
+    Err(e) => {
+      remove_tree_fn(stage_dir)
+      return Err(e)
+    }
+  }
+  let restore_dir = nodepath::join(sep, [data_dir, "restore"])
+  let copy_dir = nodepath::join(sep, [restore_dir, "copy"])
+  remove_tree_fn(copy_dir)
+  if !rename_fn(stage_dir, copy_dir) {
+    remove_tree_fn(stage_dir)
+    return Err("failed to move staging directory into restore/copy")
+  }
+  let ready_path = nodepath::join(sep, [restore_dir, "ready.json"])
+  let ready_j = base_codec::json_obj([
+    ("origin", base_codec::json_str(origin)),
+    ("workspace", base_codec::json_str(ws)),
+    ("gen", base_codec::json_str(gen)),
+    ("name", base_codec::json_str(name)),
+    ("from", base_codec::json_str(from_label)),
+  ])
+  if !write_atomic_fn(ready_path, (base_codec::json_stringify(ready_j) + "\n").to_bytes(), 384) {
+    return Err("failed to atomically write restore/ready.json")
+  }
+  Ok(ready_path)
+}
+
+pub fn w17e4d_commit_restore_staging(
+  data_dir : String,
+  sep : String,
+  stage_dir : String,
+  origin : String,
+  ws : String,
+  gen : String,
+  name : String,
+  from_label : String,
+) -> Result[String, String] {
+  w17e4d_commit_restore_staging_with(
+    data_dir,
+    sep,
+    stage_dir,
+    origin,
+    ws,
+    gen,
+    name,
+    from_label,
+    fn(r : String, rel : String) -> Result[Unit, String] { w17e4d_check_no_symlink(r, rel) },
+    fn(a : String, b : String) -> Bool { station_sys::rename(a, b) },
+    fn(p : String, d : Bytes, m : Int) -> Bool { station_sys::write_file_atomic(p, d, mode=m) },
+    fn(d : String) -> Unit { w17e4d_remove_tree(d) },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// State machines attached to `WholeRuntimeState`
+// ---------------------------------------------------------------------------
+
+pub struct UpdateArchiveJob {
+  pub job_id : Int64
+  pub version : String
+  pub build_num : Int64
+  pub channel : String
+  pub base_url : String
+  pub expected_sha256 : String
+  pub expected_size : Int64
+  pub node_sha256 : String
+  pub lang_code : String
+  pub stage_dir : String
+  pub part_path : String
+  pub final_path : String
+  pub hasher : crypto::Sha256
+  pub mut stream_id : Option[Int]
+  pub mut status : Int
+  pub mut got_bytes : Int64
+  pub mut deadline_ms : Int64
+  pub mut installer_ev_id : Int64
+  pub mut installer_proc : Option[station_sys::ChildProcess]
+}
+
+pub enum RestoreFetchItem {
+  Head
+  ManifestRoot(String)
+  ManifestLeaf(String, String)
+  Batch(String)
+  ChatFile(String)
+  TranscriptFile(String)
+}
+
+pub struct CopiesRestoreJob {
+  pub job_id : Int64
+  pub ws : String
+  pub origin : String
+  pub gen : String
+  pub from_label : String
+  pub target : station_replica::NormalizedS3Target
+  pub enc_key : Bytes
+  pub ws_tag : String
+  pub origin_tag : String
+  pub stage_dir : String
+  pub mut name : String
+  pub mut head_raw : Option[Bytes]
+  pub mut head_batches : Array[String]
+  pub mut head_chat_files : Array[String]
+  pub mut head_transcript_files : Array[String]
+  pub mut queue : Array[RestoreFetchItem]
+  pub mut current_item : Option[RestoreFetchItem]
+  pub mut stream_id : Option[Int]
+  pub mut status : Int
+  pub mut chunks : Array[Bytes]
+  pub mut total_bytes : Int
+  pub mut done_items : Int
+  pub mut total_items : Int
+  pub mut deadline_ms : Int64
+}
+
+pub struct W17e4dRuntime {
+  pub mut next_ev_id : Int64
+  pub mut next_job_id : Int64
+  pub mut update_job : Option[UpdateArchiveJob]
+  pub mut restore_job : Option[CopiesRestoreJob]
+  pub mut last_restore_error : Option[String]
+  pub mut last_restore_ready : Bool
+  pub mut xshare_reconcile_count : Int64
+}
+
+pub fn W17e4dRuntime::new() -> W17e4dRuntime {
+  W17e4dRuntime::{
+    next_ev_id: UPDATES_RESTORE_EVENT_BASE,
+    next_job_id: 1L,
+    update_job: None,
+    restore_job: None,
+    last_restore_error: None,
+    last_restore_ready: false,
+    xshare_reconcile_count: 0L,
+  }
+}
+
+fn w17e4d_alloc_ev_id(rt : W17e4dRuntime) -> Int64 {
+  let id = rt.next_ev_id
+  rt.next_ev_id = if id + 1L >= UPDATES_RESTORE_EVENT_END {
+    UPDATES_RESTORE_EVENT_BASE
+  } else {
+    id + 1L
+  }
+  id
+}
+
+fn w17e4d_alloc_job_id(rt : W17e4dRuntime) -> Int64 {
+  let id = rt.next_job_id
+  rt.next_job_id = id + 1L
+  id
+}
+
+fn w17e4d_station_is_empty(st : WholeRuntimeState) -> Bool {
+  match st.core.store.require_open() {
+    Err(_) => false
+    Ok(st_db) => {
+      let has_t = match st_db.db.first("SELECT 1 AS x FROM threads LIMIT 1", []) {
+        Ok(Some(_)) => true
+        _ => false
+      }
+      if has_t {
+        return false
+      }
+      let has_s = match st_db.db.first("SELECT 1 AS x FROM sessions LIMIT 1", []) {
+        Ok(Some(_)) => true
+        _ => false
+      }
+      !has_s
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Update Archive Background Download + Atomic Staging + Installer Spawn
+// ---------------------------------------------------------------------------
+
+pub fn start_update_archive_job(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  release : station_cli::SignedRelease,
+  build : station_cli::ReleaseBuild,
+  channel : String,
+  base_url : String,
+  archive_url : String,
+  lang_code : String,
+) -> Result[Unit, String] {
+  let suffix = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err("CSPRNG failed: " + e)
+  }
+  let run_dir = nodepath::join(ctx.sep, [ctx.data, "run"])
+  if !station_sys::mkdir_p(run_dir) {
+    return Err("failed to create run directory")
+  }
+  let stage_dir = nodepath::join(ctx.sep, [run_dir, "update-stage-" + suffix])
+  match station_sys::mkdir_mode(stage_dir, mode=448) {
+    station_sys::MkdirModeResult::Ok => ()
+    _ => return Err("failed to create update staging directory")
+  }
+  let ext = if ctx.sep == "\\" { ".zip" } else { ".tar.gz" }
+  let final_path = nodepath::join(ctx.sep, [stage_dir, "stillfail" + ext])
+  let part_path = final_path + ".part"
+  let jid = w17e4d_alloc_job_id(st.w17e4d)
+  let job = UpdateArchiveJob::{
+    job_id: jid,
+    version: release.version,
+    build_num: release.build,
+    channel: channel,
+    base_url: base_url,
+    expected_sha256: build.sha256,
+    expected_size: build.size,
+    node_sha256: build.node_sha256,
+    lang_code: lang_code,
+    stage_dir: stage_dir,
+    part_path: part_path,
+    final_path: final_path,
+    hasher: crypto::Sha256::new(),
+    stream_id: None,
+    status: 0,
+    got_bytes: 0L,
+    deadline_ms: host_shim::now_ms() + W17E4D_ARCHIVE_TIMEOUT_MS,
+    installer_ev_id: 0L,
+    installer_proc: None,
+  }
+  st.w17e4d.update_job = Some(job)
+  let _ = ctx.mux_role.call_async_raw(
+    builders_core::MuxToken::Tagged(0, W17E4D_TOK_UPDATE_ARCHIVE_OPEN, jid),
+    "stream.open",
+    live_build_stream_open_args("GET", archive_url, [("user-agent", "stillfail-station")], W17E4D_ARCHIVE_TIMEOUT_MS),
+    None,
+  )
+  Ok(())
+}
+
+fn fail_update_archive_job(ctx : DaemonCtx, st : WholeRuntimeState, msg : String) -> Unit {
+  match st.w17e4d.update_job {
+    Some(job) => {
+      match job.stream_id {
+        Some(id) => {
+          let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+          job.stream_id = None
+        }
+        None => ()
+      }
+      match job.installer_proc {
+        Some(p) => {
+          let _ = p.kill(15, true)
+          let _ = p.close()
+          job.installer_proc = None
+        }
+        None => ()
+      }
+      w17e4d_remove_tree(job.stage_dir)
+      st.w17e4d.update_job = None
+    }
+    None => ()
+  }
+  st.core.updates.station.updating = None
+  st.core.updates.station.failed_text = Some(msg)
+  st.core.api.events.overview_changed("updates")
+}
+
+fn finish_update_archive_download(ctx : DaemonCtx, st : WholeRuntimeState, job : UpdateArchiveJob) -> Unit {
+  let digest = job.hasher.finalize_hex()
+  match w17e4d_finalize_staged_archive(
+    job.stage_dir,
+    job.part_path,
+    job.final_path,
+    job.got_bytes,
+    job.expected_size,
+    digest,
+    job.expected_sha256,
+    job.version,
+    job.build_num,
+    job.channel,
+  ) {
+    Err(e) => {
+      st.w17e4d.update_job = None
+      st.core.updates.station.updating = None
+      st.core.updates.station.failed_text = Some(e)
+      st.core.api.events.overview_changed("updates")
+      return
+    }
+    Ok(staged_archive) => {
+      // Check if bundled installer `<app>/bin/install.<lang>.sh` exists & is executable.
+      let installer_opt : Option[String] = match ctx.args.app {
+        Some(app_dir) => {
+          let ext = if ctx.sep == "\\" { "ps1" } else { "sh" }
+          let cand = nodepath::join(ctx.sep, [app_dir, "bin", "install." + job.lang_code + "." + ext])
+          if live_is_executable_file(ctx.ops_fs, cand, ctx.sep) {
+            Some(cand)
+          } else {
+            let fallback = nodepath::join(ctx.sep, [app_dir, "bin", "install.en." + ext])
+            if live_is_executable_file(ctx.ops_fs, fallback, ctx.sep) { Some(fallback) } else { None }
+          }
+        }
+        None => None
+      }
+      match installer_opt {
+        Some(script_path) => {
+          let ev_id = w17e4d_alloc_ev_id(st.w17e4d)
+          let env_list : Array[String] = [
+            "STILLFAIL_DATA=" + ctx.data,
+            "STILLFAIL_ORIGIN=" + job.base_url,
+            "STILLFAIL_CHANNEL=" + job.channel,
+            "STILLFAIL_ARCHIVE=" + staged_archive,
+            "STILLFAIL_RELEASE_SHA256=" + job.expected_sha256,
+            "STILLFAIL_NODE_SHA256=" + job.node_sha256,
+            "STILLFAIL_INSTALL_LANG=" + job.lang_code,
+          ]
+          match station_sys::env_get("PATH") {
+            Some(p) => env_list.push("PATH=" + p)
+            None => ()
+          }
+          let cmd = if ctx.sep == "\\" { "powershell" } else { "/bin/sh" }
+          let argv = if ctx.sep == "\\" { ["-NoProfile", "-File", script_path] } else { [script_path] }
+          let opts = station_sys::SpawnOptions::{
+            program: cmd,
+            args: argv,
+            env: Some(env_list),
+            cwd: ctx.data,
+            new_pgid: true,
+            strip_malloc_space_efficient: false,
+            pipe_stdin: false,
+            pipe_stdout: false,
+            pipe_stderr: false,
+          }
+          match station_sys::proc_spawn(ev_id, opts) {
+            Ok(child) => {
+              job.installer_ev_id = ev_id
+              job.installer_proc = Some(child)
+              job.deadline_ms = host_shim::now_ms() + W17E4D_INSTALLER_TIMEOUT_MS
+              st.core.api.events.overview_changed("updates")
+            }
+            Err(_) => {
+              fail_update_archive_job(ctx, st, "failed to spawn bundled installer")
+            }
+          }
+        }
+        None => {
+          // No bundled installer script (dev/test layout): atomically record verified staged metadata.
+          let staged_ptr = nodepath::join(ctx.sep, [ctx.data, "run", "update-staged.json"])
+          let ptr_j = base_codec::json_obj([
+            ("version", base_codec::json_str(job.version)),
+            ("build", base_codec::json_int64(job.build_num)),
+            ("channel", base_codec::json_str(job.channel)),
+            ("sha256", base_codec::json_str(job.expected_sha256)),
+            ("size", base_codec::json_int64(job.expected_size)),
+            ("archive", base_codec::json_str(staged_archive)),
+          ])
+          let _ = station_sys::write_file_atomic(staged_ptr, (base_codec::json_stringify(ptr_j) + "\n").to_bytes(), mode=384)
+          st.w17e4d.update_job = None
+          st.core.updates.station.updating = None
+          st.core.updates.station.latest = Some(job.version)
+          st.core.updates.station.failed_text = None
+          st.core.api.events.overview_changed("updates")
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Copies Restore Background S3 / Local-Kept State Machine
+// ---------------------------------------------------------------------------
+
+fn w17e4d_s3_object_key(target : station_replica::NormalizedS3Target, rel : String) -> String {
+  if target.prefix.length() > 0 {
+    target.prefix + "/" + rel
+  } else {
+    rel
+  }
+}
+
+fn w17e4d_start_next_restore_fetch(ctx : DaemonCtx, st : WholeRuntimeState, job : CopiesRestoreJob) -> Unit {
+  if job.queue.length() == 0 {
+    // All batches & files staged! Write head.json, re-check empty station, atomically commit ready.json.
+    match job.head_raw {
+      None => {
+        fail_copies_restore_job(ctx, st, "missing head.json during restore commit")
+        return
+      }
+      Some(head_bytes) => {
+        let head_dst = nodepath::join(ctx.sep, [job.stage_dir, job.gen, "head.json"])
+        match station_whole::rep_write_binary_atomic(head_dst, head_bytes) {
+          Err(e) => {
+            fail_copies_restore_job(ctx, st, "failed to write staged head.json: " + e)
+            return
+          }
+          Ok(_) => ()
+        }
+      }
+    }
+    if !w17e4d_station_is_empty(st) {
+      fail_copies_restore_job(ctx, st, "this station has chats of its own: a copy is taken back only into a new one")
+      return
+    }
+    match w17e4d_commit_restore_staging(
+      ctx.data,
+      ctx.sep,
+      job.stage_dir,
+      job.origin,
+      job.ws,
+      job.gen,
+      job.name,
+      job.from_label,
+    ) {
+      Err(e) => {
+        st.w17e4d.restore_job = None
+        st.w17e4d.last_restore_error = Some(e)
+        st.w17e4d.last_restore_ready = false
+        st.core.api.events.overview_changed("copies")
+      }
+      Ok(_) => {
+        st.w17e4d.restore_job = None
+        st.w17e4d.last_restore_error = None
+        st.w17e4d.last_restore_ready = true
+        st.core.api.events.overview_changed("copies")
+      }
+    }
+    return
+  }
+  let item = job.queue[0]
+  let rest : Array[RestoreFetchItem] = []
+  for i in 1..<job.queue.length() {
+    rest.push(job.queue[i])
+  }
+  job.queue = rest
+  job.current_item = Some(item)
+  job.chunks = []
+  job.total_bytes = 0
+  job.status = 0
+  let obj_rel = match item {
+    RestoreFetchItem::Head => job.ws_tag + "/" + job.origin_tag + "/head/" + job.gen + ".enc"
+    RestoreFetchItem::ManifestRoot(h) => job.ws_tag + "/" + job.origin_tag + "/files/" + station_replica::s3_file_tag(job.enc_key, h) + ".enc"
+    RestoreFetchItem::ManifestLeaf(_, h) => job.ws_tag + "/" + job.origin_tag + "/files/" + station_replica::s3_file_tag(job.enc_key, h) + ".enc"
+    RestoreFetchItem::Batch(b) => job.ws_tag + "/" + job.origin_tag + "/log/" + job.gen + "/" + b + ".enc"
+    RestoreFetchItem::ChatFile(h) => job.ws_tag + "/" + job.origin_tag + "/files/" + station_replica::s3_file_tag(job.enc_key, h) + ".enc"
+    RestoreFetchItem::TranscriptFile(h) => job.ws_tag + "/" + job.origin_tag + "/files/" + station_replica::s3_file_tag(job.enc_key, h) + ".enc"
+  }
+  let full_key = w17e4d_s3_object_key(job.target, obj_rel)
+  let signed = station_replica::sign_s3_request(job.target, "GET", full_key, Map::new(), Bytes::new(0), Map::new(), host_shim::wall_ms())
+  let hdr_pairs : Array[(String, String)] = []
+  let hks = signed.headers.keys()
+  for i in 0..<hks.length() {
+    match signed.headers.get(hks[i]) {
+      Some(v) => hdr_pairs.push((hks[i], v))
+      None => ()
+    }
+  }
+  let rem = job.deadline_ms - host_shim::now_ms()
+  let tmo = if rem < 1000L { 1000L } else { rem }
+  let _ = ctx.mux_role.call_async_raw(
+    builders_core::MuxToken::Tagged(0, W17E4D_TOK_RESTORE_S3_OPEN, job.job_id),
+    "stream.open",
+    live_build_stream_open_args("GET", signed.url, hdr_pairs, tmo),
+    None,
+  )
+}
+
+fn fail_copies_restore_job(ctx : DaemonCtx, st : WholeRuntimeState, msg : String) -> Unit {
+  match st.w17e4d.restore_job {
+    Some(job) => {
+      match job.stream_id {
+        Some(id) => {
+          let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+          job.stream_id = None
+        }
+        None => ()
+      }
+      w17e4d_remove_tree(job.stage_dir)
+      st.w17e4d.restore_job = None
+    }
+    None => ()
+  }
+  st.w17e4d.last_restore_error = Some(msg)
+  st.w17e4d.last_restore_ready = false
+  st.core.api.events.overview_changed("copies")
+}
+
+fn w17e4d_sfb1_open_bytes(enc_key : Bytes, ws : String, origin : String, logical_path : String, enc : Bytes) -> Result[Bytes, String] {
+  let opener = match station_replica::Sfb1StreamOpener::new(
+    enc_key,
+    station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: logical_path },
+  ) {
+    Ok(o) => o
+    Err(e) => return Err("sfb1 init failed: " + e)
+  }
+  let parts = match opener.push(enc) {
+    Ok(ps) => ps
+    Err(e) => return Err("sfb1 decrypt failed: " + e)
+  }
+  match opener.finish() {
+    Ok(_) => ()
+    Err(e) => return Err("sfb1 auth tag failed: " + e)
+  }
+  let mut total = 0
+  for i in 0..<parts.length() {
+    total = total + parts[i].length()
+  }
+  Ok(live_concat_chunks(parts, total))
+}
+
+fn w17e4d_handle_restore_item_done(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  job : CopiesRestoreJob,
+  status : Int,
+  body : Bytes,
+) -> Unit {
+  let item = match job.current_item {
+    Some(it) => it
+    None => {
+      fail_copies_restore_job(ctx, st, "restore state machine missing current item")
+      return
+    }
+  }
+  job.current_item = None
+  match item {
+    RestoreFetchItem::Head => {
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "S3 head fetch failed (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin_tag, "head/" + job.gen, body) {
+        Ok(b) => b
+        Err(e) => {
+          fail_copies_restore_job(ctx, st, e)
+          return
+        }
+      }
+      let head_j = match base_codec::json_parse(plain.to_string()) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(e) => {
+          fail_copies_restore_job(ctx, st, "corrupt head.json: " + e)
+          return
+        }
+      }
+      job.name = match live_json_str_f(head_j, "name") { Some(n) => n, None => job.origin }
+      job.head_raw = Some(plain)
+      // Validate & enqueue batches
+      let batches : Array[String] = []
+      match base_codec::json_get(head_j, "batches") {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Str(b) => {
+                if !station_whole::is_safe_replica_id(b) {
+                  fail_copies_restore_job(ctx, st, "unsafe batch name in head.json")
+                  return
+                }
+                batches.push(b)
+              }
+              _ => {
+                fail_copies_restore_job(ctx, st, "invalid batch entry in head.json")
+                return
+              }
+            }
+          }
+        }
+        _ => ()
+      }
+      job.head_batches = batches
+      // Validate & enqueue chat files
+      let chat_seen : Map[String, Bool] = Map::new()
+      let chat_files : Array[String] = []
+      match base_codec::json_get(head_j, "files") {
+        Some(base_codec::Json::Obj(fs)) => {
+          for i in 0..<fs.length() {
+            let h = fs[i].0
+            if !w17e4d_is_hex64_lower(h) {
+              fail_copies_restore_job(ctx, st, "unsafe file hash in head.json")
+              return
+            }
+            if !chat_seen.contains(h) {
+              chat_seen.set(h, true)
+              chat_files.push(h)
+            }
+          }
+        }
+        _ => ()
+      }
+      job.head_chat_files = chat_files
+      // Check transcriptManifest vs inline transcriptFiles
+      match live_json_str_f(head_j, "transcriptManifest") {
+        Some(root_h) if root_h.length() > 0 => {
+          if !w17e4d_is_hex64_lower(root_h) {
+            fail_copies_restore_job(ctx, st, "unsafe transcriptManifest hash")
+            return
+          }
+          job.queue.push(RestoreFetchItem::ManifestRoot(root_h))
+        }
+        _ => match base_codec::json_get(head_j, "transcriptFiles") {
+          Some(base_codec::Json::Obj(tfs)) => {
+            for i in 0..<tfs.length() {
+              let h = tfs[i].0
+              if !w17e4d_is_hex64_lower(h) {
+                fail_copies_restore_job(ctx, st, "unsafe transcript file hash in head.json")
+                return
+              }
+              if !chat_seen.contains(h) {
+                job.head_transcript_files.push(h)
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      for i in 0..<batches.length() {
+        job.queue.push(RestoreFetchItem::Batch(batches[i]))
+      }
+      for i in 0..<chat_files.length() {
+        job.queue.push(RestoreFetchItem::ChatFile(chat_files[i]))
+      }
+      for i in 0..<job.head_transcript_files.length() {
+        job.queue.push(RestoreFetchItem::TranscriptFile(job.head_transcript_files[i]))
+      }
+      job.total_items = job.queue.length()
+      st.core.api.events.overview_changed("copies")
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+
+    RestoreFetchItem::ManifestRoot(root_h) => {
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "transcriptManifest root missing (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin, "files/" + root_h, body) {
+        Ok(b) => b
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+      }
+      let budget = station_replica::ManifestBudget::new()
+      let root_parsed = match station_replica::parse_root_manifest(plain, root_h, budget) {
+        Ok(r) => r
+        Err(e) => { fail_copies_restore_job(ctx, st, "invalid transcriptManifest root: " + e); return }
+      }
+      let dst = nodepath::join(ctx.sep, [job.stage_dir, "files", root_h])
+      match station_whole::rep_write_binary_atomic(dst, plain) {
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+        Ok(_) => ()
+      }
+      let bkeys = root_parsed.buckets.keys()
+      let prepend : Array[RestoreFetchItem] = []
+      for i in 0..<bkeys.length() {
+        match root_parsed.buckets.get(bkeys[i]) {
+          Some(lh) => prepend.push(RestoreFetchItem::ManifestLeaf(bkeys[i], lh))
+          None => ()
+        }
+      }
+      for i in 0..<job.queue.length() {
+        prepend.push(job.queue[i])
+      }
+      job.queue = prepend
+      job.done_items = job.done_items + 1
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+
+    RestoreFetchItem::ManifestLeaf(bucket, leaf_h) => {
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "transcriptManifest leaf missing (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin, "files/" + leaf_h, body) {
+        Ok(b) => b
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+      }
+      let budget = station_replica::ManifestBudget::new()
+      let leaf_parsed = match station_replica::parse_leaf_manifest(plain, bucket, leaf_h, budget) {
+        Ok(l) => l
+        Err(e) => { fail_copies_restore_job(ctx, st, "invalid transcriptManifest leaf: " + e); return }
+      }
+      let dst = nodepath::join(ctx.sep, [job.stage_dir, "files", leaf_h])
+      match station_whole::rep_write_binary_atomic(dst, plain) {
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+        Ok(_) => ()
+      }
+      let fkeys = leaf_parsed.files.keys()
+      for i in 0..<fkeys.length() {
+        job.queue.push(RestoreFetchItem::TranscriptFile(fkeys[i]))
+      }
+      job.done_items = job.done_items + 1
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+
+    RestoreFetchItem::Batch(b) => {
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "S3 batch fetch failed (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin, "log/" + job.gen + "/" + b, body) {
+        Ok(p) => p
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+      }
+      let dst = nodepath::join(ctx.sep, [job.stage_dir, job.gen, "log", b])
+      match station_whole::rep_write_binary_atomic(dst, plain) {
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+        Ok(_) => ()
+      }
+      job.done_items = job.done_items + 1
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+
+    RestoreFetchItem::ChatFile(h) => {
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "S3 chat file fetch failed (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin, "files/" + h, body) {
+        Ok(p) => p
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+      }
+      if crypto::sha256_hex(plain) != h {
+        fail_copies_restore_job(ctx, st, "restored file sha256 mismatch for " + h)
+        return
+      }
+      let dst = nodepath::join(ctx.sep, [job.stage_dir, "files", h])
+      match station_whole::rep_write_binary_atomic(dst, plain) {
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+        Ok(_) => ()
+      }
+      job.done_items = job.done_items + 1
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+
+    RestoreFetchItem::TranscriptFile(h) => {
+      if status == 404 {
+        // Chat-first fault tolerance: missing individual transcript chunk does not block chat restore.
+        job.done_items = job.done_items + 1
+        w17e4d_start_next_restore_fetch(ctx, st, job)
+        return
+      }
+      if status < 200 || status >= 300 {
+        fail_copies_restore_job(ctx, st, "S3 transcript fetch failed (HTTP " + status.to_string() + ")")
+        return
+      }
+      let plain = match w17e4d_sfb1_open_bytes(job.enc_key, job.ws, job.origin, "files/" + h, body) {
+        Ok(p) => p
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+      }
+      let dst = nodepath::join(ctx.sep, [job.stage_dir, "files", h])
+      match station_whole::rep_write_binary_atomic(dst, plain) {
+        Err(e) => { fail_copies_restore_job(ctx, st, e); return }
+        Ok(_) => ()
+      }
+      job.done_items = job.done_items + 1
+      w17e4d_start_next_restore_fetch(ctx, st, job)
+    }
+  }
+}
+
+/// Start a non-blocking `copies.restore` job (returns `Ok({"restoring": true})` immediately for HTTP 202).
+pub fn start_copies_restore_job(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  ws : String,
+  origin : String,
+  gen : String,
+  from_kind : String,
+  from_id : String,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  if !w17e4d_station_is_empty(st) {
+    return Err(station_api::ApiError::new(409, "this station has chats of its own: a copy is taken back only into a new one"))
+  }
+  if st.w17e4d.restore_job.is_some() {
+    return Err(station_api::ApiError::new(409, "a restore is under way"))
+  }
+  if from_kind == "s3" {
+    let saved = station_replica::read_backup_config(ctx.config_file.raw()).s3
+    let mut target_opt : Option[station_replica::NormalizedS3Target] = None
+    for i in 0..<saved.length() {
+      if saved[i].id == from_id {
+        target_opt = Some(saved[i])
+        break
+      }
+    }
+    let target = match target_opt {
+      Some(t) => t
+      None => return Err(station_api::ApiError::new(409, "S3 target " + from_id + " is not configured"))
+    }
+    let enc_key = match w17e4d_hex_to_bytes32(target.encryption_key) {
+      Some(k) => k
+      None => return Err(station_api::ApiError::new(409, "S3 target encryptionKey is invalid"))
+    }
+    match w17e4d_check_no_symlink(ctx.data, "restore") {
+      Ok(_) => ()
+      Err(e) => return Err(station_api::ApiError::new(500, e))
+    }
+    let restore_root = nodepath::join(ctx.sep, [ctx.data, "restore"])
+    if !station_sys::mkdir_p(restore_root) {
+      return Err(station_api::ApiError::new(500, "failed to create restore directory"))
+    }
+    let suffix = match station_sys::random_hex(8) {
+      Ok(h) => h
+      Err(e) => return Err(station_api::ApiError::new(500, "CSPRNG failed: " + e))
+    }
+    let stage_dir = nodepath::join(ctx.sep, [restore_root, ".staging-" + suffix])
+    if !station_sys::mkdir_p(nodepath::join(ctx.sep, [stage_dir, gen, "log"]))
+    || !station_sys::mkdir_p(nodepath::join(ctx.sep, [stage_dir, "files"])) {
+      w17e4d_remove_tree(stage_dir)
+      return Err(station_api::ApiError::new(500, "failed to create restore staging directory"))
+    }
+    let jid = w17e4d_alloc_job_id(st.w17e4d)
+    let job = CopiesRestoreJob::{
+      job_id: jid,
+      ws: ws,
+      origin: origin,
+      gen: gen,
+      from_label: "s3:" + from_id,
+      target: target,
+      enc_key: enc_key,
+      ws_tag: station_replica::s3_ws_tag(enc_key, ws),
+      origin_tag: station_replica::s3_origin_tag(enc_key, origin),
+      stage_dir: stage_dir,
+      name: origin,
+      head_raw: None,
+      head_batches: [],
+      head_chat_files: [],
+      head_transcript_files: [],
+      queue: [RestoreFetchItem::Head],
+      current_item: None,
+      stream_id: None,
+      status: 0,
+      chunks: [],
+      total_bytes: 0,
+      done_items: 0,
+      total_items: 0,
+      deadline_ms: host_shim::now_ms() + W17E4D_RESTORE_TIMEOUT_MS,
+    }
+    st.w17e4d.restore_job = Some(job)
+    st.w17e4d.last_restore_error = None
+    st.w17e4d.last_restore_ready = false
+    w17e4d_start_next_restore_fetch(ctx, st, job)
+    return Ok(base_codec::json_obj([("restoring", base_codec::json_bool(true))]))
+  }
+
+  // `from: { station: from_id }`: support local kept copy when `from_id` is this station's ID.
+  let self_id = match ctx.cloud.state { Some(cs) => cs.station, None => "" }
+  if from_id != self_id {
+    return Err(station_api::ApiError::new(409, "keeper station " + from_id + " is not reachable"))
+  }
+  let kept_rel = "replica/kept/" + ws + "/" + origin + "/" + gen + "/head.json"
+  match w17e4d_check_no_symlink(ctx.data, kept_rel) {
+    Ok(_) => ()
+    Err(e) => return Err(station_api::ApiError::new(409, e))
+  }
+  let kept_head_path = nodepath::join(ctx.sep, [ctx.data, "replica", "kept", ws, origin, gen, "head.json"])
+  let head_bytes = match station_whole::rep_read_binary_file(kept_head_path) {
+    Ok(b) => b
+    Err(_) => return Err(station_api::ApiError::new(409, "that copy is not kept there"))
+  }
+  let head_j = match base_codec::json_parse(head_bytes.to_string()) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return Err(station_api::ApiError::new(409, "corrupt kept head.json"))
+  }
+  let suffix = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err(station_api::ApiError::new(500, "CSPRNG failed: " + e))
+  }
+  let stage_dir = nodepath::join(ctx.sep, [ctx.data, "restore", ".staging-" + suffix])
+  if !station_sys::mkdir_p(nodepath::join(ctx.sep, [stage_dir, gen, "log"]))
+  || !station_sys::mkdir_p(nodepath::join(ctx.sep, [stage_dir, "files"])) {
+    w17e4d_remove_tree(stage_dir)
+    return Err(station_api::ApiError::new(500, "failed to create restore staging directory"))
+  }
+  match base_codec::json_get(head_j, "batches") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(b) => {
+            if !station_whole::is_safe_replica_id(b) {
+              w17e4d_remove_tree(stage_dir)
+              return Err(station_api::ApiError::new(409, "unsafe batch name"))
+            }
+            let src_b = nodepath::join(ctx.sep, [ctx.data, "replica", "kept", ws, origin, gen, "log", b])
+            let data_b = match station_whole::rep_read_binary_file(src_b) {
+              Ok(d) => d
+              Err(e) => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(409, e)) }
+            }
+            let dst_b = nodepath::join(ctx.sep, [stage_dir, gen, "log", b])
+            match station_whole::rep_write_binary_atomic(dst_b, data_b) {
+              Ok(_) => ()
+              Err(e) => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(500, e)) }
+            }
+          }
+          _ => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(409, "invalid batch entry")) }
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(head_j, "files") {
+    Some(base_codec::Json::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        let h = fs[i].0
+        if !w17e4d_is_hex64_lower(h) {
+          w17e4d_remove_tree(stage_dir)
+          return Err(station_api::ApiError::new(409, "unsafe file hash"))
+        }
+        let src_f = nodepath::join(ctx.sep, [ctx.data, "replica", "kept", ws, origin, "files", h])
+        let data_f = match station_whole::rep_read_binary_file(src_f) {
+          Ok(d) => d
+          Err(e) => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(409, e)) }
+        }
+        if crypto::sha256_hex(data_f) != h {
+          w17e4d_remove_tree(stage_dir)
+          return Err(station_api::ApiError::new(409, "kept file sha256 mismatch"))
+        }
+        let dst_f = nodepath::join(ctx.sep, [stage_dir, "files", h])
+        match station_whole::rep_write_binary_atomic(dst_f, data_f) {
+          Ok(_) => ()
+          Err(e) => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(500, e)) }
+        }
+      }
+    }
+    _ => ()
+  }
+  match station_whole::rep_write_binary_atomic(nodepath::join(ctx.sep, [stage_dir, gen, "head.json"]), head_bytes) {
+    Ok(_) => ()
+    Err(e) => { w17e4d_remove_tree(stage_dir); return Err(station_api::ApiError::new(500, e)) }
+  }
+  let name = match live_json_str_f(head_j, "name") { Some(n) => n, None => origin }
+  match w17e4d_commit_restore_staging(ctx.data, ctx.sep, stage_dir, origin, ws, gen, name, from_id) {
+    Ok(_) => {
+      st.w17e4d.last_restore_error = None
+      st.w17e4d.last_restore_ready = true
+      Ok(base_codec::json_obj([("restoring", base_codec::json_bool(true))]))
+    }
+    Err(e) => Err(station_api::ApiError::new(500, e))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Daemon Event-Loop Dispatch (`on_role_done`, `on_sys_event`, `on_tick`, `on_shutdown`)
+// ---------------------------------------------------------------------------
+
+pub fn w17e4d_handle_role_done(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  kind : Int,
+  sid : Int64,
+  d : host_shim::ShellDone,
+) -> Bool {
+  // Background update archive streaming download (`5332` / `5333`)
+  if kind == W17E4D_TOK_UPDATE_ARCHIVE_OPEN || kind == W17E4D_TOK_UPDATE_ARCHIVE_READ {
+    match st.w17e4d.update_job {
+      None => {
+        if kind == W17E4D_TOK_UPDATE_ARCHIVE_OPEN {
+          close_orphaned_async_stream_open(ctx, d)
+        }
+        return true
+      }
+      Some(job) => {
+        if job.job_id != sid {
+          if kind == W17E4D_TOK_UPDATE_ARCHIVE_OPEN {
+            close_orphaned_async_stream_open(ctx, d)
+          }
+          return true
+        }
+        if kind == W17E4D_TOK_UPDATE_ARCHIVE_OPEN {
+          match station_http::decode_stream_open_done(d) {
+            Err(e) => {
+              fail_update_archive_job(ctx, st, "release download failed: " + e.message)
+              return true
+            }
+            Ok(head) => {
+              job.stream_id = Some(head.id)
+              job.status = head.status
+              if head.status < 200 || head.status >= 300 {
+                fail_update_archive_job(ctx, st, "release download HTTP " + head.status.to_string())
+                return true
+              }
+              let rem = job.deadline_ms - host_shim::now_ms()
+              if rem <= 0L {
+                fail_update_archive_job(ctx, st, "release download timed out")
+                return true
+              }
+              let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+              let read_args = base_codec::json_stringify(base_codec::json_obj([
+                ("id", base_codec::json_int(head.id)),
+                ("stallMs", base_codec::json_int(stall)),
+              ]))
+              let _ = ctx.mux_role.call_async_raw(
+                builders_core::MuxToken::Tagged(0, W17E4D_TOK_UPDATE_ARCHIVE_READ, job.job_id),
+                "stream.read",
+                read_args,
+                None,
+              )
+              return true
+            }
+          }
+        }
+        // `W17E4D_TOK_UPDATE_ARCHIVE_READ`
+        match station_http::decode_stream_read_done(d) {
+          Err(e) => {
+            fail_update_archive_job(ctx, st, "release download read failed: " + e.message)
+            return true
+          }
+          Ok(chunk) => match chunk {
+            station_http::StreamChunk::End => {
+              match job.stream_id {
+                Some(id) => {
+                  let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+                  job.stream_id = None
+                }
+                None => ()
+              }
+              finish_update_archive_download(ctx, st, job)
+              return true
+            }
+            station_http::StreamChunk::Data(data) => {
+              if data.length() > 0 {
+                let next_got = job.got_bytes + data.length().to_int64()
+                if next_got > job.expected_size {
+                  fail_update_archive_job(ctx, st, "release archive exceeded expected size")
+                  return true
+                }
+                job.hasher.update(data)
+                match station_sys::write_at(job.part_path, job.got_bytes, data, job.got_bytes == 0L, None, None, false) {
+                  Ok(_) => job.got_bytes = next_got
+                  Err(code) => {
+                    fail_update_archive_job(ctx, st, "failed writing staged archive (code=" + code.to_string() + ")")
+                    return true
+                  }
+                }
+              }
+              let rem = job.deadline_ms - host_shim::now_ms()
+              if rem <= 0L {
+                fail_update_archive_job(ctx, st, "release download timed out")
+                return true
+              }
+              let stream_id = match job.stream_id {
+                Some(id) => id
+                None => { fail_update_archive_job(ctx, st, "release stream closed"); return true }
+              }
+              let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+              let read_args = base_codec::json_stringify(base_codec::json_obj([
+                ("id", base_codec::json_int(stream_id)),
+                ("stallMs", base_codec::json_int(stall)),
+              ]))
+              let _ = ctx.mux_role.call_async_raw(
+                builders_core::MuxToken::Tagged(0, W17E4D_TOK_UPDATE_ARCHIVE_READ, job.job_id),
+                "stream.read",
+                read_args,
+                None,
+              )
+              return true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Background `copies.restore` S3 streaming fetch (`5334` / `5335`)
+  if kind == W17E4D_TOK_RESTORE_S3_OPEN || kind == W17E4D_TOK_RESTORE_S3_READ {
+    match st.w17e4d.restore_job {
+      None => {
+        if kind == W17E4D_TOK_RESTORE_S3_OPEN {
+          close_orphaned_async_stream_open(ctx, d)
+        }
+        return true
+      }
+      Some(job) => {
+        if job.job_id != sid {
+          if kind == W17E4D_TOK_RESTORE_S3_OPEN {
+            close_orphaned_async_stream_open(ctx, d)
+          }
+          return true
+        }
+        if kind == W17E4D_TOK_RESTORE_S3_OPEN {
+          match station_http::decode_stream_open_done(d) {
+            Err(e) => {
+              fail_copies_restore_job(ctx, st, "S3 restore request failed: " + e.message)
+              return true
+            }
+            Ok(head) => {
+              job.stream_id = Some(head.id)
+              job.status = head.status
+              let rem = job.deadline_ms - host_shim::now_ms()
+              if rem <= 0L {
+                fail_copies_restore_job(ctx, st, "S3 restore timed out")
+                return true
+              }
+              let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+              let read_args = base_codec::json_stringify(base_codec::json_obj([
+                ("id", base_codec::json_int(head.id)),
+                ("stallMs", base_codec::json_int(stall)),
+              ]))
+              let _ = ctx.mux_role.call_async_raw(
+                builders_core::MuxToken::Tagged(0, W17E4D_TOK_RESTORE_S3_READ, job.job_id),
+                "stream.read",
+                read_args,
+                None,
+              )
+              return true
+            }
+          }
+        }
+        // `W17E4D_TOK_RESTORE_S3_READ`
+        match station_http::decode_stream_read_done(d) {
+          Err(e) => {
+            fail_copies_restore_job(ctx, st, "S3 restore read failed: " + e.message)
+            return true
+          }
+          Ok(chunk) => match chunk {
+            station_http::StreamChunk::End => {
+              match job.stream_id {
+                Some(id) => {
+                  let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+                  job.stream_id = None
+                }
+                None => ()
+              }
+              let full = live_concat_chunks(job.chunks, job.total_bytes)
+              w17e4d_handle_restore_item_done(ctx, st, job, job.status, full)
+              return true
+            }
+            station_http::StreamChunk::Data(data) => {
+              if data.length() > 0 {
+                if job.total_bytes + data.length() > W17E4D_RESTORE_MAX_OBJ_BYTES {
+                  fail_copies_restore_job(ctx, st, "S3 restore object exceeded size cap")
+                  return true
+                }
+                job.chunks.push(data)
+                job.total_bytes = job.total_bytes + data.length()
+              }
+              let rem = job.deadline_ms - host_shim::now_ms()
+              if rem <= 0L {
+                fail_copies_restore_job(ctx, st, "S3 restore timed out")
+                return true
+              }
+              let stream_id = match job.stream_id {
+                Some(id) => id
+                None => { fail_copies_restore_job(ctx, st, "S3 restore stream closed"); return true }
+              }
+              let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+              let read_args = base_codec::json_stringify(base_codec::json_obj([
+                ("id", base_codec::json_int(stream_id)),
+                ("stallMs", base_codec::json_int(stall)),
+              ]))
+              let _ = ctx.mux_role.call_async_raw(
+                builders_core::MuxToken::Tagged(0, W17E4D_TOK_RESTORE_S3_READ, job.job_id),
+                "stream.read",
+                read_args,
+                None,
+              )
+              return true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if kind == W17E4D_TOK_XSHARE_PEER {
+    return true
+  }
+
+  false
+}
+
+/// Handle `station_sys` events in `[UPDATES_RESTORE_EVENT_BASE, UPDATES_RESTORE_EVENT_END)`.
+pub fn w17e4d_handle_sys_event(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  ev_id : Int64,
+  sev : station_sys::SysEvent,
+) -> Bool {
+  if ev_id < UPDATES_RESTORE_EVENT_BASE || ev_id >= UPDATES_RESTORE_EVENT_END {
+    return false
+  }
+  match st.w17e4d.update_job {
+    Some(job) if job.installer_ev_id == ev_id => match sev {
+      station_sys::SysEvent::ProcExit(es) => {
+        match job.installer_proc {
+          Some(p) => { let _ = p.close(); job.installer_proc = None }
+          None => ()
+        }
+        w17e4d_remove_tree(job.stage_dir)
+        let ver = job.version
+        st.w17e4d.update_job = None
+        st.core.updates.station.updating = None
+        if es.code == 0 && es.signal == 0 {
+          st.core.updates.station.latest = Some(ver)
+          st.core.updates.station.failed_text = None
+        } else {
+          st.core.updates.station.failed_text = Some("installer exited with code " + es.code.to_string() + " (sig=" + es.signal.to_string() + ")")
+        }
+        st.core.api.events.overview_changed("updates")
+        true
+      }
+      _ => true
+    }
+    _ => true
+  }
+}
+
+/// Enforce monotonic deadlines on in-flight update archive/installer & copies restore jobs.
+pub fn w17e4d_tick(ctx : DaemonCtx, st : WholeRuntimeState, now_ms : Int64) -> Unit {
+  match st.w17e4d.update_job {
+    Some(job) if now_ms >= job.deadline_ms => {
+      fail_update_archive_job(ctx, st, "station update timed out")
+    }
+    _ => ()
+  }
+  match st.w17e4d.restore_job {
+    Some(job) if now_ms >= job.deadline_ms => {
+      fail_copies_restore_job(ctx, st, "backup restore timed out")
+    }
+    _ => ()
+  }
+}
+
+/// Cleanly close all in-flight handles, terminate any installer process, and delete incomplete staging dirs on shutdown.
+pub fn w17e4d_shutdown(ctx : DaemonCtx, st : WholeRuntimeState) -> Unit {
+  match st.w17e4d.update_job {
+    Some(_) => fail_update_archive_job(ctx, st, "station shutting down")
+    None => ()
+  }
+  match st.w17e4d.restore_job {
+    Some(_) => fail_copies_restore_job(ctx, st, "station shutting down")
+    None => ()
+  }
+}

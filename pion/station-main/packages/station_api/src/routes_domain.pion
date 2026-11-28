@@ -210,7 +210,7 @@ pub fn dispatch_domain_route(
         Some(e) => return Some(RouteResult::err(e))
         None => ()
       }
-      return Some(call_with_json(host, "copies.restore", r, []))
+      return Some(call_with_json_status(host, "copies.restore", r, [], 202))
     }
     if n == 3 && m == "POST" && segs[1] == "s3" && segs[2] == "test" {
       match require_manager(r, "only workspace owners and admins can test backup settings") {
