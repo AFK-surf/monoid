@@ -2442,4 +2442,26 @@ test "W17C-1 R24: ProcStdoutEof without OS exit preserves spawn marker, timeout 
   assert_true(evaluate_shutdown_spawning_ok(0, true, true), "all spawns sent TERM & markers durably saved => ok")
   assert_true(!evaluate_shutdown_spawning_ok(1, true, true), "unresolved Spawning runner => MUST return false")
   assert_true(!evaluate_shutdown_spawning_ok(0, true, false), "unconfirmed marker failed to persist => MUST return false")
+
+  // 3. R24b: `deadline == 0L` in `draining` retries adopt on subsequent ticks and reclaims on OS death!
+  assert_true(
+    decide_draining_spawning_tick(1000L, 500L, false, SpawnIdentityVerdict::Unknown) is DrainingSpawningTickAction::Wait,
+    "before deadline => Wait",
+  )
+  assert_true(
+    decide_draining_spawning_tick(1000L, 1000L, false, SpawnIdentityVerdict::Unknown) is DrainingSpawningTickAction::FirstTimeout,
+    "at deadline => FirstTimeout",
+  )
+  assert_true(
+    decide_draining_spawning_tick(0L, 2000L, false, SpawnIdentityVerdict::ConfirmedSame) is DrainingSpawningTickAction::RetryAdopt,
+    "deadline == 0L while ConfirmedSame => RetryAdopt on next tick",
+  )
+  assert_true(
+    decide_draining_spawning_tick(0L, 2000L, false, SpawnIdentityVerdict::ConfirmedDeadOrReused) is DrainingSpawningTickAction::ReclaimDead,
+    "deadline == 0L when ConfirmedDeadOrReused => ReclaimDead",
+  )
+  assert_true(
+    decide_draining_spawning_tick(0L, 2000L, true, SpawnIdentityVerdict::Unknown) is DrainingSpawningTickAction::ReclaimDead,
+    "deadline == 0L when spawn_proc_exited => ReclaimDead",
+  )
 }

@@ -1924,6 +1924,37 @@ pub fn spawn_stdout_eof_confirmed_dead(
   spawn_proc_exited || (verdict is SpawnIdentityVerdict::ConfirmedDeadOrReused)
 }
 
+/// R24b: Pure decision for `draining` `LiveRunnerPhase::Spawning(..., deadline)` on each `tick()`:
+/// - `deadline > 0L && now_ms >= deadline` -> `FirstTimeout`
+/// - `deadline == 0L` & (`spawn_proc_exited` or `ConfirmedDeadOrReused`) -> `ReclaimDead`
+/// - `deadline == 0L` otherwise -> `RetryAdopt` (keep retrying `<rid>.json` probe + `adopt_live_runner`)
+/// - otherwise -> `Wait`.
+pub enum DrainingSpawningTickAction {
+  Wait
+  FirstTimeout
+  RetryAdopt
+  ReclaimDead
+}
+
+pub fn decide_draining_spawning_tick(
+  deadline : Int64,
+  now_ms : Int64,
+  spawn_proc_exited : Bool,
+  verdict : SpawnIdentityVerdict,
+) -> DrainingSpawningTickAction {
+  if deadline > 0L {
+    if now_ms >= deadline {
+      DrainingSpawningTickAction::FirstTimeout
+    } else {
+      DrainingSpawningTickAction::Wait
+    }
+  } else if spawn_stdout_eof_confirmed_dead(spawn_proc_exited, verdict) {
+    DrainingSpawningTickAction::ReclaimDead
+  } else {
+    DrainingSpawningTickAction::RetryAdopt
+  }
+}
+
 /// R24 P1-3: Full shutdown succeeds iff zero `Spawning` runners remain unresolved (neither confirmed
 /// exited nor stopped via `<rid>.sock`) AND any unconfirmed stop markers were durably persisted.
 pub fn evaluate_shutdown_spawning_ok(
@@ -5097,6 +5128,10 @@ pub fn LiveRunnerManager::handle_sys_event(
                   ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
                   sess.runner_exited = true
                   sess.phase = LiveRunnerPhase::Exited
+                  if sess.current_turn_id is Some(_) {
+                    live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
+                  }
+                  self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
                   if is_draining {
                     self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=true)
                   } else {
@@ -5104,12 +5139,6 @@ pub fn LiveRunnerManager::handle_sys_event(
                     self.sessions.remove(skey)
                     let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
                     actor.has_process = false
-                  }
-                  if sess.current_turn_id is Some(_) {
-                    live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
-                  }
-                  if is_draining {
-                    self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
                   }
                 } else {
                   // NEVER treat stdout EOF alone as confirmed process exit! Persist `spawn:` marker
@@ -6153,16 +6182,35 @@ pub fn LiveRunnerManager::tick(
         }
       }
       LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, deadline) => {
-        if deadline > 0L && now_ms >= deadline {
-          dsess.stopping = true
-          if dsess.current_turn_id is Some(_) {
-            live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
+        let verdict = if deadline == 0L {
+          verify_spawn_os_identity(dsess.spawn_pid, dsess.spawn_os_start_ms, dsess.spawn_boot_id, dsess.spawn_start_ticks)
+        } else {
+          SpawnIdentityVerdict::Unknown
+        }
+        match decide_draining_spawning_tick(deadline, now_ms, dsess.spawn_proc_exited, verdict) {
+          DrainingSpawningTickAction::FirstTimeout => {
+            dsess.stopping = true
+            if dsess.current_turn_id is Some(_) {
+              live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
+            }
+            match core.agents.hub.actors.get(dsess.session_key) {
+              Some(actor) => actor.has_process = false
+              None => ()
+            }
+            self.handle_draining_spawn_timeout(ctx, core, cid, dsess, ev_id, child, out_buf, err_buf, now_ms, wall_ms)
           }
-          match core.agents.hub.actors.get(dsess.session_key) {
-            Some(actor) => actor.has_process = false
-            None => ()
+          DrainingSpawningTickAction::ReclaimDead => {
+            let _ = child.close()
+            self.by_spawn_ev.remove(ev_id)
+            dsess.runner_exited = true
+            dsess.phase = LiveRunnerPhase::Exited
+            self.preserve_pending_end_turn(dsess, ctx_opt=Some(ctx))
+            self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=true)
           }
-          self.handle_draining_spawn_timeout(ctx, core, cid, dsess, ev_id, child, out_buf, err_buf, now_ms, wall_ms)
+          DrainingSpawningTickAction::RetryAdopt => {
+            self.handle_draining_spawn_timeout(ctx, core, cid, dsess, ev_id, child, out_buf, err_buf, now_ms, wall_ms)
+          }
+          DrainingSpawningTickAction::Wait => ()
         }
       }
       LiveRunnerPhase::Exited => self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=dsess.runner_exited)
