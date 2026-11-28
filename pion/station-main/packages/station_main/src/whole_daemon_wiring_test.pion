@@ -698,7 +698,7 @@ test "w17d3 R5: feedback signed_post_headers matches independent Cloud Ed25519 +
   }
 }
 
-test "w17e1 R2: all daemon event_id segments are pairwise disjoint & sensitive env prefixes filtered" {
+test "w17e1 R3: all 11 daemon event_id segments (production constants) are pairwise disjoint & env filter preserves approved overrides" {
   let step : Int64 = 4294967296L // 1 << 32
   let bases : Array[(String, Int64)] = [
     ("jobs", 4294967296L),
@@ -710,10 +710,14 @@ test "w17e1 R2: all daemon event_id segments are pairwise disjoint & sensitive e
     ("dns", 30064771072L),
     ("live_runner", LIVE_RUNNER_EV_BASE),
     ("upkeep", UPKEEP_EVENT_ID_BASE),
+    ("mdns", station_whole::MDNS_EVENT_ID_BASE),
     ("secret_run", SECRET_RUN_EVENT_BASE),
   ]
   if SECRET_RUN_EVENT_BASE == UPKEEP_EVENT_ID_BASE {
     panic("SECRET_RUN_EVENT_BASE must NOT collide with UPKEEP_EVENT_ID_BASE")
+  }
+  if station_whole::MDNS_EVENT_ID_BASE == LIVE_RUNNER_EV_BASE {
+    panic("MDNS_EVENT_ID_BASE must NOT collide with LIVE_RUNNER_EV_BASE")
   }
   if SECRET_RUN_EVENT_END != SECRET_RUN_EVENT_BASE + step {
     panic("SECRET_RUN_EVENT_END must equal SECRET_RUN_EVENT_BASE + (1 << 32)")
@@ -727,17 +731,31 @@ test "w17e1 R2: all daemon event_id segments are pairwise disjoint & sensitive e
       }
     }
   }
-  // Verify Node `incoming.ts:28-30` sensitive env prefix filter.
-  let blocked = ["STILLFAIL_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH", "OPENAI_API_KEY", "CODEX_HOME"]
-  for i in 0..<blocked.length() {
-    if !is_sensitive_station_env_key(blocked[i]) {
-      panic("expected sensitive env key to be filtered: " + blocked[i])
+  // Verify Node `incoming.ts:28-30` sensitive env prefix filter strips inherited keys
+  // while explicitly approved grant overrides (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) ARE delivered!
+  let base_env = [
+    "PATH=/usr/bin",
+    "STILLFAIL_TOKEN=station-secret",
+    "OPENAI_API_KEY=inherited-station-openai",
+    "ANTHROPIC_API_KEY=inherited-station-anthropic",
+    "CLAUDE_CODE_OAUTH=inherited-claude",
+    "CODEX_HOME=/tmp/codex",
+  ]
+  let child_env = build_child_env_from(base_env, [("OPENAI_API_KEY", "sk-approved-123"), ("STILLFAIL_SECRET", "sk-approved-123")])
+  let mut has_path = false
+  let mut has_approved_openai = false
+  for i in 0..<child_env.length() {
+    let e = child_env[i]
+    if e == "PATH=/usr/bin" { has_path = true }
+    if e == "OPENAI_API_KEY=sk-approved-123" { has_approved_openai = true }
+    if e.starts_with("STILLFAIL_TOKEN=") || e.starts_with("ANTHROPIC_API_KEY=") || e.starts_with("CLAUDE_") || e.starts_with("CODEX_") {
+      panic("inherited sensitive env leaked into child: " + e)
+    }
+    if e == "OPENAI_API_KEY=inherited-station-openai" {
+      panic("inherited OPENAI_API_KEY leaked instead of approved override")
     }
   }
-  let allowed = ["PATH", "HOME", "USER", "MY_API_KEY", "GITHUB_TOKEN"]
-  for i in 0..<allowed.length() {
-    if is_sensitive_station_env_key(allowed[i]) {
-      panic("expected normal env key to be preserved: " + allowed[i])
-    }
+  if !has_path || !has_approved_openai {
+    panic("expected PATH and approved OPENAI_API_KEY override in child env")
   }
 }

@@ -467,12 +467,15 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
 }
 
 /// Outbound Vault card/notice post queued for non-`chat` surfaces (Slack/Feishu/Comma/Group)
-/// to be forwarded via `whole_daemon`'s Connects / `connect.call` path after `/mcp` returns.
+/// to be forwarded via `whole_daemon`'s Connects / `connect.call` path strictly AFTER SQLite commit.
 pub struct PendingVaultConnectPost {
   pub ws : String
   pub req_id : String
   pub session : String
   pub thread_id : Int64
+  pub channel : String
+  pub thread_ts : String
+  pub connect_id : String
   pub n_seq : Int64
   pub text : String
   pub card : Option[base_codec::Json]

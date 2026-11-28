@@ -1259,6 +1259,7 @@ pub fn WholeCore::handle_mcp_http_or_defer(
   body : String,
   now_ms : Int64,
   defer_tools : Array[String],
+  station_name : String = "",
 ) -> McpHttpOrDefer {
   if self.shut_down || !self.ready {
     return McpHttpOrDefer::Immediate(
@@ -1277,6 +1278,7 @@ pub fn WholeCore::handle_mcp_http_or_defer(
     events: Some(self.api.events),
     verify_fn: self.api.auth_policy.verify_fn,
     station_id: self.config.station_id,
+    station_name: station_name,
     secret_run_exec: None,
   }
   self.agents.handle_mcp_http_or_defer(

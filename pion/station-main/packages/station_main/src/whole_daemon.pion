@@ -7493,7 +7493,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             host_shim::wall_ms(),
             ["secret_run"],
           ) {
-            station_whole::McpHttpOrDefer::DeferredCall(sr_sess, _sr_tool, sr_args, sr_rpc_id, _ended_meta) => {
+            station_whole::McpHttpOrDefer::DeferredCall(sr_sess, _sr_tool, sr_args, sr_rpc_id, ended_meta) => {
               let now_m = host_shim::now_ms()
               let wall_m = host_shim::wall_ms()
               match station_whole::prepare_secret_run(
@@ -7505,16 +7505,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 wall_m,
               ) {
                 Ok(prep) => {
-                  match secret_runs.start_run(ctx.mux_role, req.conn_id, sr_rpc_id, prep, now_m, wall_m) {
+                  match secret_runs.start_run(ctx.mux_role, req.conn_id, sr_rpc_id, ended_meta, prep, now_m, wall_m) {
                     Ok(_) => return station_http::HandlerAction::Defer
                     Err(e) => {
-                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true, ended_meta=ended_meta)
                       return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
                     }
                   }
                 }
                 Err(e) => {
-                  let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                  let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true, ended_meta=ended_meta)
                   return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
                 }
               }
@@ -7526,62 +7526,69 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             None => return station_http::HandlerAction::Respond(station_http::HttpResponse::json(500, "{\"error\":\"missing mcp response\"}"))
           }
           // Drain outbound Vault approval cards queued on non-`chat` surfaces (Slack/Feishu/Comma/Group)
-          // through the exact same Connects / `connect.call` path as `chat_post`.
+          // ONLY when the MCP call succeeded (HTTP 200 and not `isError`), using the exact committed target!
           if core.store.pending_vault_connect_posts.length() > 0 {
             let vposts : Array[station_whole::PendingVaultConnectPost] = []
             for vi in 0..<core.store.pending_vault_connect_posts.length() {
               vposts.push(core.store.pending_vault_connect_posts[vi])
             }
             core.store.pending_vault_connect_posts.clear()
-            match core.store.require_open() {
-              Ok(st_db) => {
-                for vi in 0..<vposts.length() {
-                  let vp = vposts[vi]
-                  match st_db.db.first(
-                    "SELECT t.channel AS ch, t.thread_ts AS tts, ts.connect AS cid FROM threads t JOIN thread_sessions ts ON ts.thread = t.id WHERE t.id = ?1 AND ts.left_at IS NULL LIMIT 1",
-                    [sql_db::int64_to_json(vp.thread_id)],
-                  ) {
-                    Ok(Some(row)) => {
-                      let ch = match row.get("ch") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                      let tts = match row.get("tts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                      let cid = match row.get("cid") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                      if cid.length() > 0 {
-                        if connects.has_connect(cid) {
-                          let tref = station_connects::ThreadRef::new(ch, tts, reply_to=None)
-                          let pkey = vp.thread_id.to_string() + ":" + vp.n_seq.to_string()
-                          let _ = connects.send_message(cid, tref, vp.text, post_key=pkey, card=vp.card)
-                        } else {
-                          match remote_connects.get(cid) {
-                            Some(rec) => {
-                              let at_idx = station_connects::str_index_of(cid, "@", 0)
-                              let raw_id = if at_idx > 0 { station_connects::str_slice(cid, 0, at_idx) } else { cid }
-                              let raw_origin = if at_idx > 0 { station_connects::str_slice(cid, at_idx + 1, cid.to_bytes().length()) } else { rec.station }
-                              let ws_for = match connect_meta.get(cid) {
-                                Some(m) => m.ws
-                                None => core.config.home_workspace
-                              }
-                              let call_req = build_connect_call_post_request(
-                                ws_for,
-                                raw_id,
-                                raw_origin,
-                                ch,
-                                tts,
-                                None,
-                                vp.text,
-                                vp.card,
-                              )
-                              ctx.ask_peer_rpc(rec.station, ws_for, call_req, fn(_res : Result[base_codec::Json, String]) -> Unit { () })
-                            }
-                            None => ()
-                          }
-                        }
-                      }
+            let mcp_ok = mresp.status == 200 && match base_codec::json_parse(mresp.body) {
+              base_codec::JsonParseResult::Ok(rj) => match base_codec::json_get(rj, "result") {
+                Some(res_obj) => match base_codec::json_get(res_obj, "isError") {
+                  Some(base_codec::Json::Bool(true)) => false
+                  _ => true
+                }
+                None => false
+              }
+              _ => false
+            }
+            if mcp_ok {
+              for vi in 0..<vposts.length() {
+                let vp = vposts[vi]
+                let cid = vp.connect_id
+                if cid.length() > 0 {
+                  if connects.has_connect(cid) {
+                    let tref = station_connects::ThreadRef::new(vp.channel, vp.thread_ts, reply_to=None)
+                    let pkey = vp.thread_id.to_string() + ":" + vp.n_seq.to_string()
+                    match connects.send_message(cid, tref, vp.text, post_key=pkey, card=vp.card) {
+                      Ok(_) => ()
+                      Err(err_msg) => ctx.log("[vault.connect] post for " + vp.req_id + " via " + cid + " failed: " + err_msg)
                     }
-                    _ => ()
+                  } else {
+                    match remote_connects.get(cid) {
+                      Some(rec) => {
+                        let at_idx = station_connects::str_index_of(cid, "@", 0)
+                        let raw_id = if at_idx > 0 { station_connects::str_slice(cid, 0, at_idx) } else { cid }
+                        let raw_origin = if at_idx > 0 { station_connects::str_slice(cid, at_idx + 1, cid.to_bytes().length()) } else { rec.station }
+                        let ws_for = if vp.ws.length() > 0 { vp.ws } else { core.config.home_workspace }
+                        let call_req = build_connect_call_post_request(
+                          ws_for,
+                          raw_id,
+                          raw_origin,
+                          vp.channel,
+                          vp.thread_ts,
+                          None,
+                          vp.text,
+                          vp.card,
+                        )
+                        ctx.ask_peer_rpc(
+                          rec.station,
+                          ws_for,
+                          call_req,
+                          fn(res : Result[base_codec::Json, String]) -> Unit {
+                            match res {
+                              Ok(_) => ()
+                              Err(err_msg) => ctx.log("[vault.connect.call] remote post for " + vp.req_id + " to " + rec.station + " failed: " + err_msg)
+                            }
+                          },
+                        )
+                      }
+                      None => ctx.log("[vault.connect] unknown connect " + cid + " for request " + vp.req_id)
+                    }
                   }
                 }
               }
-              Err(_) => ()
             }
           }
           // Forward successful `chat_post` (including card-only posts with empty/omitted text!)

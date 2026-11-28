@@ -1481,7 +1481,7 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
   // P1-1: event-driven mDNS scan binds 0.0.0.0, uses disjoint >= 8<<32 monotonic ev_id, clamps 300..10000 / default 2500, expires in tick_expiry_with
   let (ev1, bind1, dl1) = devs.start_android_tv_mdns_scan_virtual(1000L)
   edge_assert(bind1 == "0.0.0.0")
-  edge_assert(ev1 == MDNS_EVENT_ID_BASE && ev1 >= 34359738368L)
+  edge_assert(ev1 == MDNS_EVENT_ID_BASE && ev1 >= 42949672960L)
   edge_assert(dl1 == 3500L) // 1000 + 2500 default
   let (ev2, _, dl2) = devs.start_android_tv_mdns_scan_virtual(1000L, timeout_ms=50L)
   edge_assert(ev2 == ev1 + 1L && dl2 == 1300L) // clamped to 300ms min

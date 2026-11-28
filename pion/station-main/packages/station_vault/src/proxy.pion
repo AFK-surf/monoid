@@ -705,12 +705,12 @@ pub fn VaultProxy::new_with_seed(
 }
 
 fn VaultProxy::is_run_allowed(self : VaultProxy, run : ProxyRun, now_sec : Int64) -> Bool {
-  if !run.is_allowed(now_sec) {
+  if run.revoked {
     return false
   }
   match self.check_active {
     Some(f) => f(run.grant_id)
-    None => true
+    None => run.is_allowed(now_sec)
   }
 }
 
@@ -738,7 +738,7 @@ pub fn VaultProxy::purge_expired_runs(self : VaultProxy, now_sec : Int64) -> Int
     let tok = keys[i]
     match self.runs.get(tok) {
       Some(r) => {
-        if !r.is_allowed(now_sec) {
+        if !self.is_run_allowed(r, now_sec) {
           doomed.push(tok)
         }
       }

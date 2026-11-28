@@ -91,24 +91,44 @@ test "wired_mcp_tool_names includes all 8 vault secret tools" {
   }
 }
 
-test "w17e1 R2: vault_resolve_cwd_in_workspace rejects escape & out-of-workspace paths" {
-  match vault_resolve_cwd_in_workspace("/tmp/ws-1", None) {
+test "w17e1 R3: vault_resolve_cwd_in_workspace_with rejects escape, out-of-workspace, & symlink escape" {
+  // Mock OS realpath: `/tmp/ws-1/escape-link` is a symlink pointing to `/etc`!
+  let mock_rp = fn(p : String) -> Result[String, Int] {
+    if p == "/tmp/ws-1/escape-link" {
+      Ok("/etc")
+    } else if p.starts_with("/tmp/ws-1/escape-link/") {
+      Err(-2) // ENOENT so ancestor walk resolves `/tmp/ws-1/escape-link` -> `/etc`!
+    } else if p == "/tmp/ws-1" || p == "/tmp/ws-1/sub" || p == "/tmp/ws-1/sub/dir" || p == "/etc" || p == "/tmp/ws-2" || p == "/tmp/ws-10" || p == "/tmp" {
+      Ok(p)
+    } else {
+      Err(-2)
+    }
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", None, mock_rp) {
     Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1", "default cwd")
     Err(e) => panic("expected default cwd ok, got: " + e)
   }
-  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("sub/dir")) {
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("sub/dir"), mock_rp) {
     Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1/sub/dir", "subdir cwd")
     Err(e) => panic("expected subdir cwd ok, got: " + e)
   }
-  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("../ws-2")) {
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("escape-link"), mock_rp) {
+    Ok(p) => panic("must reject direct symlink escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("escape-link/nested/newdir"), mock_rp) {
+    Ok(p) => panic("must reject non-existent child under symlink escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("../ws-2"), mock_rp) {
     Ok(p) => panic("must reject .. escape, got: " + p)
     Err(_) => ()
   }
-  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("/etc")) {
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("/etc"), mock_rp) {
     Ok(p) => panic("must reject absolute path outside workspace, got: " + p)
     Err(_) => ()
   }
-  match vault_resolve_cwd_in_workspace("/tmp/ws-1", Some("/tmp/ws-10")) {
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("/tmp/ws-10"), mock_rp) {
     Ok(p) => panic("must reject prefix-sibling path, got: " + p)
     Err(_) => ()
   }
