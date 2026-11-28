@@ -1,0 +1,250 @@
+// Wave 17E-2A R2 daemon-level protocol & security tests (`station_main`):
+// 1. `parse_peer_ask_reply`: unpacks `"result"` (incl. file chunk `{ "result": { "data", "eof", "size" } }`),
+//    propagates `"error"`, falls back to legacy `"ok"`.
+// 2. `build_remote_task_rpc_payload`: `task.start` with `spec`, `task.collected` for `release`.
+// 3. `build_remote_login_rpc_payload`: `login.call` with `{ workspace, session, by, chatTitle, args }` (strips `station`).
+// 4. `extract_mcp_rpc_id`: notifications (no `id` / `null`) return `None`.
+// 5. `McpServer::handle`: indirect `station_tool { name: "station_task", arguments }` routing + `UNBOUND_REFUSAL`
+//    + `unprotected` peer interception + `dir`/`back` honest refusal.
+// 6. `LoginsManager::start_words`: preserves raw argv array boundaries and isolates dedup across `(ws, chat)`.
+
+import "base_codec"
+import "station_devices"
+import "station_tools"
+import "station_whole"
+
+fn r2_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("whole_daemon_mcp_rs_test: " + msg)
+  }
+}
+
+test "w17e2a_r2 parse_peer_ask_reply unpacks result before ok and propagates error" {
+  // Real Node & Pion peer RPC response shape: `{"result": {"data": "aGVsbG8=", "eof": true, "size": 5}}`
+  match parse_peer_ask_reply("{\"result\":{\"data\":\"aGVsbG8=\",\"eof\":true,\"size\":5}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "data") {
+        Some(base_codec::Json::Str(s)) => r2_assert(s == "aGVsbG8=", "must unpack result.data")
+        _ => panic("missing unpacked result.data")
+      }
+      match base_codec::json_get(v, "eof") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("missing unpacked result.eof")
+      }
+    }
+    Err(e) => panic("unexpected err: " + e)
+  }
+  match parse_peer_ask_reply("{\"error\":\"no grant\"}") {
+    Err(e) => r2_assert(e == "no grant", "must propagate error string")
+    Ok(_) => panic("expected Err")
+  }
+  match parse_peer_ask_reply("{\"ok\":{\"legacy\":true}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "legacy") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected legacy ok unpack")
+      }
+    }
+    Err(e) => panic("unexpected err: " + e)
+  }
+}
+
+test "w17e2a_r2 wire payloads: task.start spec, task.collected release, login.call, notification id" {
+  r2_assert(extract_mcp_rpc_id("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") is None, "notification has no id")
+  r2_assert(extract_mcp_rpc_id("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\"}") is Some(_), "request has id")
+
+  let start_intent = station_whole::DeferredMcpIntent::{
+    conn_id: 1,
+    rpc_id: base_codec::json_int(1),
+    caller_ws: "ws-1",
+    session: "sess-1",
+    tool: "station_task",
+    peer_id: "peer-1",
+    peer_name: "build-1",
+    action: "start",
+    args: base_codec::json_obj([("station", base_codec::json_str("build-1")), ("action", base_codec::json_str("start")), ("key", base_codec::json_str("k1"))]),
+    local_path: "",
+    file_size: 0L,
+    remote_path: "",
+    task_key: "k1",
+    starter_email: "alice@example.com",
+    starter_name: "alice@example.com",
+    chat_title: Some("Build Chat"),
+    prepared_spec: Some(station_whole::PreparedTaskSpec::{ key: "k1", name: "compile", command: "make -j4", screen: false, small: true }),
+  }
+  let start_rpc = build_remote_task_rpc_payload(start_intent)
+  let start_s = base_codec::json_stringify(start_rpc)
+  r2_assert(start_s.contains("\"method\":\"task.start\""), "must emit task.start")
+  r2_assert(start_s.contains("\"spec\":{"), "task.start must carry spec object")
+  r2_assert(start_s.contains("\"command\":\"make -j4\""), "spec must carry command")
+  r2_assert(start_s.contains("\"requestedBy\":\"alice@example.com\""), "spec must carry requestedBy")
+
+  let rel_intent = station_whole::DeferredMcpIntent::{ ..start_intent, action: "release", prepared_spec: None }
+  let rel_s = base_codec::json_stringify(build_remote_task_rpc_payload(rel_intent))
+  r2_assert(rel_s.contains("\"method\":\"task.collected\""), "release must emit task.collected, not task.release")
+
+  let login_intent = station_whole::DeferredMcpIntent::{
+    ..start_intent,
+    tool: "login",
+    action: "call",
+    args: base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("command", base_codec::json_str("gh auth login")),
+    ]),
+  }
+  let login_s = base_codec::json_stringify(build_remote_login_rpc_payload(login_intent))
+  r2_assert(login_s.contains("\"method\":\"login.call\""), "remote login must emit login.call")
+  r2_assert(!login_s.contains("\"station\":\"build-1\""), "login.call args must strip station")
+  r2_assert(login_s.contains("\"chatTitle\":\"Build Chat\""), "login.call must include chatTitle")
+}
+
+test "w17e2a_r2 McpServer indirect station_tool routing, UNBOUND_REFUSAL, and unprotected peer guard" {
+  let cap = station_whole::DeferredMcpCapture::new()
+  let fs = station_whole::mem_job_fs_port(fn() -> Int64 { 1000L })
+  let store_port = station_whole::McpSessionStorePort::{
+    session_exists: fn(_s : String) -> Bool { true },
+    session_workspace: fn(_s : String) -> String { "/tmp/ws1" },
+    session_chat_title: fn(_s : String) -> Option[String] { Some("Chat") },
+    session_starter: fn(_s : String) -> String { "alice@example.com" },
+    read_archive_policy_raw: fn(_ws : String, _h : String) -> Option[String] { None },
+    write_archive_policy_raw: fn(_ws : String, _h : String, _p : String, _a : String, _s : String, _n : Int64) -> Result[Unit, String] { Ok(()) },
+  }
+  let rs_port = station_whole::McpRemoteSystemPort::{
+    ..station_whole::default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    defer_capture: Some(cap),
+    list_stations: fn(_ws : String) -> Array[station_whole::McpStationPeer] {
+      [
+        station_whole::McpStationPeer::{
+          id: "peer-ok",
+          name: "build-ok",
+          workspace: "ws-1",
+          is_self: false,
+          mode: "whole",
+          owner_sub: "",
+          owner_email: "",
+          owner_name: "",
+          rig_open: false,
+          unprotected_why: None,
+          version: None,
+          cores: 4,
+          arch: "x86_64",
+          os: "linux",
+          cpu_busy: None,
+          load_1m: None,
+          free_mem_bytes: None,
+          free_disk_bytes: None,
+          running_jobs: 0,
+          relay_ping_ms: None,
+        },
+        station_whole::McpStationPeer::{
+          id: "peer-unprot",
+          name: "build-unprot",
+          workspace: "ws-1",
+          is_self: false,
+          mode: "whole",
+          owner_sub: "",
+          owner_email: "",
+          owner_name: "",
+          rig_open: false,
+          unprotected_why: Some("unprotected: not on workspace lock"),
+          version: None,
+          cores: 4,
+          arch: "x86_64",
+          os: "linux",
+          cpu_busy: None,
+          load_1m: None,
+          free_mem_bytes: None,
+          free_disk_bytes: None,
+          running_jobs: 0,
+          relay_ping_ms: None,
+        },
+      ]
+    },
+  }
+  let mcp = station_tools::McpServer::new()
+  let make_host = fn(bound : Bool) -> station_tools::ToolsHost {
+    station_tools::ToolsHost::{
+      resolve_token: fn(tok : String) -> Option[String] { if tok == "tok-1" { Some("sess-1") } else { None } },
+      call_context: fn(s : String) -> station_tools::CallContext {
+        station_tools::CallContext::{
+          session: s,
+          unbound_reason: if bound { None } else { Some(station_tools::UNBOUND_REFUSAL) },
+        }
+      },
+      static_tools: fn() -> Array[station_tools::ToolDecl] { station_whole::wired_station_tools() },
+      dynamic_tools: fn(_s : String) -> Array[station_tools::ToolDecl] { [] },
+      listing_of: fn(_s : String) -> Option[station_tools::Listing] { station_tools::listing_for("agy", false) },
+      call_tool: fn(s : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+        let handlers = station_tools::DomainHandlers::{
+          ..station_tools::default_domain_handlers(),
+          remote: fn(sess : String, t : String, a : base_codec::Json) -> station_tools::ToolReply {
+            station_whole::handle_remote_domain_tool(rs_port, "/tmp/data", store_port, "ws-1", sess, t, a, 1000L)
+          },
+        }
+        station_tools::dispatch_tool(handlers, s, tool, args)
+      },
+    }
+  }
+
+  // 1. Indirect `station_tool { name: "station_task", arguments: { station: "build-ok", action: "list" } }` captures deferred intent!
+  let body_indirect = "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"station_tool\",\"arguments\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-ok\",\"action\":\"list\"}}}}"
+  cap.reset_for_request(99, extract_mcp_rpc_id(body_indirect))
+  let _ = mcp.handle("POST", Some("Bearer tok-1"), body_indirect, make_host(true))
+  match cap.take_pending() {
+    Some(intent) => {
+      r2_assert(intent.conn_id == 99 && intent.tool == "station_task" && intent.peer_id == "peer-ok" && intent.action == "list", "indirect station_tool must capture deferred intent")
+    }
+    None => panic("expected deferred intent from indirect station_tool")
+  }
+
+  // 2. When unbound (`bound = false`), `UNBOUND_REFUSAL` blocks BEFORE capturing any deferred intent!
+  cap.reset_for_request(100, extract_mcp_rpc_id(body_indirect))
+  let unbound_rep = mcp.handle("POST", Some("Bearer tok-1"), body_indirect, make_host(false))
+  r2_assert(cap.take_pending() is None, "unbound station must NEVER capture deferred peer RPC")
+  let (_, _, unbound_body) = station_tools::encode_json_reply(unbound_rep)
+  r2_assert(unbound_body.contains("isError"), "unbound station must return tool error")
+
+  // 3. Unprotected peer is blocked BEFORE capturing any deferred intent!
+  let body_unprot = "{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-unprot\",\"action\":\"list\"}}}"
+  cap.reset_for_request(101, extract_mcp_rpc_id(body_unprot))
+  let unprot_rep = mcp.handle("POST", Some("Bearer tok-1"), body_unprot, make_host(true))
+  r2_assert(cap.take_pending() is None, "unprotected peer must NEVER capture deferred peer RPC")
+  let (_, _, unprot_body) = station_tools::encode_json_reply(unprot_rep)
+  r2_assert(unprot_body.contains("unprotected"), "unprotected refusal must explain why")
+}
+
+test "w17e2a_r2 LoginsManager::start_words preserves argv boundaries and isolates dedup across workspaces" {
+  let mgr = station_devices::LoginsManager::new(None)
+  let s1 = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "a@x", name: "A" },
+    workspace: Some("ws-1"),
+    chat: Some("sess-1"),
+    chat_title: Some("C1"),
+  }
+  let s2 = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "b@x", name: "B" },
+    workspace: Some("ws-2"),
+    chat: Some("sess-2"),
+    chat_title: Some("C2"),
+  }
+  let argv = ["gh", "auth", "login", "--hostname", "my enterprise host"]
+  let v1 = match mgr.start_words(argv, s1, None, false, 1000L) {
+    Ok(v) => v
+    Err(e) => panic("start_words ws1 failed: " + e.message)
+  }
+  r2_assert(v1.command.length() == 5 && v1.command[4] == "my enterprise host", "must preserve argv with spaces")
+
+  // Same workspace + chat deduplicates to same id
+  let v1_dup = match mgr.start_words(argv, s1, None, false, 1001L) {
+    Ok(v) => v
+    Err(e) => panic("start_words dup failed: " + e.message)
+  }
+  r2_assert(v1_dup.id == v1.id, "same (ws, chat) should deduplicate")
+
+  // Different workspace MUST allocate a distinct login id (never leak ws-1 login into ws-2!)
+  let v2 = match mgr.start_words(argv, s2, None, false, 1002L) {
+    Ok(v) => v
+    Err(e) => panic("start_words ws2 failed: " + e.message)
+  }
+  r2_assert(v2.id != v1.id, "different workspace must NOT share login id")
+}

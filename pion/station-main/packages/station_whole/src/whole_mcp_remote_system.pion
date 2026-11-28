@@ -1,21 +1,18 @@
-// Wave 17E-2A: Production MCP handlers for `DomainHandlers.remote` (6 tools) and
-// `DomainHandlers.system` (8 tools), plus non-blocking async deferred MCP state machine.
-//
-// Tools wired here (1:1 with `station/src/tools/{remote,forward,workspace-size,version,relays,move,retire,archive,feedback}.ts`,
-// `station/src/rigs/tool.ts`, and `station/src/logins/tool.ts`):
-//   Remote (6): `station_list`, `station_task`, `station_file`, `station_use`, `peer_forward`, `workspace_limit`
-//   System (8): `station_version`, `login`, `relays`, `archive_policy`, `station_move`, `station_retire`,
-//               `feedback_send`, `feedback_reply`
+// Wave 17E-2A (R2): Production MCP handlers for `DomainHandlers.remote` (6 tools) and
+// `DomainHandlers.system` (8 tools), plus unified non-blocking async deferred MCP state machine.
 //
 // Security & architecture invariants:
-// - Strictly workspace-isolated: every station lookup, rig grant, forward, relay, login, and archive
-//   policy is scoped to `caller_ws` resolved from SQLite; cross-workspace targets are always refused.
+// - Every `/mcp` request passes through `McpServer::handle` FIRST (method/path, local-origin,
+//   Bearer auth, JSON-RPC `id`/notification gate, `bump_heard`, `station_tool` unwrapping,
+//   `typed_args`, and `UNBOUND_REFUSAL` outward guard) before any remote/system handler runs.
+// - Strictly workspace-isolated: every station lookup, unprotected-peer check, rig grant, forward,
+//   relay, login, and archive policy is scoped to `caller_ws` resolved from SQLite.
 // - Zero event-loop blocking: never calls `host_shim::wait` / `await_call` / `fetch_bounded_stream`.
 // - Path safety: `station_file` rejects `..`, absolute escapes, symlinks, non-regular uploads, >1 GiB
 //   files, and refuses to overwrite existing local files on download.
-// - Zero fake success: unimplemented sub-actions (e.g. `station_retire`, `relays enroll/revoke`,
-//   `station_move move/back` without executor, `station_version update/back` without updater) return
-//   explicit, actionable errors.
+// - Zero fake success: unimplemented sub-actions (`station_use`, `station_version update/back/wait`,
+//   `workspace_limit` without watcher, `relays add/enroll/revoke`, `station_move move/back`,
+//   `station_retire`, `peer_forward` outbound) return explicit, actionable errors.
 
 import "base_codec"
 import "crypto"
@@ -36,9 +33,11 @@ pub let WORKSPACE_LIMIT_MAX_GIB : Int = 8388607
 pub let MOVE_PAGE_DEFAULT : Int = 50
 pub let MOVE_PAGE_MAX : Int = 200
 pub let MCP_DEFERRED_DEFAULT_TIMEOUT_MS : Int64 = 30000L
+/// Cap JSON-RPC tool reply text at 3 MiB so HTTP responses stay well under the 4 MiB frame limit.
+pub let MCP_MAX_REPLY_BYTES : Int = 3145728
 
 // ---------------------------------------------------------------------------
-// 1. Port types (decoupled from daemon_core / mesh transport for clean DI)
+// 1. Port types & Prepared Task Spec
 // ---------------------------------------------------------------------------
 
 pub struct McpStationPeer {
@@ -94,10 +93,67 @@ pub struct McpRelaysView {
   pub mesh : Option[Array[base_codec::Json]]
 }
 
+pub struct PreparedTaskSpec {
+  pub key : String
+  pub name : String
+  pub command : String
+  pub screen : Bool
+  pub small : Bool
+}
+
+pub struct DeferredMcpIntent {
+  pub conn_id : Int
+  pub rpc_id : base_codec::Json
+  pub caller_ws : String
+  pub session : String
+  pub tool : String
+  pub peer_id : String
+  pub peer_name : String
+  pub action : String
+  pub args : base_codec::Json
+  pub local_path : String
+  pub file_size : Int64
+  pub remote_path : String
+  pub task_key : String
+  pub starter_email : String
+  pub starter_name : String
+  pub chat_title : Option[String]
+  pub prepared_spec : Option[PreparedTaskSpec]
+}
+
+/// Mutable capture bridge between `McpServer::handle` (synchronous) and `whole_daemon`'s
+/// `HandlerAction::Defer` loop. Only populated AFTER `McpServer::handle` has passed all
+/// auth, origin, JSON-RPC `id`, `station_tool` unwrapping, and `UNBOUND_REFUSAL` checks.
+pub struct DeferredMcpCapture {
+  pub mut cur_conn_id : Int
+  pub mut cur_rpc_id : Option[base_codec::Json]
+  pub mut pending : Option[DeferredMcpIntent]
+}
+
+pub fn DeferredMcpCapture::new() -> DeferredMcpCapture {
+  DeferredMcpCapture::{ cur_conn_id: -1, cur_rpc_id: None, pending: None }
+}
+
+pub fn DeferredMcpCapture::reset_for_request(
+  self : DeferredMcpCapture,
+  conn_id : Int,
+  rpc_id : Option[base_codec::Json],
+) -> Unit {
+  self.cur_conn_id = conn_id
+  self.cur_rpc_id = rpc_id
+  self.pending = None
+}
+
+pub fn DeferredMcpCapture::take_pending(self : DeferredMcpCapture) -> Option[DeferredMcpIntent] {
+  let out = self.pending
+  self.pending = None
+  out
+}
+
 pub struct McpLoginsPort {
   pub get : (String) -> Option[station_devices::LoginView]
   pub screen : (String) -> Option[station_devices::LoginScreen]
-  pub start : (String, station_devices::LoginStarter, String, Option[String], Int64) -> Result[station_devices::LoginView, String]
+  pub start_words : (Array[String], station_devices::LoginStarter, String, Option[Array[String]], Int64) -> Result[station_devices::LoginView, String]
   pub send_input : (String, Option[String], Option[station_devices::LoginKey]) -> Result[Unit, String]
   pub set_paste : (String, Bool) -> Result[Unit, String]
   pub cancel : (String, Int64) -> Result[Unit, String]
@@ -107,8 +163,14 @@ pub fn McpLoginsPort::from_os_runtime(rt : LoginsOsRuntime) -> McpLoginsPort {
   McpLoginsPort::{
     get: fn(id : String) -> Option[station_devices::LoginView] { rt.manager.get(id) },
     screen: fn(id : String) -> Option[station_devices::LoginScreen] { rt.manager.screen(id) },
-    start: fn(cmd : String, starter : station_devices::LoginStarter, cwd : String, by_code : Option[String], now_ms : Int64) -> Result[station_devices::LoginView, String] {
-      rt.start_login(cmd, starter, cwd, [], now_ms, by_code_line=by_code)
+    start_words: fn(
+      words : Array[String],
+      starter : station_devices::LoginStarter,
+      cwd : String,
+      by_code : Option[Array[String]],
+      now_ms : Int64,
+    ) -> Result[station_devices::LoginView, String] {
+      rt.start_login_words(words, starter, cwd, [], now_ms, by_code_words=by_code)
     },
     send_input: fn(id : String, inp : Option[String], key : Option[station_devices::LoginKey]) -> Result[Unit, String] {
       match rt.send_input(id, inp, key) {
@@ -138,11 +200,14 @@ pub struct McpRemoteSystemPort {
   pub list_stations : (String) -> Array[McpStationPeer]
   pub list_sandboxes : () -> Array[McpSandboxInfo]
   pub rig_requests : Option[station_rig::RigRequests]
+  pub prepared_tasks : Map[String, PreparedTaskSpec]
+  pub defer_capture : Option[DeferredMcpCapture]
   pub dispatch_remote_task : (String, String, String, String, base_codec::Json) -> Result[base_codec::Json, String]
   pub dispatch_remote_file : (String, String, String, String, String, String, String) -> Result[base_codec::Json, String]
   pub forward_list : (String) -> Array[McpPeerForwardEntry]
   pub forward_open : (String, String, String, String, Int, Option[Int], Option[String]) -> Result[McpPeerForwardEntry, String]
   pub forward_close : (String, Int) -> Result[McpPeerForwardEntry, String]
+  pub workspace_limit_enabled : Bool
   pub logins : Option[McpLoginsPort]
   pub login_link : (String, String) -> Option[String]
   pub remote_login : Option[(String, String, String, base_codec::Json) -> Result[String, String]]
@@ -197,6 +262,8 @@ pub fn default_mcp_remote_system_port(
     },
     list_sandboxes: fn() -> Array[McpSandboxInfo] { [] },
     rig_requests: None,
+    prepared_tasks: Map::new(),
+    defer_capture: None,
     dispatch_remote_task: fn(_ws : String, _sess : String, target : String, action : String, _args : base_codec::Json) -> Result[base_codec::Json, String] {
       Err("remote station task transport not available for " + target + " (" + action + ")")
     },
@@ -210,6 +277,7 @@ pub fn default_mcp_remote_system_port(
     forward_close: fn(_sess : String, port : Int) -> Result[McpPeerForwardEntry, String] {
       Err("no forwarded port " + port.to_string() + " for this session")
     },
+    workspace_limit_enabled: false,
     logins: None,
     login_link: fn(_sess : String, _id : String) -> Option[String] { None },
     remote_login: None,
@@ -217,7 +285,7 @@ pub fn default_mcp_remote_system_port(
       Err("this station is in no workspace")
     },
     relays_add: fn(_ws : String, _url : String, _by : String, _now : Int64) -> Result[(String, Int, McpRelaysView), String] {
-      Err("this station is in no workspace")
+      Err("relays add is not yet wired on the Pion engine (async relay HTTP probe pending)")
     },
     relays_remove: fn(_ws : String, _url : String, _now : Int64) -> Result[(String, McpRelaysView), String] {
       Err("this station is in no workspace")
@@ -234,7 +302,8 @@ pub fn default_mcp_remote_system_port(
 }
 
 // ---------------------------------------------------------------------------
-// 2. Non-blocking Async Deferred MCP Pending Table (used by `whole_daemon.pion`)
+// 2. Non-blocking Async Deferred MCP Pending Table (monotonic deadlines,
+//    mesh ask_id cancellation, .part temp file cleanup, ready-start queue)
 // ---------------------------------------------------------------------------
 
 pub struct McpPendingReq {
@@ -244,21 +313,40 @@ pub struct McpPendingReq {
   pub session : String
   pub caller_ws : String
   pub tool : String
-  pub created_at_ms : Int64
-  pub deadline_ms : Int64
+  pub created_at_mono_ms : Int64
+  pub deadline_mono_ms : Int64
+  pub mut ask_id : Int64
+  pub mut part_path : Option[String]
 }
 
 pub struct McpPendingTable {
   mut next_gen : Int64
   by_conn : Map[Int, McpPendingReq]
+  ready_starts : Array[DeferredMcpIntent]
 }
 
 pub fn McpPendingTable::new() -> McpPendingTable {
-  McpPendingTable::{ next_gen: 1L, by_conn: Map::new() }
+  McpPendingTable::{ next_gen: 1L, by_conn: Map::new(), ready_starts: [] }
 }
 
 pub fn McpPendingTable::count(self : McpPendingTable) -> Int {
   self.by_conn.length()
+}
+
+pub fn McpPendingTable::enqueue_start(self : McpPendingTable, intent : DeferredMcpIntent) -> Unit {
+  self.ready_starts.push(intent)
+}
+
+pub fn McpPendingTable::drain_starts(self : McpPendingTable) -> Array[DeferredMcpIntent] {
+  if self.ready_starts.length() == 0 {
+    return []
+  }
+  let out : Array[DeferredMcpIntent] = []
+  for i in 0..<self.ready_starts.length() {
+    out.push(self.ready_starts[i])
+  }
+  self.ready_starts.clear()
+  out
 }
 
 pub fn McpPendingTable::register(
@@ -268,7 +356,7 @@ pub fn McpPendingTable::register(
   session : String,
   caller_ws : String,
   tool : String,
-  now_ms : Int64,
+  now_mono_ms : Int64,
   timeout_ms : Int64 = MCP_DEFERRED_DEFAULT_TIMEOUT_MS,
 ) -> Int64 {
   let g = self.next_gen
@@ -283,11 +371,32 @@ pub fn McpPendingTable::register(
       session: session,
       caller_ws: caller_ws,
       tool: tool,
-      created_at_ms: now_ms,
-      deadline_ms: now_ms + eff_timeout,
+      created_at_mono_ms: now_mono_ms,
+      deadline_mono_ms: now_mono_ms + eff_timeout,
+      ask_id: 0L,
+      part_path: None,
     },
   )
   g
+}
+
+pub fn McpPendingTable::set_ask_id(self : McpPendingTable, conn_id : Int, req_gen : Int64, ask_id : Int64) -> Unit {
+  match self.by_conn.get(conn_id) {
+    Some(r) => if r.req_gen == req_gen { r.ask_id = ask_id }
+    None => ()
+  }
+}
+
+pub fn McpPendingTable::set_part_path(
+  self : McpPendingTable,
+  conn_id : Int,
+  req_gen : Int64,
+  part_path : Option[String],
+) -> Unit {
+  match self.by_conn.get(conn_id) {
+    Some(r) => if r.req_gen == req_gen { r.part_path = part_path }
+    None => ()
+  }
 }
 
 pub fn McpPendingTable::is_active(self : McpPendingTable, conn_id : Int, req_gen : Int64) -> Bool {
@@ -316,27 +425,40 @@ pub fn McpPendingTable::take_if_active(
   }
 }
 
-/// Remove and discard any pending request when the client TCP connection closes.
-pub fn McpPendingTable::on_conn_closed(self : McpPendingTable, conn_id : Int) -> Bool {
-  match self.by_conn.get(conn_id) {
-    Some(_) => {
-      let _ = self.by_conn.remove(conn_id)
-      true
+/// Remove and return any pending request when the client TCP connection closes so caller can
+/// cancel its mesh `ask_id` and delete any residual `.part` file.
+pub fn McpPendingTable::on_conn_closed(self : McpPendingTable, conn_id : Int) -> Option[McpPendingReq] {
+  // Also drop any queued not-yet-started intent for `conn_id`.
+  if self.ready_starts.length() > 0 {
+    let keep : Array[DeferredMcpIntent] = []
+    for i in 0..<self.ready_starts.length() {
+      if self.ready_starts[i].conn_id != conn_id {
+        keep.push(self.ready_starts[i])
+      }
     }
-    None => false
+    self.ready_starts.clear()
+    for i in 0..<keep.length() {
+      self.ready_starts.push(keep[i])
+    }
+  }
+  match self.by_conn.get(conn_id) {
+    Some(r) => {
+      let _ = self.by_conn.remove(conn_id)
+      Some(r)
+    }
+    None => None
   }
 }
 
-/// Evict all expired pending requests (`now_ms >= deadline_ms`) and return them so the
-/// caller can respond with a timeout JSON-RPC tool error.
-pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_ms : Int64) -> Array[McpPendingReq] {
+/// Evict all expired pending requests (`now_mono_ms >= deadline_mono_ms`) and return them.
+pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_mono_ms : Int64) -> Array[McpPendingReq] {
   let expired : Array[McpPendingReq] = []
   let keys = self.by_conn.keys()
   for i in 0..<keys.length() {
     let cid = keys[i]
     match self.by_conn.get(cid) {
       Some(r) => {
-        if now_ms >= r.deadline_ms {
+        if now_mono_ms >= r.deadline_mono_ms {
           expired.push(r)
         }
       }
@@ -349,7 +471,40 @@ pub fn McpPendingTable::sweep_expired(self : McpPendingTable, now_ms : Int64) ->
   expired
 }
 
-/// Encode a `station_tools::ToolReply` into a JSON-RPC 2.0 `tools/call` HTTP body.
+/// Evict and return ALL pending requests on daemon shutdown so caller can cancel every mesh RPC
+/// and delete every residual `.part` file.
+pub fn McpPendingTable::drain_all(self : McpPendingTable) -> Array[McpPendingReq] {
+  self.ready_starts.clear()
+  let all : Array[McpPendingReq] = []
+  let keys = self.by_conn.keys()
+  for i in 0..<keys.length() {
+    match self.by_conn.get(keys[i]) {
+      Some(r) => all.push(r)
+      None => ()
+    }
+  }
+  for i in 0..<all.length() {
+    let _ = self.by_conn.remove(all[i].conn_id)
+  }
+  all
+}
+
+/// Safely truncate UTF-8 text to at most `max_bytes` without splitting a multi-byte character.
+fn truncate_utf8_safe(s : String, max_bytes : Int) -> String {
+  let b = s.to_bytes()
+  if b.length() <= max_bytes {
+    return s
+  }
+  let mut cut = max_bytes
+  // Back up over UTF-8 continuation bytes `(b & 0xC0) == 0x80`.
+  while cut > 0 && (b[cut].to_int() & 0xC0) == 0x80 {
+    cut = cut - 1
+  }
+  rs_str_slice_bytes(s, 0, cut) + "\n... [truncated]"
+}
+
+/// Encode a `station_tools::ToolReply` into a JSON-RPC 2.0 `tools/call` HTTP body,
+/// bounding payload size below `MCP_MAX_REPLY_BYTES` so large remote replies never break HTTP framing.
 pub fn encode_mcp_tool_jsonrpc(rpc_id : base_codec::Json, reply : station_tools::ToolReply) -> String {
   let content : Array[base_codec::Json] = []
   for i in 0..<reply.content.length() {
@@ -357,7 +512,7 @@ pub fn encode_mcp_tool_jsonrpc(rpc_id : base_codec::Json, reply : station_tools:
       station_tools::ContentItem::Text(t) => content.push(
         base_codec::json_obj([
           ("type", base_codec::json_str("text")),
-          ("text", base_codec::json_str(t)),
+          ("text", base_codec::json_str(truncate_utf8_safe(t, MCP_MAX_REPLY_BYTES))),
         ]),
       )
       station_tools::ContentItem::Raw(raw) => content.push(raw)
@@ -687,9 +842,9 @@ fn format_station_peer_json(
   base_codec::json_obj(fields)
 }
 
-// ---------------------------------------------------------------------------
-// 4. `DomainHandlers.remote` (6 tools)
-// ---------------------------------------------------------------------------
+fn prepared_task_map_key(ws : String, session : String, peer_id : String, key : String) -> String {
+  ws + "\n" + session + "\n" + peer_id + "\n" + key
+}
 
 /// Pure DI session/policy store adapter so `handle_remote_domain_tool` and `handle_system_domain_tool`
 /// work identically against live SQLite (`McpSessionStorePort::from_sqlite`) and in-memory unit tests.
@@ -699,7 +854,7 @@ pub struct McpSessionStorePort {
   pub session_chat_title : (String) -> Option[String]
   pub session_starter : (String) -> String
   pub read_archive_policy_raw : (String, String) -> Option[String]
-  pub write_archive_policy_raw : (String, String, String, String, Int64) -> Result[Unit, String]
+  pub write_archive_policy_raw : (String, String, String, String, String, Int64) -> Result[Unit, String]
 }
 
 pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSessionStorePort {
@@ -740,11 +895,13 @@ pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSession
         _ => ""
       }
     },
+    // Align 1:1 with Node `policyWs` & `whole_api_admin_ops.pion:840`:
+    // home workspace stores & reads `ws IS NULL`; non-home workspaces store & read `ws = ?1`.
     read_archive_policy_raw: fn(caller_ws : String, home_ws : String) -> Option[String] {
       let row_opt = if caller_ws == home_ws {
         st.db.first(
-          "SELECT policy FROM archive_policy WHERE ws = ?1 OR ws IS NULL ORDER BY at DESC, id DESC LIMIT 1",
-          [base_codec::json_str(caller_ws)],
+          "SELECT policy FROM archive_policy WHERE ws IS NULL ORDER BY at DESC, id DESC LIMIT 1",
+          [],
         )
       } else {
         st.db.first(
@@ -760,7 +917,19 @@ pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSession
         _ => None
       }
     },
-    write_archive_policy_raw: fn(caller_ws : String, pol_json : String, author_json : String, summary : String, now_ms : Int64) -> Result[Unit, String] {
+    write_archive_policy_raw: fn(
+      caller_ws : String,
+      home_ws : String,
+      pol_json : String,
+      author_json : String,
+      summary : String,
+      now_ms : Int64,
+    ) -> Result[Unit, String] {
+      let ws_val = if caller_ws == home_ws {
+        base_codec::json_null()
+      } else {
+        base_codec::json_str(caller_ws)
+      }
       match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
         t.run(
           "INSERT INTO archive_policy (at, policy, author, summary, ws) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -769,7 +938,7 @@ pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSession
             base_codec::json_str(pol_json),
             base_codec::json_str(author_json),
             base_codec::json_str(summary),
-            base_codec::json_str(caller_ws),
+            ws_val,
           ],
         )
       }) {
@@ -779,6 +948,10 @@ pub fn McpSessionStorePort::from_sqlite(st : station_store::Store) -> McpSession
     },
   }
 }
+
+// ---------------------------------------------------------------------------
+// 4. `DomainHandlers.remote` (6 tools)
+// ---------------------------------------------------------------------------
 
 pub fn handle_remote_domain_tool(
   port : McpRemoteSystemPort,
@@ -840,8 +1013,9 @@ pub fn handle_remote_domain_tool(
     action != "clean" {
       return station_tools::error_reply("action must be one of prepare, start, get, log, stop, release, list, mirrors, clean")
     }
+    let key = rs_arg_trim(args, "key")
     if (action == "prepare" || action == "start" || action == "get" || action == "log" ||
-      action == "stop" || action == "release") && rs_arg_trim(args, "key").length() == 0 {
+      action == "stop" || action == "release") && key.length() == 0 {
       return station_tools::error_reply("key is required for station_task " + action)
     }
     if action == "prepare" && rs_arg_trim(args, "command").length() == 0 {
@@ -850,18 +1024,103 @@ pub fn handle_remote_domain_tool(
     if action == "clean" && rs_arg_trim(args, "mirror").length() == 0 {
       return station_tools::error_reply("mirror is required for station_task clean")
     }
-    // Check workspace stations first (strictly scoped to `caller_ws`).
     match resolve_ws_station(stations, caller_ws, target_name) {
       Some(peer) => {
         match peer.unprotected_why {
           Some(why) => return station_tools::error_reply("cannot call " + peer.name + ": " + why)
           None => ()
         }
-        // Require rig grant for mutating/execution actions on mode:"tasks" rigs.
         if action == "prepare" || action == "start" || action == "release" || action == "clean" {
           match check_rig_access(port, peer, session, caller_ws) {
             Ok(()) => ()
             Err(e) => return station_tools::error_reply(e)
+          }
+        }
+        // Reject unported `dir` / `back` on remote peers honestly rather than leaking local paths.
+        if !peer.is_self && (action == "prepare" || action == "start") {
+          let has_dir = rs_arg_trim(args, "dir").length() > 0
+          let has_back = match base_codec::json_get(args, "back") {
+            Some(base_codec::Json::Arr(xs)) => xs.length() > 0
+            _ => false
+          }
+          if has_dir || has_back {
+            return station_tools::error_reply(
+              "station_task dir/back mirror sync is not yet wired on the Pion engine; use station_file for explicit file upload/download",
+            )
+          }
+        }
+        // Remote `prepare` records the task spec locally; `start` sends `task.start` with `spec`.
+        if !peer.is_self && action == "prepare" {
+          let cmd = rs_arg_trim(args, "command")
+          let name = rs_arg_trim(args, "name")
+          let screen = match rs_arg_bool(args, "screen") {
+            Some(true) => true
+            _ => false
+          }
+          let small = match rs_arg_bool(args, "small") {
+            Some(true) => true
+            _ => false
+          }
+          let spec = PreparedTaskSpec::{ key: key, name: name, command: cmd, screen: screen, small: small }
+          port.prepared_tasks.set(prepared_task_map_key(caller_ws, session, peer.id, key), spec)
+          // If deferred capture is active, return prepared locally (1:1 with `remote_source.pion`).
+          if port.defer_capture is Some(_) {
+            return station_tools::text_reply(
+              base_codec::json_stringify(
+                base_codec::json_obj([
+                  ("key", base_codec::json_str(key)),
+                  ("state", base_codec::json_str("prepared")),
+                ]),
+              ),
+            )
+          }
+        }
+        // If targeting another station and daemon deferred capture is active, capture intent for async RPC!
+        if !peer.is_self {
+          match port.defer_capture {
+            Some(cap) => {
+              match cap.cur_rpc_id {
+                Some(rid) => {
+                  let spec_opt : Option[PreparedTaskSpec] = if action == "start" {
+                    match port.prepared_tasks.get(prepared_task_map_key(caller_ws, session, peer.id, key)) {
+                      Some(sp) => Some(sp)
+                      None => {
+                        return station_tools::error_reply(
+                          "no prepared task '" + key + "' for " + peer.name + ": call station_task prepare first",
+                        )
+                      }
+                    }
+                  } else {
+                    None
+                  }
+                  let starter_email = (store_port.session_starter)(session)
+                  cap.pending = Some(
+                    DeferredMcpIntent::{
+                      conn_id: cap.cur_conn_id,
+                      rpc_id: rid,
+                      caller_ws: caller_ws,
+                      session: session,
+                      tool: "station_task",
+                      peer_id: peer.id,
+                      peer_name: peer.name,
+                      action: action,
+                      args: args,
+                      local_path: "",
+                      file_size: 0L,
+                      remote_path: "",
+                      task_key: key,
+                      starter_email: starter_email,
+                      starter_name: starter_email,
+                      chat_title: (store_port.session_chat_title)(session),
+                      prepared_spec: spec_opt,
+                    },
+                  )
+                  return station_tools::text_reply("deferred")
+                }
+                None => ()
+              }
+            }
+            None => ()
           }
         }
         match (port.dispatch_remote_task)(caller_ws, session, peer.id, action, args) {
@@ -870,7 +1129,6 @@ pub fn handle_remote_domain_tool(
         }
       }
       None => {
-        // Also check local sandboxes.
         let sbs = (port.list_sandboxes)()
         let tl = jscase::lower(target_name)
         for i in 0..<sbs.length() {
@@ -912,6 +1170,9 @@ pub fn handle_remote_domain_tool(
       Some(p) => p
       None => return station_tools::error_reply("no station " + target_name + " in this chat's workspace")
     }
+    if peer.is_self {
+      return station_tools::error_reply("that is this station: name another")
+    }
     match peer.unprotected_why {
       Some(why) => return station_tools::error_reply("cannot call " + peer.name + ": " + why)
       None => ()
@@ -923,9 +1184,41 @@ pub fn handle_remote_domain_tool(
       }
     }
     let session_ws_dir = (store_port.session_workspace)(session)
-    let (local_resolved, _) = match resolve_session_local_file(port.fs, session_ws_dir, local_raw, direction == "download") {
+    let (local_resolved, file_size) = match resolve_session_local_file(port.fs, session_ws_dir, local_raw, direction == "download") {
       Ok(v) => v
       Err(e) => return station_tools::error_reply(e)
+    }
+    match port.defer_capture {
+      Some(cap) => {
+        match cap.cur_rpc_id {
+          Some(rid) => {
+            cap.pending = Some(
+              DeferredMcpIntent::{
+                conn_id: cap.cur_conn_id,
+                rpc_id: rid,
+                caller_ws: caller_ws,
+                session: session,
+                tool: "station_file",
+                peer_id: peer.id,
+                peer_name: peer.name,
+                action: direction,
+                args: args,
+                local_path: local_resolved,
+                file_size: file_size,
+                remote_path: remote_path,
+                task_key: key,
+                starter_email: "",
+                starter_name: "",
+                chat_title: None,
+                prepared_spec: None,
+              },
+            )
+            return station_tools::text_reply("deferred")
+          }
+          None => ()
+        }
+      }
+      None => ()
     }
     match (port.dispatch_remote_file)(caller_ws, session, peer.id, key, direction, remote_path, local_resolved) {
       Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
@@ -941,7 +1234,11 @@ pub fn handle_remote_domain_tool(
     }
     let reqs = match port.rig_requests {
       Some(r) => r
-      None => return station_tools::error_reply("station_use is not available on this station")
+      None => {
+        return station_tools::error_reply(
+          "station_use is not yet wired on the Pion engine: signed rig grant approval and card delivery are pending",
+        )
+      }
     }
     if is_done {
       let target_id_opt : Option[String] = if rig_name.length() > 0 {
@@ -1094,6 +1391,11 @@ pub fn handle_remote_domain_tool(
   }
 
   if tool == "workspace_limit" {
+    if !port.workspace_limit_enabled {
+      return station_tools::error_reply(
+        "workspace_limit is not yet wired on the Pion engine (workspace size watcher pending)",
+      )
+    }
     let named = rs_arg_trim(args, "station")
     let target_key = if named.length() == 0 {
       "local"
@@ -1232,7 +1534,7 @@ fn read_or_update_workspace_limit(
 
 pub fn handle_system_domain_tool(
   port : McpRemoteSystemPort,
-  data_dir : String,
+  _data_dir : String,
   home_ws : String,
   store_port : McpSessionStorePort,
   caller_ws : String,
@@ -1242,7 +1544,7 @@ pub fn handle_system_domain_tool(
   now_ms : Int64,
 ) -> station_tools::ToolReply {
   if tool == "station_version" {
-    return handle_station_version_tool(port, data_dir, args)
+    return handle_station_version_tool(port, args)
   }
   if tool == "archive_policy" {
     return handle_archive_policy_tool(store_port, caller_ws, home_ws, session, args, now_ms)
@@ -1265,71 +1567,11 @@ pub fn handle_system_domain_tool(
   station_tools::error_reply("unsupported system tool: " + tool)
 }
 
-// --- 5a. `station_version` ---
+// --- 5a. `station_version` (zero fake wait-file persistence) ---
 
-fn validate_wait_spec(spec : String) -> Result[String, String] {
-  let s = spec.trim()
-  if s.starts_with("pr:") && s.length() > 3 {
-    return Ok(s)
-  }
-  if s.starts_with("fix:FB-") && s.length() > 7 {
-    return Ok(s)
-  }
-  if s.starts_with("commit:") && s.length() > 7 {
-    return Ok(s)
-  }
-  if s.starts_with("version:") && s.length() > 8 {
-    return Ok(s)
-  }
-  if s.starts_with("after:") && s.length() > 6 {
-    return Ok(s)
-  }
-  Err("invalid wait condition '" + s + "': expected pr:N, fix:FB-N, commit:SHA, version:0.1.N, or after:0.1.N")
-}
-
-fn update_wait_path(fs : station_jobs::FsPort, data_dir : String) -> String {
-  nodepath::join(fs.sep, [data_dir, "update-wait.json"])
-}
-
-fn read_update_wait(fs : station_jobs::FsPort, data_dir : String) -> Array[String] {
-  let out : Array[String] = []
-  match (fs.read_file)(update_wait_path(fs, data_dir)) {
-    Some(txt) => {
-      match base_codec::json_parse(txt) {
-        base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
-          for i in 0..<xs.length() {
-            match xs[i] {
-              base_codec::Json::Str(s) => if s.length() > 0 { out.push(s) }
-              _ => ()
-            }
-          }
-        }
-        _ => ()
-      }
-    }
-    None => ()
-  }
-  out
-}
-
-fn write_update_wait(fs : station_jobs::FsPort, data_dir : String, specs : Array[String]) -> Bool {
-  let path = update_wait_path(fs, data_dir)
-  if specs.length() == 0 {
-    let _ = (fs.remove_file)(path)
-    return true
-  }
-  let _ = (fs.mkdir_p)(data_dir)
-  let arr : Array[base_codec::Json] = []
-  for i in 0..<specs.length() {
-    arr.push(base_codec::json_str(specs[i]))
-  }
-  (fs.write_file)(path, base_codec::json_stringify(base_codec::json_arr(arr)))
-}
-
-fn build_version_line(port : McpRemoteSystemPort, data_dir : String) -> base_codec::Json {
+fn build_version_line(port : McpRemoteSystemPort) -> base_codec::Json {
   let ver = (port.station_build)()
-  let waits = read_update_wait(port.fs, data_dir)
-  let fields : Array[(String, base_codec::Json)] = [
+  base_codec::json_obj([
     ("version", if ver.length() > 0 { base_codec::json_str(ver) } else { base_codec::json_null() }),
     ("engine", base_codec::json_str("pion")),
     ("latest", base_codec::json_null()),
@@ -1345,58 +1587,30 @@ fn build_version_line(port : McpRemoteSystemPort, data_dir : String) -> base_cod
     ("autoAfter", base_codec::json_null()),
     ("earlier", base_codec::json_arr([])),
     ("state", base_codec::json_str("idle")),
-  ]
-  if waits.length() > 0 {
-    let warr : Array[base_codec::Json] = []
-    for i in 0..<waits.length() {
-      warr.push(base_codec::json_str(waits[i]))
-    }
-    fields.push(("autoWhen", base_codec::json_arr(warr)))
-  }
-  base_codec::json_obj(fields)
+  ])
 }
 
 fn handle_station_version_tool(
   port : McpRemoteSystemPort,
-  data_dir : String,
   args : base_codec::Json,
 ) -> station_tools::ToolReply {
   let action = rs_arg_trim(args, "action")
   if action == "list" {
-    return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
+    return station_tools::text_reply(base_codec::json_stringify(build_version_line(port)))
   }
   if action == "wait" {
-    let is_clear = match rs_arg_bool(args, "clear") {
-      Some(true) => true
-      _ => false
-    }
-    if is_clear {
-      let _ = write_update_wait(port.fs, data_dir, [])
-      return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
-    }
-    match base_codec::json_get(args, "until") {
-      Some(base_codec::Json::Arr(xs)) => {
-        if xs.length() == 0 {
-          return station_tools::error_reply("wait: pass until (non-empty array of conditions) or clear: true")
+    match port.update_trigger {
+      Some(trigger) => {
+        match trigger("wait", None) {
+          Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+          Err(e) => return station_tools::error_reply(e)
         }
-        let specs : Array[String] = []
-        for i in 0..<xs.length() {
-          match xs[i] {
-            base_codec::Json::Str(s) => {
-              match validate_wait_spec(s) {
-                Ok(v) => specs.push(v)
-                Err(e) => return station_tools::error_reply(e)
-              }
-            }
-            _ => return station_tools::error_reply("wait: until must be an array of strings")
-          }
-        }
-        if !write_update_wait(port.fs, data_dir, specs) {
-          return station_tools::error_reply("failed to persist wait conditions")
-        }
-        return station_tools::text_reply(base_codec::json_stringify(build_version_line(port, data_dir)))
       }
-      _ => return station_tools::error_reply("wait: pass until (array of conditions) or clear: true")
+      None => {
+        return station_tools::error_reply(
+          "station_version wait is not yet wired on the Pion engine",
+        )
+      }
     }
   }
   if action == "update" {
@@ -1567,23 +1781,22 @@ fn handle_archive_policy_tool(
       ("session", base_codec::json_str(session)),
     ]),
   )
-  match (store_port.write_archive_policy_raw)(caller_ws, pol_json, author_json, summary, now_ms) {
-    Ok(()) => {
-      station_tools::text_reply(
-        "Saved (" + summary + "). The done chats are checked again under it; this chat is when your turn ends all_done. Tell the person what you changed.",
-      )
-    }
+  match (store_port.write_archive_policy_raw)(caller_ws, home_ws, pol_json, author_json, summary, now_ms) {
+    Ok(()) => station_tools::text_reply("Saved (" + summary + "). Tell the person what you changed.")
     Err(e) => station_tools::error_reply(e)
   }
 }
 
-// --- 5c. `login` ---
+// --- 5c. `login` (preserves raw argv array, workspace-scoped dedup, real `login.call` wire RPC) ---
 
-fn parse_login_cmd_arg(v : Option[base_codec::Json]) -> Option[String] {
+fn parse_login_cmd_words(v : Option[base_codec::Json]) -> Option[Array[String]] {
   match v {
     Some(base_codec::Json::Str(s)) => {
       let t = s.trim()
-      if t.length() > 0 { Some(t) } else { None }
+      if t.length() == 0 {
+        return None
+      }
+      station_devices::command_words(t)
     }
     Some(base_codec::Json::Arr(xs)) => {
       let parts : Array[String] = []
@@ -1593,7 +1806,7 @@ fn parse_login_cmd_arg(v : Option[base_codec::Json]) -> Option[String] {
           _ => return None
         }
       }
-      if parts.length() > 0 { Some(rs_join(parts, " ")) } else { None }
+      if parts.length() > 0 { Some(parts) } else { None }
     }
     _ => None
   }
@@ -1615,6 +1828,43 @@ fn handle_login_tool(
       None => return station_tools::error_reply("no station " + target_station + " in this chat's workspace")
     }
     if !peer.is_self {
+      match peer.unprotected_why {
+        Some(why) => return station_tools::error_reply("cannot call " + peer.name + ": " + why)
+        None => ()
+      }
+      match port.defer_capture {
+        Some(cap) => {
+          match cap.cur_rpc_id {
+            Some(rid) => {
+              let starter_email = (store_port.session_starter)(session)
+              cap.pending = Some(
+                DeferredMcpIntent::{
+                  conn_id: cap.cur_conn_id,
+                  rpc_id: rid,
+                  caller_ws: caller_ws,
+                  session: session,
+                  tool: "login",
+                  peer_id: peer.id,
+                  peer_name: peer.name,
+                  action: "call",
+                  args: args,
+                  local_path: "",
+                  file_size: 0L,
+                  remote_path: "",
+                  task_key: "",
+                  starter_email: starter_email,
+                  starter_name: starter_email,
+                  chat_title: (store_port.session_chat_title)(session),
+                  prepared_spec: None,
+                },
+              )
+              return station_tools::text_reply("deferred")
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
       match port.remote_login {
         Some(rfn) => {
           match rfn(caller_ws, session, peer.id, args) {
@@ -1688,11 +1938,11 @@ fn handle_login_tool(
     let link = (port.login_link)(session, id_str)
     return station_tools::text_reply(station_devices::login_told(view, screen, link))
   }
-  let cmd = match parse_login_cmd_arg(base_codec::json_get(args, "command")) {
-    Some(c) => c
+  let cmd_words = match parse_login_cmd_words(base_codec::json_get(args, "command")) {
+    Some(w) => w
     None => return station_tools::error_reply("command: the tool's own login command (e.g. gh auth login); or id to see or act on one")
   }
-  let by_code = parse_login_cmd_arg(base_codec::json_get(args, "byCode"))
+  let by_code_words = parse_login_cmd_words(base_codec::json_get(args, "byCode"))
   let starter_email = (store_port.session_starter)(session)
   let starter_name = starter_email
   let chat_title = (store_port.session_chat_title)(session)
@@ -1704,7 +1954,7 @@ fn handle_login_tool(
   }
   let ws_dir = (store_port.session_workspace)(session)
   let session_cwd = if ws_dir.length() > 0 { ws_dir } else { "." }
-  match (logins_rt.start)(cmd, starter, session_cwd, by_code, now_ms) {
+  match (logins_rt.start_words)(cmd_words, starter, session_cwd, by_code_words, now_ms) {
     Ok(view) => {
       let screen = (logins_rt.screen)(view.id)
       let link = (port.login_link)(session, view.id)
@@ -2110,7 +2360,6 @@ fn handle_station_move_tool(
     return station_tools::text_reply(base_codec::json_stringify(format_move_plan_summary(plan, to_name)))
   }
 
-  // `move` or `back`: never fake success when no remote move executor is wired!
   if !port.move_has_executor {
     return station_tools::error_reply(
       "station_move " + action + " is not yet available on the Pion engine: remote move execution is not wired yet",
@@ -2231,7 +2480,6 @@ fn handle_feedback_tool(
       }
     }
   }
-  // `feedback_reply`
   let num = match rs_arg_int(args, "number") {
     Ok(Some(n)) => if n >= 1 { n } else { return station_tools::error_reply("number must be the report's number (12 for FB-12)") }
     _ => return station_tools::error_reply("number must be the report's number (12 for FB-12)")

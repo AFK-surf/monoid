@@ -296,6 +296,7 @@ pub struct ActivePeerHttpStream {
 }
 
 pub struct OutboundTell {
+  pub ask_id : Int64
   pub peer : String
   pub method : String
   pub ref_id : String
@@ -308,6 +309,7 @@ pub struct OutboundTell {
 
 pub struct ActiveOutbound {
   pub id : Int64
+  pub ask_id : Int64
   pub peer : String
   pub method : String
   pub ref_id : String
@@ -320,6 +322,7 @@ pub struct ActiveOutbound {
   pub mut sock_id : Option[Int64]
   pub mut reply_buf : Bytes
   pub mut sent : Bool
+  pub mut cancelled : Bool
   pub on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit]
 }
 
@@ -820,7 +823,8 @@ pub struct DaemonCtx {
   shown_loopback_port_fn : () -> Int
   announce_mcp_port_fn : (Int) -> Unit
   enqueue_tell_fn : (String, String, base_codec::Json) -> Unit
-  ask_peer_rpc_fn : (String, String, base_codec::Json, (Result[base_codec::Json, String]) -> Unit) -> Unit
+  ask_peer_rpc_fn : (String, String, base_codec::Json, (Result[base_codec::Json, String]) -> Unit) -> Int64
+  cancel_peer_rpc_fn : (Int64) -> Bool
   reply_peer_rpc_fn : (Int64, Bytes, Option[DaemonFileStreamPlan], Bool, Bool) -> Unit
   unpack_zstd_fn : (Int64, Bytes, Int, (Result[Bytes, String]) -> Unit) -> Unit
   write_peer_http_chunk_fn : (Int64, Bytes) -> Unit
@@ -928,7 +932,7 @@ pub fn DaemonCtx::enqueue_tell(
 }
 
 /// Send an outbound peer RPC (`ask`) over direct iroh or `front.sock` and invoke `on_done` with
-/// the parsed `{ ok }` result or explicit error (never silently drops failures).
+/// the parsed `{ result }` (or legacy `{ ok }`) payload or explicit error (never silently drops failures).
 pub fn DaemonCtx::ask_peer_rpc(
   self : DaemonCtx,
   peer : String,
@@ -936,7 +940,50 @@ pub fn DaemonCtx::ask_peer_rpc(
   request : base_codec::Json,
   on_done : (Result[base_codec::Json, String]) -> Unit,
 ) -> Unit {
+  let _ = (self.ask_peer_rpc_fn)(peer, ws, request, on_done)
+}
+
+/// Send a cancellable outbound peer RPC (`ask`) returning a non-zero `ask_id` that can be
+/// cancelled via `cancel_peer_rpc` on client disconnect, timeout, or shutdown.
+pub fn DaemonCtx::ask_peer_rpc_cancellable(
+  self : DaemonCtx,
+  peer : String,
+  ws : String,
+  request : base_codec::Json,
+  on_done : (Result[base_codec::Json, String]) -> Unit,
+) -> Int64 {
   (self.ask_peer_rpc_fn)(peer, ws, request, on_done)
+}
+
+/// Cancel an in-flight or queued peer RPC by `ask_id`, stopping mesh retries and suppressing callbacks.
+pub fn DaemonCtx::cancel_peer_rpc(self : DaemonCtx, ask_id : Int64) -> Bool {
+  (self.cancel_peer_rpc_fn)(ask_id)
+}
+
+/// Parse a peer RPC reply line per Node `station/src/mesh/peer.ts:499-509` and Pion
+/// `station_mesh/src/peer.pion:231-244`: unpack `"result"` first (falling back to `"ok"` if present),
+/// and return `Err(msg)` whenever `"error"` is a non-empty string.
+pub fn parse_peer_ask_reply(reply_str : String) -> Result[base_codec::Json, String] {
+  let trimmed = reply_str.trim()
+  if trimmed.length() == 0 {
+    return Err("empty peer RPC reply")
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "error") {
+        Some(base_codec::Json::Str(e)) => if e.length() > 0 { return Err(e) }
+        _ => ()
+      }
+      match base_codec::json_get(j, "result") {
+        Some(v) => Ok(v)
+        None => match base_codec::json_get(j, "ok") {
+          Some(v) => Ok(v)
+          None => Ok(j)
+        }
+      }
+    }
+    base_codec::JsonParseResult::Err(e) => Err("invalid peer RPC reply JSON: " + e)
+  }
 }
 
 /// Write a reply (and optional streaming file download plan) back to an inbound peer RPC stream.
@@ -1349,44 +1396,37 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let mux_role = make_tagged_mux_on(hub_transport, MUX_TAG_ROLE, slot_role)
 
   let parse_ask_reply = fn(reply_str : String) -> Result[base_codec::Json, String] {
-    let trimmed = reply_str.trim()
-    if trimmed.length() == 0 {
-      return Err("empty peer RPC reply")
-    }
-    match base_codec::json_parse(trimmed) {
-      base_codec::JsonParseResult::Ok(j) => {
-        match base_codec::json_get(j, "error") {
-          Some(base_codec::Json::Str(e)) => if e.length() > 0 { return Err(e) }
-          _ => ()
-        }
-        match base_codec::json_get(j, "ok") {
-          Some(v) => Ok(v)
-          None => Ok(j)
-        }
-      }
-      base_codec::JsonParseResult::Err(e) => Err("invalid peer RPC reply JSON: " + e)
-    }
+    parse_peer_ask_reply(reply_str)
   }
+
+  let mut next_ask_id : Int64 = 1L
 
   let enqueue_outbound_inner = fn(
     peer : String,
     ws : String,
     request : base_codec::Json,
     on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit],
-  ) -> Unit {
+  ) -> Int64 {
     if peer.length() == 0 || peer == station_key.id {
       match on_ask_done {
         Some(cb) => cb(Err("invalid peer station id"))
         None => ()
       }
-      return
+      return 0L
     }
     if outbound_queue.length() >= MAX_OUTBOUND_TELLS {
       match on_ask_done {
         Some(cb) => cb(Err("outbound peer queue full"))
         None => ()
       }
-      return
+      return 0L
+    }
+    let ask_id = if on_ask_done is Some(_) {
+      let aid = next_ask_id
+      next_ask_id = aid + 1L
+      aid
+    } else {
+      0L
     }
     let method = match base_codec::json_get(request, "method") {
       Some(base_codec::Json::Str(m)) => m
@@ -1403,6 +1443,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     let payload = (base_codec::json_stringify(env) + "\n").to_bytes()
     let now_t = host_shim::now_ms()
     outbound_queue.push(OutboundTell::{
+      ask_id: ask_id,
       peer: peer,
       method: method,
       ref_id: ref_id,
@@ -1412,10 +1453,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       created_at_ms: now_t,
       on_ask_done: on_ask_done,
     })
+    ask_id
   }
 
   let enqueue_tell = fn(peer : String, ws : String, request : base_codec::Json) -> Unit {
-    enqueue_outbound_inner(peer, ws, request, None)
+    let _ = enqueue_outbound_inner(peer, ws, request, None)
   }
 
   let ask_peer_rpc = fn(
@@ -1423,11 +1465,48 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     ws : String,
     request : base_codec::Json,
     on_done : (Result[base_codec::Json, String]) -> Unit,
-  ) -> Unit {
+  ) -> Int64 {
     enqueue_outbound_inner(peer, ws, request, Some(on_done))
   }
 
+  let cancel_peer_rpc = fn(ask_id : Int64) -> Bool {
+    if ask_id <= 0L {
+      return false
+    }
+    let mut found = false
+    let keep : Array[OutboundTell] = []
+    for i in 0..<outbound_queue.length() {
+      if outbound_queue[i].ask_id == ask_id {
+        found = true
+      } else {
+        keep.push(outbound_queue[i])
+      }
+    }
+    if found {
+      outbound_queue.clear()
+      for i in 0..<keep.length() {
+        outbound_queue.push(keep[i])
+      }
+    }
+    let akeys = active_outbounds.keys()
+    for i in 0..<akeys.length() {
+      match active_outbounds.get(akeys[i]) {
+        Some(ob) => {
+          if ob.ask_id == ask_id {
+            ob.cancelled = true
+            found = true
+          }
+        }
+        None => ()
+      }
+    }
+    found
+  }
+
   let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
+    if ob.cancelled {
+      return
+    }
     // PR #9132: never auto-retry outbound `connect.call` RPCs after payload has been written (prevents duplicate posts),
     // while still allowing pre-send connection/dial failures to retry.
     if ob.method == "connect.call" && ob.sent {
@@ -1447,6 +1526,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
     let delay = tell_backoff_ms(ob.attempts)
     outbound_queue.push(OutboundTell::{
+      ask_id: ob.ask_id,
       peer: ob.peer,
       method: ob.method,
       ref_id: ob.ref_id,
@@ -1992,6 +2072,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     },
     enqueue_tell_fn: enqueue_tell,
     ask_peer_rpc_fn: ask_peer_rpc,
+    cancel_peer_rpc_fn: cancel_peer_rpc,
     reply_peer_rpc_fn: write_peer_reply_to_stream,
     unpack_zstd_fn: unpack_zstd_async,
     write_peer_http_chunk_fn: write_peer_http_chunk_impl,
@@ -2618,6 +2699,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
             oid,
             ActiveOutbound::{
               id: oid,
+              ask_id: tell.ask_id,
               peer: tell.peer,
               method: tell.method,
               ref_id: tell.ref_id,
@@ -2630,6 +2712,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
               sock_id: None,
               reply_buf: Bytes::new(0),
               sent: false,
+              cancelled: false,
               on_ask_done: tell.on_ask_done,
             },
           )

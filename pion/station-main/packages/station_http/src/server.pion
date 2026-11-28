@@ -205,6 +205,7 @@ pub struct HttpServer {
   mut next_gen : Int64
   mut total_accepted : Int64
   mut total_requests : Int64
+  mut on_conn_closed : Option[(Int) -> Unit]
 }
 
 pub fn HttpServer::new(mux : builders_core::ShellMux, limits : ServerLimits) -> HttpServer {
@@ -226,7 +227,13 @@ pub fn HttpServer::new(mux : builders_core::ShellMux, limits : ServerLimits) -> 
     next_gen: 0L,
     total_accepted: 0L,
     total_requests: 0L,
+    on_conn_closed: None,
   }
+}
+
+/// Register a callback invoked whenever any HTTP connection closes (including `ConnMode::Deferred`).
+pub fn HttpServer::set_conn_closed_hook(self : HttpServer, hook : Option[(Int) -> Unit]) -> Unit {
+  self.on_conn_closed = hook
 }
 
 pub fn HttpServer::with_defaults(mux : builders_core::ShellMux) -> HttpServer {
@@ -435,6 +442,10 @@ fn HttpServer::close_conn_with_callbacks(
       _ => ()
     }
     (callbacks.on_ws_event)(WsEvent::Close(conn_id, None))
+  }
+  match self.on_conn_closed {
+    Some(hook) => hook(conn_id)
+    None => ()
   }
 }
 

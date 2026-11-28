@@ -39,9 +39,14 @@ fn rs_test_mem_store_port() -> (McpSessionStorePort, Map[String, String]) {
     session_starter: fn(s : String) -> String {
       if s == "sess-ws1" { "alice@example.com" } else { "bob@example.com" }
     },
-    read_archive_policy_raw: fn(ws : String, _home : String) -> Option[String] { policies.get(ws) },
-    write_archive_policy_raw: fn(ws : String, pol_json : String, _author : String, _summary : String, _now : Int64) -> Result[Unit, String] {
-      policies.set(ws, pol_json)
+    // Home workspace uses key "__NULL__" mirroring SQLite `ws IS NULL`.
+    read_archive_policy_raw: fn(ws : String, home : String) -> Option[String] {
+      let key = if ws == home { "__NULL__" } else { ws }
+      policies.get(key)
+    },
+    write_archive_policy_raw: fn(ws : String, home : String, pol_json : String, _author : String, _summary : String, _now : Int64) -> Result[Unit, String] {
+      let key = if ws == home { "__NULL__" } else { ws }
+      policies.set(key, pol_json)
       Ok(())
     },
   }
@@ -258,6 +263,7 @@ test "w17e2a station_list workspace isolation, rig status, and sandboxes" {
   ]
   let port = McpRemoteSystemPort::{
     ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
     list_stations: fn(_ws : String) -> Array[McpStationPeer] { all_peers },
     list_sandboxes: fn() -> Array[McpSandboxInfo] {
       [McpSandboxInfo::{ name: "l4es-1", kind: "l4es", available: true, detail: "ready" }]
@@ -305,6 +311,7 @@ test "w17e2a station_task and station_use rig grant gating and cross-workspace r
   let dispatched : Array[String] = []
   let port = McpRemoteSystemPort::{
     ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
     list_stations: fn(_ws : String) -> Array[McpStationPeer] {
       [
         rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
@@ -393,6 +400,7 @@ test "w17e2a station_file rejects traversal, symlinks, overwrite, and cross-work
 
   let port = McpRemoteSystemPort::{
     ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
     list_stations: fn(_ws : String) -> Array[McpStationPeer] {
       [rs_test_peer("st-peer", "build-1", "ws-1", false, "whole")]
     },
@@ -535,6 +543,7 @@ test "w17e2a peer_forward and workspace_limit roundtrip" {
   let active_fwds : Array[McpPeerForwardEntry] = []
   let port = McpRemoteSystemPort::{
     ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
     list_stations: fn(_ws : String) -> Array[McpStationPeer] {
       [
         rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
@@ -648,6 +657,7 @@ test "w17e2a system tools: station_version, archive_policy, relays, station_move
   }
   let port = McpRemoteSystemPort::{
     ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
     list_stations: fn(_ws : String) -> Array[McpStationPeer] {
       [
         rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
@@ -664,6 +674,7 @@ test "w17e2a system tools: station_version, archive_policy, relays, station_move
   let vl = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "station_version", base_codec::json_obj([("action", base_codec::json_str("list"))]), 50000L)
   rs_assert(!vl.is_error && rs_reply_text(vl).contains("\"engine\":\"pion\"") && rs_reply_text(vl).contains("\"version\":\"0.1.999\""), "station_version list mismatch")
 
+  // station_version wait without updater must honestly error (zero fake update-wait.json)
   let vw = handle_system_domain_tool(
     port,
     "/tmp/rs-t5",
@@ -678,7 +689,7 @@ test "w17e2a system tools: station_version, archive_policy, relays, station_move
     ]),
     50000L,
   )
-  rs_assert(!vw.is_error && rs_reply_text(vw).contains("pr:9175"), "station_version wait failed")
+  rs_assert(vw.is_error, "station_version wait without updater must honestly error")
 
   let vu = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "station_version", base_codec::json_obj([("action", base_codec::json_str("update"))]), 50000L)
   rs_assert(vu.is_error, "station_version update without updater must error")
@@ -780,13 +791,17 @@ test "w17e2a async deferred McpPendingTable out-of-order settle, disconnect, and
   let g3 = tbl.register(103, base_codec::json_int(3), "s1", "ws-1", "login", 1000L, timeout_ms=10000L)
   rs_assert(tbl.count() == 3, "expected 3 pending")
 
-  rs_assert(tbl.on_conn_closed(103), "expected disconnect cleanup")
+  let closed_req = tbl.on_conn_closed(103)
+  rs_assert(closed_req is Some(_), "expected disconnect cleanup")
   rs_assert(!tbl.is_active(103, g3), "disconnected req must be inactive")
   rs_assert(tbl.take_if_active(103, g3) is None, "disconnected req must not settle")
   rs_assert(tbl.count() == 2, "expected 2 pending")
 
+  tbl.set_ask_id(102, g2, 777L)
+  tbl.set_part_path(102, g2, Some("/tmp/ws1-room/out.part"))
   let exp = tbl.sweep_expired(3500L)
-  rs_assert(exp.length() == 1 && exp[0].conn_id == 102, "expected conn 102 expired")
+  rs_assert(exp.length() == 1 && exp[0].conn_id == 102 && exp[0].ask_id == 777L, "expected conn 102 expired with ask_id")
+  rs_assert(exp[0].part_path == Some("/tmp/ws1-room/out.part"), "expected part_path returned for cleanup")
   rs_assert(tbl.take_if_active(102, g2) is None, "expired req must not settle")
   rs_assert(tbl.count() == 1, "expected 1 pending")
 
