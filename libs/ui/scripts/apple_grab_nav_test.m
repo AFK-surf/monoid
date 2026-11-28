@@ -343,6 +343,113 @@ static void test_ios_nav_state(void) {
   CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectNull));
   CHECK(!mb_ios_nav_wash_rect_matches(CGRectInfinite, tabR));
   CHECK(!mb_ios_nav_wash_rect_matches(tabR, CGRectInfinite));
+
+  // 8. Overflow action decision (iOS 27.1 prominent action tab where tabBarItemCount < tabsCount even with no overflow).
+  CHECK(mb_ios_nav_overflow_action(0, 5, 0, 4) == MBIosNavOverflowActionNoOverflowCache);
+  CHECK(mb_ios_nav_overflow_action(5, 5, 4, 4) == MBIosNavOverflowActionNoOverflowCache);
+  CHECK(mb_ios_nav_overflow_action(6, 5, 4, 4) == MBIosNavOverflowActionNoOverflowCache);
+  // iOS 27.1: 4 regular places + 1 prominent action tab -> tabBarItemCount=4, tabsCount=5, visiblePlaces=4 -> cache lkey!
+  CHECK(mb_ios_nav_overflow_action(4, 5, 4, 4) == MBIosNavOverflowActionNoOverflowCache);
+  // Frames not laid out yet (visiblePlaces == 0) -> do NOT cache lkey.
+  CHECK(mb_ios_nav_overflow_action(4, 5, 0, 4) == MBIosNavOverflowActionNotLaidOut);
+  // Genuine UIKit overflow: 3 of 5 regular places visible -> collapse.
+  CHECK(mb_ios_nav_overflow_action(4, 6, 3, 5) == MBIosNavOverflowActionCollapse);
+  // Defensive empty allPlaces.
+  CHECK(mb_ios_nav_overflow_action(1, 2, 0, 0) == MBIosNavOverflowActionNoOverflowCache);
+
+  // 9. Post-layout overflow check guard: skips once overflowLayoutKey matches lkey.
+  CHECK(mb_ios_nav_should_check_overflow_after_layout(0, lkeyA, nil, 4, 5));
+  CHECK(!mb_ios_nav_should_check_overflow_after_layout(0, lkeyA, lkeyA, 4, 5));
+  CHECK(mb_ios_nav_should_check_overflow_after_layout(0, lkeyB, lkeyA, 4, 5));
+  CHECK(!mb_ios_nav_should_check_overflow_after_layout(3, lkeyB, lkeyA, 4, 5));
+  CHECK(!mb_ios_nav_should_check_overflow_after_layout(0, lkeyA, nil, 0, 5));
+  CHECK(!mb_ios_nav_should_check_overflow_after_layout(0, lkeyA, nil, 5, 5));
+
+  // 10. Displayed tabs key: accent-invariant, structure-sensitive, collision-resistant.
+  NSArray<NSDictionary *> *placesA = @[
+    @{@"id" : @"place/chats", @"title" : @"Chats"},
+    @{@"id" : @"place/settings", @"title" : @"Settings"},
+  ];
+  NSDictionary *actNew = @{@"id" : @"act/new", @"title" : @"New", @"icon" : @"0 2 2 1 1 23 23"};
+  NSString *tkBase = mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", actNew);
+  NSString *tkSame = mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", [actNew copy]);
+  CHECK([tkBase isEqualToString:tkSame]);
+  CHECK(tkBase.length > 0);
+  // Overflow state sensitivity.
+  CHECK(![tkBase isEqualToString:mb_ios_nav_tabs_key(placesA, YES, @"__mbui_more__", actNew)]);
+  // Action presence / title / icon / id sensitivity.
+  CHECK(![tkBase isEqualToString:mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", nil)]);
+  CHECK(![tkBase isEqualToString:mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__",
+                                                     @{@"id" : @"act/new", @"title" : @"Compose", @"icon" : @"0 2 2 1 1 23 23"})]);
+  CHECK(![tkBase isEqualToString:mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__",
+                                                     @{@"id" : @"act/new", @"title" : @"New", @"icon" : @"0 2 2 2 2 22 22"})]);
+  // Length-prefix collision resistance across action fields and regular vs overflow prefix.
+  NSDictionary *actCol1 = @{@"id" : @"a", @"title" : @"b|1:c", @"icon" : @"d"};
+  NSDictionary *actCol2 = @{@"id" : @"a", @"title" : @"b", @"icon" : @"c|1:d"};
+  CHECK(![mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", actCol1)
+          isEqualToString:mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", actCol2)]);
+  NSArray<NSDictionary *> *placesWithMoreLike = @[
+    @{@"id" : @"place/chats"},
+    @{@"id" : @"place/settings"},
+    @{@"id" : @"__mbui_more__"},
+  ];
+  CHECK(![mb_ios_nav_tabs_key(placesA, YES, @"__mbui_more__", nil)
+          isEqualToString:mb_ios_nav_tabs_key(placesWithMoreLike, NO, @"__mbui_more__", nil)]);
+
+  // 11. Wash sync/async triggers (in-place accent change on mounted wash runs sync without async fallback).
+  // Accent tap on mounted wash: washInWindow=YES, washInkMatches=NO -> sync YES, async NO.
+  CHECK(mb_ios_nav_wash_needed(NO, NO, NO, YES, YES, NO));
+  CHECK(!mb_ios_nav_wash_async_needed(NO, NO, NO, YES, YES));
+  // Steady state on mounted wash: washInWindow=YES, washInkMatches=YES -> sync NO, async NO.
+  CHECK(!mb_ios_nav_wash_needed(NO, NO, NO, YES, YES, YES));
+  CHECK(!mb_ios_nav_wash_async_needed(NO, NO, NO, YES, YES));
+  // Unmounted wash -> sync YES, async YES.
+  CHECK(mb_ios_nav_wash_needed(NO, NO, NO, YES, NO, YES));
+  CHECK(mb_ios_nav_wash_async_needed(NO, NO, NO, YES, NO));
+  // tabsChanged -> sync YES, async YES (when actionInk && !bare).
+  CHECK(mb_ios_nav_wash_needed(YES, NO, NO, YES, YES, YES));
+  CHECK(mb_ios_nav_wash_async_needed(YES, NO, NO, YES, YES));
+  // bare reveal with unchanged tabs (hiddenChanged && !bare && !tabsChanged) -> skipSyncWash (CATransaction handles it).
+  CHECK(!mb_ios_nav_wash_needed(NO, YES, NO, YES, NO, YES));
+  // Entering bare (hiddenChanged && bare) -> sync YES (removes wash), async NO.
+  CHECK(mb_ios_nav_wash_needed(NO, YES, YES, YES, YES, YES));
+  CHECK(!mb_ios_nav_wash_async_needed(NO, YES, YES, YES, YES));
+
+  // 12. Avatar cache key ('a') distinct from icon ('i'), badge ('b'), letter ('l').
+  NSString *ka = mb_ios_nav_icon_cache_key('a', 40.0, 3.0, @"avatars:336699ff,A");
+  NSString *ka2 = mb_ios_nav_icon_cache_key('a', 40.0, 3.0, @"avatars:336699ff,A");
+  CHECK([ka isEqualToString:ka2]);
+  CHECK(![ka isEqualToString:mb_ios_nav_icon_cache_key('b', 40.0, 3.0, @"avatars:336699ff,A")]);
+  CHECK(![ka isEqualToString:mb_ios_nav_icon_cache_key('i', 40.0, 3.0, @"avatars:336699ff,A")]);
+  CHECK(![ka isEqualToString:mb_ios_nav_icon_cache_key('a', 24.0, 3.0, @"avatars:336699ff,A")]);
+
+  // 13. Simulated iOS 27.1 Setting Appearance session: 1 initial probe + 20 accent clicks + 20 spec updates = 1 probe, 1 tab build.
+  NSString *simTabsKey = nil;
+  NSString *simOverflowKey = nil;
+  int simTabRebuilds = 0;
+  int simOverflowProbes = 0;
+  int simPostLayoutWalks = 0;
+  for (int step = 0; step < 41; step++) {
+    NSString *nextKey = mb_ios_nav_tabs_key(placesA, NO, @"__mbui_more__", actNew);
+    BOOL tabsChanged = ![nextKey isEqualToString:simTabsKey];
+    if (tabsChanged) {
+      simTabsKey = nextKey;
+      simTabRebuilds++;
+    }
+    simOverflowKey = mb_ios_nav_next_overflow_layout_key(NO, tabsChanged, simOverflowKey);
+    if (mb_ios_nav_needs_overflow_probe(NO, YES, 0, placesA.count, tabsChanged, lkeyA, simOverflowKey)) {
+      simOverflowProbes++;
+      // iOS 27.1 prominent action tab: tabBarItemCount = 2 < tabsCount = 3, visiblePlaces = 2 == placesA.count.
+      MBIosNavOverflowAction act = mb_ios_nav_overflow_action(placesA.count, placesA.count + 1, placesA.count, placesA.count);
+      if (act == MBIosNavOverflowActionNoOverflowCache) simOverflowKey = lkeyA;
+    }
+    if (mb_ios_nav_should_check_overflow_after_layout(0, lkeyA, simOverflowKey, placesA.count, placesA.count + 1)) {
+      simPostLayoutWalks++;
+    }
+  }
+  CHECK(simTabRebuilds == 1);
+  CHECK(simOverflowProbes == 1);
+  CHECK(simPostLayoutWalks == 0);
 }
 
 int main(void) {

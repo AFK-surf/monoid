@@ -27,6 +27,76 @@ static inline BOOL mb_ios_nav_needs_overflow_probe(BOOL bare, BOOL hasWindow, NS
          (tabsChanged || ![lkey isEqualToString:overflowLayoutKey]);
 }
 
+typedef enum {
+  MBIosNavOverflowActionNoOverflowCache = 0, // All places fit (or tabBar has no overflow); cache lkey.
+  MBIosNavOverflowActionNotLaidOut = 1,      // Regular tab frames are not laid out yet; clear cached lkey.
+  MBIosNavOverflowActionCollapse = 2,        // Genuine overflow: 0 < visiblePlaces < allPlacesCount.
+} MBIosNavOverflowAction;
+
+// Decide overflow outcome after measuring regular place tab frames. On iOS 27.1+ with a prominent action tab,
+// `tabBarItemCount < tabsCount` holds even when every regular place fits (`visiblePlaces >= allPlacesCount`);
+// caching `lkey` prevents repeated synchronous `layoutIfNeeded` overflow probes on every `nav_bar` spec change.
+static inline MBIosNavOverflowAction mb_ios_nav_overflow_action(NSUInteger tabBarItemCount, NSUInteger tabsCount,
+                                                                NSUInteger visiblePlaces, NSUInteger allPlacesCount) {
+  if (tabBarItemCount == 0 || tabBarItemCount >= tabsCount) return MBIosNavOverflowActionNoOverflowCache;
+  if (allPlacesCount == 0 || visiblePlaces >= allPlacesCount) return MBIosNavOverflowActionNoOverflowCache;
+  if (visiblePlaces == 0) return MBIosNavOverflowActionNotLaidOut;
+  return MBIosNavOverflowActionCollapse;
+}
+
+// Whether `checkOverflowAfterLayout` should inspect per-tab frames when uncollapsed. Skips once `overflowLayoutKey`
+// already matches `lkey` so iOS 27.1+ prominent-tab bars do not re-walk regular tabs on every layout pass.
+static inline BOOL mb_ios_nav_should_check_overflow_after_layout(NSUInteger visibleRegularCap, NSString *lkey,
+                                                                 NSString *overflowLayoutKey,
+                                                                 NSUInteger tabBarItemCount, NSUInteger tabsCount) {
+  if (visibleRegularCap > 0) return NO;
+  if (lkey.length && [lkey isEqualToString:overflowLayoutKey]) return NO;
+  return tabBarItemCount > 0 && tabBarItemCount < tabsCount;
+}
+
+// Deterministic length-prefixed key for displayed tab structure (regular places, overflow More tab, and action tab).
+// Intentionally omits accent color (`chosen_ink`) so accent/theme changes update tint/wash in place without tearing
+// down and rebuilding `UITabBarController.tabs`.
+static inline NSString *mb_ios_nav_tabs_key(NSArray<NSDictionary *> *visible, BOOL hasOverflow, NSString *moreId,
+                                            NSDictionary *act) {
+  NSMutableString *key = [NSMutableString string];
+  for (id row in visible) {
+    if (![row isKindOfClass:NSDictionary.class]) continue;
+    NSDictionary *t = (NSDictionary *)row;
+    NSString *ident = [t[@"id"] isKindOfClass:NSString.class] ? t[@"id"] : @"";
+    [key appendFormat:@"%lu:%@|", (unsigned long)ident.length, ident];
+  }
+  if (hasOverflow) {
+    NSString *mid = moreId ?: @"";
+    [key appendFormat:@"M%lu:%@|", (unsigned long)mid.length, mid];
+  }
+  if ([act isKindOfClass:NSDictionary.class]) {
+    NSString *aid = [act[@"id"] isKindOfClass:NSString.class] ? act[@"id"] : @"";
+    NSString *atitle = [act[@"title"] isKindOfClass:NSString.class] ? act[@"title"] : @"";
+    NSString *aicon = [act[@"icon"] isKindOfClass:NSString.class] ? act[@"icon"] : @"";
+    [key appendFormat:@"!%lu:%@|%lu:%@|%lu:%@", (unsigned long)aid.length, aid,
+         (unsigned long)atitle.length, atitle, (unsigned long)aicon.length, aicon];
+  }
+  return key;
+}
+
+// Whether `apply:` should synchronously invoke `washAction` to attach, hide, or re-tint the prominent tab's glass wash.
+static inline BOOL mb_ios_nav_wash_needed(BOOL tabsChanged, BOOL hiddenChanged, BOOL bare, BOOL hasActionInk,
+                                          BOOL washInWindow, BOOL washInkMatches) {
+  BOOL skipSyncWash = hiddenChanged && !bare && !tabsChanged;
+  if (skipSyncWash) return NO;
+  if (tabsChanged || hiddenChanged) return YES;
+  return hasActionInk && !bare && (!washInWindow || !washInkMatches);
+}
+
+// Whether `apply:` should also schedule an async follow-up `washAction` on the next runloop turn (only needed when
+// UIKit may still be creating or re-mounting the platter, not for an in-place re-tint of a mounted wash).
+static inline BOOL mb_ios_nav_wash_async_needed(BOOL tabsChanged, BOOL hiddenChanged, BOOL bare, BOOL hasActionInk,
+                                                BOOL washInWindow) {
+  if (!hasActionInk || bare) return NO;
+  return tabsChanged || hiddenChanged || !washInWindow;
+}
+
 // Whether a tab slot needs its navigation bar items synchronized to the latest `actsKey`.
 static inline BOOL mb_ios_nav_slot_needs_bar_items(NSString *appliedActsKey, NSString *actsKey, BOOL hasLastItems) {
   if (!hasLastItems || !actsKey.length) return NO;
